@@ -1,0 +1,23 @@
+{
+  "name": "engineering-memory",
+  "version": "1.0.0",
+  "description": "Engineering Memory - codebase context and history platform",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3"
+  }
+}
