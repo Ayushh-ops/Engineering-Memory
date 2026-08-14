@@ -6,7 +6,8 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 
 - `GET /api/health` returns a health status and timestamp.
 - `POST /api/repositories` accepts a GitHub repository URL and returns selected public metadata.
-- `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits.
+- `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
+- `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
 
 ## Run locally
 
@@ -48,7 +49,22 @@ Content-Type: application/json
 }
 ```
 
-The endpoint returns the repository identifier and commit SHA, message, author name, and author date for the 10 most recent commits.
+The endpoint returns the repository identifier and commit SHA, message, author name, author date, and changed-file statistics for the 10 most recent commits.
+
+### Historical file content
+
+```http
+POST /api/repositories/file
+Content-Type: application/json
+
+{
+  "url": "https://github.com/vercel/next.js",
+  "path": "package.json",
+  "sha": "<commit-sha>"
+}
+```
+
+The supplied SHA is sent to GitHub as the contents API `ref`, so the endpoint returns the file at that exact commit rather than the repository's current default branch.
 
 ## Documentation
 

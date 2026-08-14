@@ -31,8 +31,15 @@ This roadmap records only the capabilities currently present in the repository.
 - It uses each returned commit SHA to retrieve that commit's details from GitHub.
 - It returns the repository identifier and a simplified commit list containing each commit SHA, message, author name, author date, and changed-file statistics.
 
+### Historical file-content retrieval
+
+- A `POST /api/repositories/file` endpoint accepts a GitHub repository URL, file path, and commit SHA.
+- It retrieves the requested file through GitHub's repository contents API with the supplied SHA as the `ref`.
+- It decodes the Base64 content returned by GitHub and returns UTF-8 text for that exact historical revision.
+- It rejects directory responses and maps invalid input, missing repositories or files, GitHub API failures, and connectivity failures to clear HTTP error responses.
+
 ## Next milestone
 
-### Build on the changed-files foundation
+### Build on the historical-file foundation
 
-The next milestone is to extend the service beyond metadata, commit history, and changed-file statistics toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.
+The next milestone is to extend the service beyond metadata, commit history, changed-file statistics, and historical file content toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.

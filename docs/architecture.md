@@ -13,6 +13,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/health` | `GET` | Returns `{ status: "ok", timestamp }` to indicate the service is running. |
 | `/api/repositories` | `POST` | Validates a GitHub repository URL, retrieves repository metadata, and returns a reduced API response. |
 | `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits and their changed-file statistics, and returns a reduced commit list. |
+| `/api/repositories/file` | `POST` | Validates a GitHub repository URL, file path, and commit SHA, then retrieves UTF-8 file content at that revision. |
 
 ## GitHub repository metadata flow
 
@@ -34,6 +35,14 @@ The current integration uses the public GitHub API without authentication. No re
 5. On success, it returns `repository` as `owner/repository` and maps each commit to its SHA, message, author name, author date, and each changed file's filename, status, additions, deletions, and changes.
 6. Invalid URLs return `400`; a missing GitHub repository returns `404`; other GitHub API or network failures return `502`.
 
+## Historical file-content flow
+
+1. A client sends `POST /api/repositories/file` with `url`, `path`, and `sha` in its JSON body.
+2. The route validates the repository URL with the shared parser and requires non-empty string values for both the path and SHA.
+3. It calls `https://api.github.com/repos/{owner}/{repository}/contents/{path}?ref={sha}` using Node's built-in `fetch`. The supplied SHA is used directly as `ref`, which selects the requested commit instead of the default branch.
+4. It rejects directory responses, decodes a file response's Base64 content as UTF-8 text, and returns the repository identifier, requested path, SHA, and decoded content.
+5. Invalid input and directory paths return `400`; a missing repository or file returns `404`; other GitHub API or network failures return `502`.
+
 ## Important files
 
 | File | Responsibility |
@@ -41,7 +50,7 @@ The current integration uses the public GitHub API without authentication. No re
 | `src/index.ts` | Process entry point; selects the port and starts the HTTP listener. |
 | `src/app.ts` | Express application setup, JSON middleware, and route mounting. |
 | `src/routes/health.ts` | Health-check route. |
-| `src/routes/repositories.ts` | GitHub URL parsing, repository metadata and commit-history API requests, response shaping, and error handling. |
+| `src/routes/repositories.ts` | GitHub URL parsing; repository metadata, commit-history, and historical-file API requests; response shaping; and error handling. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |
 | `.gitignore` | Excludes dependency installation, compiled output, and environment files from Git. |

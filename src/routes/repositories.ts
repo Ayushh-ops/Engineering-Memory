@@ -36,6 +36,12 @@ interface GitHubCommitDetails {
     files?: GitHubCommitFile[];
 }
 
+interface GitHubFileContent {
+    type: string;
+    content: string;
+    encoding: string;
+}
+
 const router = Router();
 
 function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
@@ -169,6 +175,57 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             return res.status(502).json({ error: "GitHub API request failed." });
         }
 
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
+router.post("/repositories/file", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+    const path = req.body?.path;
+    const sha = req.body?.sha;
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (typeof path !== "string" || path.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty file path is required." });
+    }
+
+    if (typeof sha !== "string" || sha.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    const { owner, repository } = parsedRepository;
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+
+    try {
+        const githubResponse = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
+            { headers: { Accept: "application/vnd.github+json" } }
+        );
+
+        if (githubResponse.status === 404) {
+            return res.status(404).json({ error: "GitHub repository or file not found." });
+        }
+
+        if (!githubResponse.ok) {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        const githubFile = (await githubResponse.json()) as GitHubFileContent | GitHubFileContent[];
+
+        if (Array.isArray(githubFile) || githubFile.type !== "file") {
+            return res.status(400).json({ error: "The requested path must refer to a file." });
+        }
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            path,
+            sha,
+            content: Buffer.from(githubFile.content, "base64").toString("utf8")
+        });
+    } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });
