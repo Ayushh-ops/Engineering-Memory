@@ -12,7 +12,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | --- | --- | --- |
 | `/api/health` | `GET` | Returns `{ status: "ok", timestamp }` to indicate the service is running. |
 | `/api/repositories` | `POST` | Validates a GitHub repository URL, retrieves repository metadata, and returns a reduced API response. |
-| `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits, and returns a reduced commit list. |
+| `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits and their changed-file statistics, and returns a reduced commit list. |
 
 ## GitHub repository metadata flow
 
@@ -30,8 +30,9 @@ The current integration uses the public GitHub API without authentication. No re
 1. A client sends `POST /api/repositories/commits` with a JSON body containing `url`.
 2. The route validates and parses the URL using the same GitHub URL parser as the repository metadata endpoint.
 3. It calls `https://api.github.com/repos/{owner}/{repository}/commits?per_page=10` using Node's built-in `fetch`.
-4. On success, it returns `repository` as `owner/repository` and maps each GitHub commit to its SHA, message, author name, and author date.
-5. Invalid URLs return `400`; a missing GitHub repository returns `404`; other GitHub API or network failures return `502`.
+4. For each SHA in that response, it calls `https://api.github.com/repos/{owner}/{repository}/commits/{sha}` to retrieve commit details.
+5. On success, it returns `repository` as `owner/repository` and maps each commit to its SHA, message, author name, author date, and each changed file's filename, status, additions, deletions, and changes.
+6. Invalid URLs return `400`; a missing GitHub repository returns `404`; other GitHub API or network failures return `502`.
 
 ## Important files
 

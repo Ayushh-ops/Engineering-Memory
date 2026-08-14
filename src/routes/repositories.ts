@@ -24,6 +24,18 @@ interface GitHubCommit {
     };
 }
 
+interface GitHubCommitFile {
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    changes: number;
+}
+
+interface GitHubCommitDetails {
+    files?: GitHubCommitFile[];
+}
+
 const router = Router();
 
 function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
@@ -119,16 +131,44 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
 
         const githubCommits = (await githubResponse.json()) as GitHubCommit[];
 
+        const commits = await Promise.all(
+            githubCommits.map(async (commit) => {
+                const commitDetailsResponse = await fetch(
+                    `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(commit.sha)}`,
+                    { headers: { Accept: "application/vnd.github+json" } }
+                );
+
+                if (!commitDetailsResponse.ok) {
+                    throw new Error("GitHub commit details request failed.");
+                }
+
+                const commitDetails = (await commitDetailsResponse.json()) as GitHubCommitDetails;
+
+                return {
+                    sha: commit.sha,
+                    message: commit.commit.message,
+                    authorName: commit.commit.author.name,
+                    authorDate: commit.commit.author.date,
+                    files: (commitDetails.files ?? []).map((file) => ({
+                        filename: file.filename,
+                        status: file.status,
+                        additions: file.additions,
+                        deletions: file.deletions,
+                        changes: file.changes
+                    }))
+                };
+            })
+        );
+
         return res.status(200).json({
             repository: `${owner}/${repository}`,
-            commits: githubCommits.map((commit) => ({
-                sha: commit.sha,
-                message: commit.commit.message,
-                authorName: commit.commit.author.name,
-                authorDate: commit.commit.author.date
-            }))
+            commits
         });
-    } catch {
+    } catch (error) {
+        if (error instanceof Error && error.message === "GitHub commit details request failed.") {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });

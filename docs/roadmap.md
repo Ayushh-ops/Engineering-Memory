@@ -28,10 +28,11 @@ This roadmap records only the capabilities currently present in the repository.
 
 - A `POST /api/repositories/commits` endpoint accepts a GitHub repository URL.
 - It retrieves the 10 most recent commits from GitHub's public REST API.
-- It returns the repository identifier and a simplified commit list containing each commit SHA, message, author name, and author date.
+- It uses each returned commit SHA to retrieve that commit's details from GitHub.
+- It returns the repository identifier and a simplified commit list containing each commit SHA, message, author name, author date, and changed-file statistics.
 
 ## Next milestone
 
-### Build on the commit-history foundation
+### Build on the changed-files foundation
 
-The next milestone is to extend the service beyond the current metadata and commit-history lookups toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.
+The next milestone is to extend the service beyond metadata, commit history, and changed-file statistics toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.
