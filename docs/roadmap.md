@@ -38,8 +38,15 @@ This roadmap records only the capabilities currently present in the repository.
 - It decodes the Base64 content returned by GitHub and returns UTF-8 text for that exact historical revision.
 - It rejects directory responses and maps invalid input, missing repositories or files, GitHub API failures, and connectivity failures to clear HTTP error responses.
 
+### TypeScript AST analysis
+
+- A `POST /api/analyze` endpoint accepts a non-empty TypeScript source string.
+- A focused analyzer module creates a TypeScript Compiler API `SourceFile` and traverses its AST.
+- It returns import source paths, classes and their methods, function declarations, and variable declarations as structured JSON rather than exposing the raw AST.
+- The analysis is local only; it does not yet retrieve source from GitHub, invoke an LLM, or persist results.
+
 ## Next milestone
 
-### Build on the historical-file foundation
+### Build on the AST-analysis foundation
 
-The next milestone is to extend the service beyond metadata, commit history, changed-file statistics, and historical file content toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.
+The next milestone is to connect historical source retrieval to the local AST analysis toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.

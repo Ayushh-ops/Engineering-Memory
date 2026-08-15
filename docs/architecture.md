@@ -14,6 +14,17 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories` | `POST` | Validates a GitHub repository URL, retrieves repository metadata, and returns a reduced API response. |
 | `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits and their changed-file statistics, and returns a reduced commit list. |
 | `/api/repositories/file` | `POST` | Validates a GitHub repository URL, file path, and commit SHA, then retrieves UTF-8 file content at that revision. |
+| `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
+
+## TypeScript AST analysis flow
+
+1. A client sends `POST /api/analyze` with a non-empty `code` string.
+2. `src/routes/analysis.ts` validates the request and calls the analyzer without handling AST details itself.
+3. `src/analyzers/typescript.ts` uses `ts.createSourceFile` from the TypeScript Compiler API to parse the source as TypeScript.
+4. It traverses the tree with `ts.forEachChild`, detecting import declarations, class declarations and their method members, function declarations, and variable declarations.
+5. It returns only structured values: import source paths; class names with method names and parameter names; function names with parameter names; and variable names. No raw AST is exposed.
+
+This endpoint is local-only. It does not call GitHub, persist analysis results, or use an LLM.
 
 ## GitHub repository metadata flow
 
@@ -50,7 +61,9 @@ The current integration uses the public GitHub API without authentication. No re
 | `src/index.ts` | Process entry point; selects the port and starts the HTTP listener. |
 | `src/app.ts` | Express application setup, JSON middleware, and route mounting. |
 | `src/routes/health.ts` | Health-check route. |
+| `src/routes/analysis.ts` | Validates AST-analysis requests and returns analyzer results. |
 | `src/routes/repositories.ts` | GitHub URL parsing; repository metadata, commit-history, and historical-file API requests; response shaping; and error handling. |
+| `src/analyzers/typescript.ts` | TypeScript Compiler API source parsing, AST traversal, and focused analysis result shaping. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |
 | `.gitignore` | Excludes dependency installation, compiled output, and environment files from Git. |

@@ -8,6 +8,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories` accepts a GitHub repository URL and returns selected public metadata.
 - `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
 - `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
+- `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
 
@@ -65,6 +66,19 @@ Content-Type: application/json
 ```
 
 The supplied SHA is sent to GitHub as the contents API `ref`, so the endpoint returns the file at that exact commit rather than the repository's current default branch.
+
+### TypeScript analysis
+
+```http
+POST /api/analyze
+Content-Type: application/json
+
+{
+  "code": "const x = 10;"
+}
+```
+
+The endpoint returns import sources, classes and their methods, function declarations, and variable declarations. It performs local analysis only and does not contact GitHub or store data.
 
 ## Documentation
 
