@@ -22,10 +22,10 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 1. A client sends `POST /api/analyze` with a non-empty `code` string.
 2. `src/routes/analysis.ts` validates the request and calls the analyzer without handling AST details itself.
 3. `src/analyzers/typescript.ts` uses `ts.createSourceFile` from the TypeScript Compiler API to parse the source as TypeScript.
-4. It traverses the tree with `ts.forEachChild`, detecting import declarations, class declarations and their method members, function declarations, and variable declarations.
-5. It returns only structured values: import source paths; class names with method names and parameter names; function names with parameter names; and variable names. No raw AST is exposed.
+4. It traverses the tree with `ts.forEachChild`, detecting import declarations, class declarations and their method members, function declarations, variable declarations, and call expressions.
+5. It returns only structured values: import source paths; class names with method names and parameter names; function names with parameter names; variable names; and structural relationships. Every import adds an `imports` relationship from `file` to the module path. Identifier and property-access calls in a named function or method add `calls` relationships, with class methods identified as `ClassName.methodName`. No raw AST is exposed.
 
-This endpoint is local-only. It does not call GitHub, persist analysis results, or use an LLM.
+Relationship extraction is structural only: it does not resolve symbols, verify that called functions exist, resolve imports across files, or build a repository-wide graph. This endpoint is local-only. It does not call GitHub, persist analysis results, or use an LLM.
 
 ## Historical TypeScript file-analysis flow
 
@@ -33,7 +33,7 @@ This endpoint is local-only. It does not call GitHub, persist analysis results, 
 2. The repository route applies the same URL, path, and SHA validation used for historical file retrieval.
 3. The shared historical-file helper calls GitHub's contents API with the SHA as `ref`, rejects directories, and decodes the Base64 file response as UTF-8.
 4. The route passes that decoded source string directly to `analyzeTypeScript` in `src/analyzers/typescript.ts`.
-5. It returns the repository identifier, supplied path and SHA, and the analyzer's structured `analysis` result.
+5. It returns the repository identifier, supplied path and SHA, and the analyzer's structured `analysis` result, including structural import and call relationships.
 
 GitHub fetching remains in the repository route and AST traversal remains exclusively in the analyzer. The endpoint retrieves and analyzes exactly one supplied file revision; it does not enumerate repository files or commits.
 

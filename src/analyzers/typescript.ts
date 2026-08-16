@@ -15,11 +15,18 @@ export interface AnalyzedFunction {
     parameters: string[];
 }
 
+export interface CodeRelationship {
+    type: "imports" | "calls";
+    from: string;
+    to: string;
+}
+
 export interface TypeScriptAnalysis {
     imports: string[];
     classes: AnalyzedClass[];
     functions: AnalyzedFunction[];
     variables: string[];
+    relationships: CodeRelationship[];
 }
 
 function getParameterNames(parameters: ts.NodeArray<ts.ParameterDeclaration>, sourceFile: ts.SourceFile): string[] {
@@ -28,6 +35,18 @@ function getParameterNames(parameters: ts.NodeArray<ts.ParameterDeclaration>, so
 
 function getDeclarationName(name: ts.DeclarationName, sourceFile: ts.SourceFile): string {
     return ts.isIdentifier(name) ? name.text : name.getText(sourceFile);
+}
+
+function getCallTarget(expression: ts.Expression, sourceFile: ts.SourceFile): string | null {
+    if (ts.isIdentifier(expression)) {
+        return expression.text;
+    }
+
+    if (ts.isPropertyAccessExpression(expression)) {
+        return expression.getText(sourceFile);
+    }
+
+    return null;
 }
 
 export function analyzeTypeScript(source: string): TypeScriptAnalysis {
@@ -43,12 +62,22 @@ export function analyzeTypeScript(source: string): TypeScriptAnalysis {
         imports: [],
         classes: [],
         functions: [],
-        variables: []
+        variables: [],
+        relationships: []
     };
 
-    const visit = (node: ts.Node): void => {
+    const visit = (
+        node: ts.Node,
+        containingCallable: string | null = null,
+        containingClass: string | null = null
+    ): void => {
         if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
             analysis.imports.push(node.moduleSpecifier.text);
+            analysis.relationships.push({
+                type: "imports",
+                from: "file",
+                to: node.moduleSpecifier.text
+            });
         }
 
         if (ts.isClassDeclaration(node)) {
@@ -74,7 +103,30 @@ export function analyzeTypeScript(source: string): TypeScriptAnalysis {
             analysis.variables.push(getDeclarationName(node.name, sourceFile));
         }
 
-        ts.forEachChild(node, visit);
+        if (ts.isCallExpression(node) && containingCallable) {
+            const target = getCallTarget(node.expression, sourceFile);
+
+            if (target) {
+                analysis.relationships.push({
+                    type: "calls",
+                    from: containingCallable,
+                    to: target
+                });
+            }
+        }
+
+        const nextClass = ts.isClassDeclaration(node)
+            ? node.name?.text ?? containingClass
+            : containingClass;
+        const nextCallable = ts.isFunctionDeclaration(node)
+            ? node.name?.text ?? containingCallable
+            : ts.isMethodDeclaration(node)
+                ? nextClass
+                    ? `${nextClass}.${getDeclarationName(node.name, sourceFile)}`
+                    : getDeclarationName(node.name, sourceFile)
+                : containingCallable;
+
+        ts.forEachChild(node, (child) => visit(child, nextCallable, nextClass));
     };
 
     visit(sourceFile);

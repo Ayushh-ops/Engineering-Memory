@@ -52,8 +52,15 @@ This roadmap records only the capabilities currently present in the repository.
 - It passes the decoded UTF-8 source to the existing TypeScript AST analyzer and returns the repository, path, SHA, and structured analysis.
 - It does not analyze a repository broadly, retrieve multiple commits, persist results, or invoke an LLM.
 
+### TypeScript code relationships
+
+- The existing TypeScript analysis result includes structural `relationships` alongside imports, classes, functions, and variables.
+- Each import declaration adds an `imports` relationship from `file` to the imported module path.
+- Identifier and property-access calls in named functions or class methods add `calls` relationships; class methods are represented as `ClassName.methodName`.
+- Relationships do not perform symbol resolution, cross-file import resolution, existence checks, or repository-wide graph construction.
+
 ## Next milestone
 
-### Build on historical file analysis
+### Build on structural code relationships
 
-Future milestones can build on single-file historical analysis toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or multi-file analysis contract.
+Future milestones can build on single-file historical analysis and structural relationships toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or multi-file analysis contract.

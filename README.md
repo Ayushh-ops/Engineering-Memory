@@ -79,7 +79,7 @@ Content-Type: application/json
 }
 ```
 
-The endpoint returns import sources, classes and their methods, function declarations, and variable declarations. It performs local analysis only and does not contact GitHub or store data.
+The endpoint returns import sources, classes and their methods, function declarations, variable declarations, and structural code relationships. Each import produces an `imports` relationship from `file` to its module path. Calls made inside a named function or class method produce `calls` relationships; class methods use `ClassName.methodName` as the source. It performs local analysis only and does not contact GitHub or store data.
 
 ### Historical TypeScript file analysis
 
@@ -94,7 +94,7 @@ Content-Type: application/json
 }
 ```
 
-The endpoint retrieves and decodes exactly the requested file at the supplied SHA, then passes its UTF-8 source to the existing TypeScript analyzer. It returns `repository`, `path`, `sha`, and `analysis`; it does not analyze any other files or commits.
+The endpoint retrieves and decodes exactly the requested file at the supplied SHA, then passes its UTF-8 source to the existing TypeScript analyzer. It returns `repository`, `path`, `sha`, and `analysis`, including structural import and call relationships; it does not analyze any other files or commits.
 
 ## Documentation
 
