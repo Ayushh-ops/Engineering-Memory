@@ -14,6 +14,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories` | `POST` | Validates a GitHub repository URL, retrieves repository metadata, and returns a reduced API response. |
 | `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits and their changed-file statistics, and returns a reduced commit list. |
 | `/api/repositories/file` | `POST` | Validates a GitHub repository URL, file path, and commit SHA, then retrieves UTF-8 file content at that revision. |
+| `/api/repositories/analyze-file` | `POST` | Retrieves one historical file at a supplied SHA and returns the existing TypeScript analyzer's structured result. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -25,6 +26,16 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 5. It returns only structured values: import source paths; class names with method names and parameter names; function names with parameter names; and variable names. No raw AST is exposed.
 
 This endpoint is local-only. It does not call GitHub, persist analysis results, or use an LLM.
+
+## Historical TypeScript file-analysis flow
+
+1. A client sends `POST /api/repositories/analyze-file` with a repository URL, file path, and commit SHA.
+2. The repository route applies the same URL, path, and SHA validation used for historical file retrieval.
+3. The shared historical-file helper calls GitHub's contents API with the SHA as `ref`, rejects directories, and decodes the Base64 file response as UTF-8.
+4. The route passes that decoded source string directly to `analyzeTypeScript` in `src/analyzers/typescript.ts`.
+5. It returns the repository identifier, supplied path and SHA, and the analyzer's structured `analysis` result.
+
+GitHub fetching remains in the repository route and AST traversal remains exclusively in the analyzer. The endpoint retrieves and analyzes exactly one supplied file revision; it does not enumerate repository files or commits.
 
 ## GitHub repository metadata flow
 
@@ -62,7 +73,7 @@ The current integration uses the public GitHub API without authentication. No re
 | `src/app.ts` | Express application setup, JSON middleware, and route mounting. |
 | `src/routes/health.ts` | Health-check route. |
 | `src/routes/analysis.ts` | Validates AST-analysis requests and returns analyzer results. |
-| `src/routes/repositories.ts` | GitHub URL parsing; repository metadata, commit-history, and historical-file API requests; response shaping; and error handling. |
+| `src/routes/repositories.ts` | GitHub URL parsing; repository metadata, commit-history, historical-file retrieval, and single-file analysis composition; response shaping; and error handling. |
 | `src/analyzers/typescript.ts` | TypeScript Compiler API source parsing, AST traversal, and focused analysis result shaping. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |

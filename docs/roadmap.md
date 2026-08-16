@@ -45,8 +45,15 @@ This roadmap records only the capabilities currently present in the repository.
 - It returns import source paths, classes and their methods, function declarations, and variable declarations as structured JSON rather than exposing the raw AST.
 - The analysis is local only; it does not yet retrieve source from GitHub, invoke an LLM, or persist results.
 
+### Historical TypeScript file analysis
+
+- A `POST /api/repositories/analyze-file` endpoint accepts a GitHub repository URL, file path, and commit SHA.
+- It reuses historical GitHub file retrieval to obtain and decode exactly the requested file revision.
+- It passes the decoded UTF-8 source to the existing TypeScript AST analyzer and returns the repository, path, SHA, and structured analysis.
+- It does not analyze a repository broadly, retrieve multiple commits, persist results, or invoke an LLM.
+
 ## Next milestone
 
-### Build on the AST-analysis foundation
+### Build on historical file analysis
 
-The next milestone is to connect historical source retrieval to the local AST analysis toward the stated Engineering Memory purpose: codebase context and history. The repository does not yet define the required data model, persistence approach, additional GitHub resources, or API contract, so those details remain to be designed.
+Future milestones can build on single-file historical analysis toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or multi-file analysis contract.

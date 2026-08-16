@@ -1,4 +1,5 @@
 import { Request, Response, Router } from "express";
+import { analyzeTypeScript } from "../analyzers/typescript";
 
 interface GitHubRepository {
     name: string;
@@ -42,6 +43,12 @@ interface GitHubFileContent {
     encoding: string;
 }
 
+type HistoricalFileResult =
+    | { status: "success"; content: string }
+    | { status: "not-found" }
+    | { status: "not-file" }
+    | { status: "api-failure" };
+
 const router = Router();
 
 function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
@@ -70,6 +77,38 @@ function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: 
     } catch {
         return null;
     }
+}
+
+async function retrieveHistoricalFileContent(
+    owner: string,
+    repository: string,
+    path: string,
+    sha: string
+): Promise<HistoricalFileResult> {
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+    const githubResponse = await fetch(
+        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
+        { headers: { Accept: "application/vnd.github+json" } }
+    );
+
+    if (githubResponse.status === 404) {
+        return { status: "not-found" };
+    }
+
+    if (!githubResponse.ok) {
+        return { status: "api-failure" };
+    }
+
+    const githubFile = (await githubResponse.json()) as GitHubFileContent | GitHubFileContent[];
+
+    if (Array.isArray(githubFile) || githubFile.type !== "file") {
+        return { status: "not-file" };
+    }
+
+    return {
+        status: "success",
+        content: Buffer.from(githubFile.content, "base64").toString("utf8")
+    };
 }
 
 router.post("/repositories", async (req: Request, res: Response) => {
@@ -197,25 +236,19 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
     }
 
     const { owner, repository } = parsedRepository;
-    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
 
     try {
-        const githubResponse = await fetch(
-            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
-            { headers: { Accept: "application/vnd.github+json" } }
-        );
+        const result = await retrieveHistoricalFileContent(owner, repository, path, sha);
 
-        if (githubResponse.status === 404) {
+        if (result.status === "not-found") {
             return res.status(404).json({ error: "GitHub repository or file not found." });
         }
 
-        if (!githubResponse.ok) {
+        if (result.status === "api-failure") {
             return res.status(502).json({ error: "GitHub API request failed." });
         }
 
-        const githubFile = (await githubResponse.json()) as GitHubFileContent | GitHubFileContent[];
-
-        if (Array.isArray(githubFile) || githubFile.type !== "file") {
+        if (result.status === "not-file") {
             return res.status(400).json({ error: "The requested path must refer to a file." });
         }
 
@@ -223,7 +256,52 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
             repository: `${owner}/${repository}`,
             path,
             sha,
-            content: Buffer.from(githubFile.content, "base64").toString("utf8")
+            content: result.content
+        });
+    } catch {
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
+router.post("/repositories/analyze-file", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+    const path = req.body?.path;
+    const sha = req.body?.sha;
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (typeof path !== "string" || path.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty file path is required." });
+    }
+
+    if (typeof sha !== "string" || sha.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    const { owner, repository } = parsedRepository;
+
+    try {
+        const result = await retrieveHistoricalFileContent(owner, repository, path, sha);
+
+        if (result.status === "not-found") {
+            return res.status(404).json({ error: "GitHub repository or file not found." });
+        }
+
+        if (result.status === "api-failure") {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        if (result.status === "not-file") {
+            return res.status(400).json({ error: "The requested path must refer to a file." });
+        }
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            path,
+            sha,
+            analysis: analyzeTypeScript(result.content)
         });
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
