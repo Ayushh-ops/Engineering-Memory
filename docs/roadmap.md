@@ -59,8 +59,16 @@ This roadmap records only the capabilities currently present in the repository.
 - Identifier and property-access calls in named functions or class methods add `calls` relationships; class methods are represented as `ClassName.methodName`.
 - Relationships do not perform symbol resolution, cross-file import resolution, existence checks, or repository-wide graph construction.
 
+### Controlled repository-level historical analysis
+
+- A `POST /api/repositories/analyze` endpoint accepts a GitHub repository URL, one commit SHA, and a user-supplied list of 1–20 file paths.
+- It retrieves every requested file at the same supplied SHA, decodes it through the existing historical-file helper, and analyzes it with the existing TypeScript analyzer.
+- It returns one ordered result per requested path, each with focused AST-derived analysis and structural relationships.
+- It returns an error rather than a partial response if any requested path cannot be retrieved, and it does not enumerate repository files automatically.
+- Analysis is not persisted and does not create a repository-wide graph, use an LLM, or use embeddings.
+
 ## Next milestone
 
-### Build on structural code relationships
+### Build on controlled repository-level analysis
 
-Future milestones can build on single-file historical analysis and structural relationships toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or multi-file analysis contract.
+Future milestones can build on controlled repository-level analysis and structural relationships toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or repository-wide analysis contract.

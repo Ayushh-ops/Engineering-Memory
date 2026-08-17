@@ -49,6 +49,11 @@ type HistoricalFileResult =
     | { status: "not-file" }
     | { status: "api-failure" };
 
+interface RepositoryFileAnalysis {
+    path: string;
+    analysis: ReturnType<typeof analyzeTypeScript>;
+}
+
 const router = Router();
 
 function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
@@ -302,6 +307,73 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
             path,
             sha,
             analysis: analyzeTypeScript(result.content)
+        });
+    } catch {
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
+router.post("/repositories/analyze", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+    const sha = req.body?.sha;
+    const paths = req.body?.paths;
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (typeof sha !== "string" || sha.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    if (!Array.isArray(paths) || paths.length === 0) {
+        return res.status(400).json({ error: "A non-empty paths array is required." });
+    }
+
+    if (paths.length > 20) {
+        return res.status(400).json({ error: "A maximum of 20 file paths is allowed." });
+    }
+
+    if (paths.some((path) => typeof path !== "string" || path.trim().length === 0)) {
+        return res.status(400).json({ error: "Every path must be a non-empty string." });
+    }
+
+    const { owner, repository } = parsedRepository;
+
+    try {
+        const results = await Promise.all(
+            paths.map((path) => retrieveHistoricalFileContent(owner, repository, path, sha))
+        );
+
+        for (const result of results) {
+            if (result.status === "not-found") {
+                return res.status(404).json({ error: "GitHub repository or file not found." });
+            }
+
+            if (result.status === "api-failure") {
+                return res.status(502).json({ error: "GitHub API request failed." });
+            }
+
+            if (result.status === "not-file") {
+                return res.status(400).json({ error: "The requested path must refer to a file." });
+            }
+        }
+
+        const files: RepositoryFileAnalysis[] = results.map((result, index) => {
+            if (result.status !== "success") {
+                throw new Error("Unexpected historical file result.");
+            }
+
+            return {
+                path: paths[index],
+                analysis: analyzeTypeScript(result.content)
+            };
+        });
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            sha,
+            files
         });
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });

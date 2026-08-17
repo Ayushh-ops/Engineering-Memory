@@ -9,6 +9,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
 - `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
+- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -95,6 +96,24 @@ Content-Type: application/json
 ```
 
 The endpoint retrieves and decodes exactly the requested file at the supplied SHA, then passes its UTF-8 source to the existing TypeScript analyzer. It returns `repository`, `path`, `sha`, and `analysis`, including structural import and call relationships; it does not analyze any other files or commits.
+
+### Repository-level historical TypeScript analysis
+
+```http
+POST /api/repositories/analyze
+Content-Type: application/json
+
+{
+  "url": "https://github.com/vercel/next.js",
+  "sha": "<commit-sha>",
+  "paths": [
+    "packages/example/auth.ts",
+    "packages/example/user.ts"
+  ]
+}
+```
+
+The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, and a `files` array; each entry preserves the requested `path` and contains that file's focused `analysis` result. No raw source or AST is returned, and no repository data or analysis is persisted.
 
 ## Documentation
 
