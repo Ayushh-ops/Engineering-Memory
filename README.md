@@ -9,7 +9,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
 - `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
-- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit.
+- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, and resolves supported relative imports within that supplied file set.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -113,7 +113,7 @@ Content-Type: application/json
 }
 ```
 
-The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, and a `files` array; each entry preserves the requested `path` and contains that file's focused `analysis` result. No raw source or AST is returned, and no repository data or analysis is persisted.
+The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, a `files` array, and `resolvedRelationships`. Each file entry preserves the requested `path` and contains that file's focused `analysis` result; the original AST-derived import relationship is retained there. `resolvedRelationships` adds unambiguous links between supplied files for relative imports beginning with `./` or `../`, including `.ts`, `.tsx`, `.js`, `.jsx`, and supported `index` files. This is not full TypeScript module resolution: packages, aliases, project references, package exports, and files outside the supplied path set are not resolved. No raw source or AST is returned, and no repository data or analysis is persisted.
 
 ## Documentation
 

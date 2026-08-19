@@ -1,5 +1,9 @@
 import { Request, Response, Router } from "express";
 import { analyzeTypeScript } from "../analyzers/typescript";
+import {
+    RepositoryFileAnalysis,
+    resolveRelativeImportRelationships
+} from "../resolvers/relative-imports";
 
 interface GitHubRepository {
     name: string;
@@ -48,11 +52,6 @@ type HistoricalFileResult =
     | { status: "not-found" }
     | { status: "not-file" }
     | { status: "api-failure" };
-
-interface RepositoryFileAnalysis {
-    path: string;
-    analysis: ReturnType<typeof analyzeTypeScript>;
-}
 
 const router = Router();
 
@@ -373,7 +372,8 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
         return res.status(200).json({
             repository: `${owner}/${repository}`,
             sha,
-            files
+            files,
+            resolvedRelationships: resolveRelativeImportRelationships(files)
         });
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });

@@ -15,7 +15,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories/commits` | `POST` | Validates a GitHub repository URL, retrieves its 10 most recent commits and their changed-file statistics, and returns a reduced commit list. |
 | `/api/repositories/file` | `POST` | Validates a GitHub repository URL, file path, and commit SHA, then retrieves UTF-8 file content at that revision. |
 | `/api/repositories/analyze-file` | `POST` | Retrieves one historical file at a supplied SHA and returns the existing TypeScript analyzer's structured result. |
-| `/api/repositories/analyze` | `POST` | Retrieves and analyzes up to 20 supplied files at one supplied SHA, returning one structured result per path. |
+| `/api/repositories/analyze` | `POST` | Retrieves and analyzes up to 20 supplied files at one supplied SHA, returning one structured result per path plus resolved relative-import links within that supplied set. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -44,9 +44,11 @@ GitHub fetching remains in the repository route and AST traversal remains exclus
 2. The repository route validates the URL with the existing parser and validates the SHA and paths before contacting GitHub.
 3. It retrieves every requested path concurrently through the shared historical-file helper, which uses the same supplied SHA as the contents API `ref`, rejects directories, and decodes Base64 content as UTF-8.
 4. The route checks retrieval outcomes in requested-path order, returning an error instead of partial success if any requested file cannot be retrieved.
-5. It calls `analyzeTypeScript` once for each decoded file and returns `repository`, the supplied `sha`, and ordered file entries containing each requested `path` and its structured `analysis`.
+5. It calls `analyzeTypeScript` once for each decoded file, preserving the resulting per-file analysis unchanged.
+6. A focused repository-level resolver walks the AST-derived import relationships in requested-file and relationship order. For `./` and `../` imports only, it normalizes separators and relative segments, then compares extensionless, `.ts`, `.tsx`, `.js`, `.jsx`, and `index` candidates exclusively against the requested path set.
+7. It returns `repository`, the supplied `sha`, ordered file entries containing each requested `path` and its structured `analysis`, plus ordered, de-duplicated `resolvedRelationships`. A target is emitted only when exactly one supplied path matches; unmatched or ambiguous imports remain absent from this repository-level list while their original AST-derived import relationship remains in the file analysis.
 
-The endpoint does not enumerate or automatically analyze a repository, process more than one commit, expose source or raw AST data, or persist analysis. Each file's relationships remain limited to the existing structural, single-file analysis.
+The resolver does not access the filesystem or implement full TypeScript module resolution. It does not resolve packages, aliases, project references, package exports, or files not explicitly supplied. The endpoint does not enumerate or automatically analyze a repository, process more than one commit, expose source or raw AST data, or persist analysis.
 
 ## GitHub repository metadata flow
 
@@ -86,6 +88,7 @@ The current integration uses the public GitHub API without authentication. No re
 | `src/routes/analysis.ts` | Validates AST-analysis requests and returns analyzer results. |
 | `src/routes/repositories.ts` | GitHub URL parsing; repository metadata, commit-history, historical-file retrieval, and single- and controlled multi-file analysis composition; response shaping; and error handling. |
 | `src/analyzers/typescript.ts` | TypeScript Compiler API source parsing, AST traversal, and focused analysis result shaping. |
+| `src/resolvers/relative-imports.ts` | Repository-level, supplied-path-only resolution of supported relative AST import relationships. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |
 | `.gitignore` | Excludes dependency installation, compiled output, and environment files from Git. |

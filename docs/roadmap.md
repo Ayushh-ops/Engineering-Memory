@@ -67,8 +67,15 @@ This roadmap records only the capabilities currently present in the repository.
 - It returns an error rather than a partial response if any requested path cannot be retrieved, and it does not enumerate repository files automatically.
 - Analysis is not persisted and does not create a repository-wide graph, use an LLM, or use embeddings.
 
+### Cross-file relative import resolution
+
+- Repository-level analysis resolves supported `./` and `../` imports only when exactly one target exists in the user-supplied file set.
+- It normalizes separators and relative segments and tries direct, `.ts`, `.tsx`, `.js`, `.jsx`, and `index` candidates without reading the filesystem.
+- It adds ordered, de-duplicated `resolvedRelationships` while preserving each file's original AST-derived import and call relationships.
+- It is deliberately not full TypeScript module resolution: packages, aliases, project references, package exports, and undisclosed repository files are not resolved.
+
 ## Next milestone
 
-### Build on controlled repository-level analysis
+### Build on controlled repository-level analysis and relative import resolution
 
 Future milestones can build on controlled repository-level analysis and structural relationships toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or repository-wide analysis contract.
