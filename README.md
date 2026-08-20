@@ -9,7 +9,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
 - `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
-- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, and resolves supported relative imports within that supplied file set.
+- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -113,7 +113,9 @@ Content-Type: application/json
 }
 ```
 
-The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, a `files` array, and `resolvedRelationships`. Each file entry preserves the requested `path` and contains that file's focused `analysis` result; the original AST-derived import relationship is retained there. `resolvedRelationships` adds unambiguous links between supplied files for relative imports beginning with `./` or `../`, including `.ts`, `.tsx`, `.js`, `.jsx`, and supported `index` files. This is not full TypeScript module resolution: packages, aliases, project references, package exports, and files outside the supplied path set are not resolved. No raw source or AST is returned, and no repository data or analysis is persisted.
+The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, a `files` array, `resolvedRelationships`, and `graph`. Each file entry preserves the requested `path` and contains that file's focused `analysis` result; the original AST-derived import relationship is retained there. `resolvedRelationships` adds unambiguous links between supplied files for relative imports beginning with `./` or `../`, including `.ts`, `.tsx`, `.js`, `.jsx`, and supported `index` files.
+
+`graph` is an in-memory structural graph with deterministic node IDs. It has `repository`, `file`, `class`, `function`, and `method` nodes plus `contains`, `imports`, and safely resolvable local `calls` edges. IDs use forms such as `repository:owner/repository`, `file:src/auth.ts`, `class:src/user.ts:UserService`, `function:src/auth.ts:getUser`, and `method:src/user.ts:UserService.getUser`; delimiter characters inside components are encoded to prevent collisions. Import edges come only from verified `resolvedRelationships`. A call edge is emitted only when both endpoints are unambiguously declared in the same analyzed file; unresolved and property calls are not guessed. The graph is not persisted and is structural rather than semantic: it does not type-check, resolve packages or aliases, infer runtime behavior, or model commit/time relationships.
 
 ## Documentation
 

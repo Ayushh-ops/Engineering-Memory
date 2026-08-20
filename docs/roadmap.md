@@ -74,8 +74,14 @@ This roadmap records only the capabilities currently present in the repository.
 - It adds ordered, de-duplicated `resolvedRelationships` while preserving each file's original AST-derived import and call relationships.
 - It is deliberately not full TypeScript module resolution: packages, aliases, project references, package exports, and undisclosed repository files are not resolved.
 
+### In-memory repository code graph
+
+- Repository-level analysis now returns a structural, in-memory `graph` alongside unchanged `files` and `resolvedRelationships` fields.
+- The graph has deterministic, de-duplicated `repository`, `file`, `class`, `function`, and `method` nodes, plus `contains`, verified `imports`, and safely resolvable local `calls` edges.
+- It does not persist graph data or model commits and time. It is not a semantic graph: there is no type checking, general symbol resolution, dependency resolution, alias resolution, or runtime inference.
+
 ## Next milestone
 
-### Build on controlled repository-level analysis and relative import resolution
+### Build on the in-memory structural repository graph
 
-Future milestones can build on controlled repository-level analysis and structural relationships toward broader codebase context and history. The repository does not yet define a data model, persistence approach, additional GitHub resources, or repository-wide analysis contract.
+Future milestones can build on the in-memory structural graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, or temporal graph relationships.

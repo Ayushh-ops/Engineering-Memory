@@ -4,6 +4,7 @@ import {
     RepositoryFileAnalysis,
     resolveRelativeImportRelationships
 } from "../resolvers/relative-imports";
+import { buildRepositoryGraph } from "../graph/repository-graph";
 
 interface GitHubRepository {
     name: string;
@@ -369,11 +370,15 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
             };
         });
 
+        const repositoryName = `${owner}/${repository}`;
+        const resolvedRelationships = resolveRelativeImportRelationships(files);
+
         return res.status(200).json({
-            repository: `${owner}/${repository}`,
+            repository: repositoryName,
             sha,
             files,
-            resolvedRelationships: resolveRelativeImportRelationships(files)
+            resolvedRelationships,
+            graph: buildRepositoryGraph(repositoryName, files, resolvedRelationships)
         });
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
