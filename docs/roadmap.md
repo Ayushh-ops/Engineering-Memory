@@ -80,8 +80,15 @@ This roadmap records only the capabilities currently present in the repository.
 - The graph has deterministic, de-duplicated `repository`, `file`, `class`, `function`, and `method` nodes, plus `contains`, verified `imports`, and safely resolvable local `calls` edges.
 - It does not persist graph data or model commits and time. It is not a semantic graph: there is no type checking, general symbol resolution, dependency resolution, alias resolution, or runtime inference.
 
+### Temporal repository history graph
+
+- The in-memory graph builder can compose existing GitHub commit data into deterministic `commit:<sha>` nodes containing the SHA, message, author name, and author date.
+- It adds de-duplicated `changed` edges from commits only to file nodes already represented in the supplied analysis input; changed paths do not create arbitrary file nodes.
+- Structural nodes and `contains`, `imports`, and `calls` edges retain their existing meanings.
+- This models commit-to-file history only. It does not explain why a change happened, provide line-level diffs, or identify changed symbols; those are future work.
+
 ## Next milestone
 
-### Build on the in-memory structural repository graph
+### Build on the in-memory temporal repository graph
 
-Future milestones can build on the in-memory structural graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, or temporal graph relationships.
+Future milestones can build on the in-memory graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, line-level or symbol-level history, or semantic change explanations.

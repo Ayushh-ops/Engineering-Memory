@@ -1,14 +1,53 @@
 import type { RepositoryFileAnalysis, ResolvedImportRelationship } from "../resolvers/relative-imports";
 
-export type GraphNodeType = "repository" | "file" | "class" | "function" | "method";
-export type GraphEdgeType = "contains" | "imports" | "calls";
+export type GraphNodeType = "repository" | "file" | "class" | "function" | "method" | "commit";
+export type GraphEdgeType = "contains" | "imports" | "calls" | "changed";
 
-export interface GraphNode {
+interface NamedGraphNode {
     id: string;
-    type: GraphNodeType;
-    name?: string;
-    path?: string;
+    name: string;
 }
+
+export interface RepositoryGraphNode extends NamedGraphNode {
+    type: "repository";
+}
+
+export interface FileGraphNode extends NamedGraphNode {
+    type: "file";
+    path: string;
+}
+
+export interface ClassGraphNode extends NamedGraphNode {
+    type: "class";
+    path: string;
+}
+
+export interface FunctionGraphNode extends NamedGraphNode {
+    type: "function";
+    path: string;
+}
+
+export interface MethodGraphNode extends NamedGraphNode {
+    type: "method";
+    path: string;
+}
+
+export interface CommitGraphNode {
+    id: string;
+    type: "commit";
+    sha: string;
+    message: string;
+    authorName: string;
+    authorDate: string;
+}
+
+export type GraphNode =
+    | RepositoryGraphNode
+    | FileGraphNode
+    | ClassGraphNode
+    | FunctionGraphNode
+    | MethodGraphNode
+    | CommitGraphNode;
 
 export interface GraphEdge {
     from: string;
@@ -19,6 +58,15 @@ export interface GraphEdge {
 export interface RepositoryGraph {
     nodes: GraphNode[];
     edges: GraphEdge[];
+}
+
+/** The commit data needed to compose history into an existing repository graph. */
+export interface RepositoryHistoryCommit {
+    sha: string;
+    message: string;
+    authorName: string;
+    authorDate: string;
+    files: Array<{ filename: string }>;
 }
 
 function idComponent(value: string): string {
@@ -45,11 +93,16 @@ function methodId(path: string, className: string, methodName: string): string {
     return `method:${idComponent(path)}:${idComponent(className)}.${idComponent(methodName)}`;
 }
 
+function commitId(sha: string): string {
+    return `commit:${sha}`;
+}
+
 /** Builds an in-memory graph from existing analysis and import-resolution output. */
 export function buildRepositoryGraph(
     repository: string,
     files: RepositoryFileAnalysis[],
-    resolvedRelationships: ResolvedImportRelationship[]
+    resolvedRelationships: ResolvedImportRelationship[],
+    history: RepositoryHistoryCommit[] = []
 ): RepositoryGraph {
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
@@ -112,6 +165,30 @@ export function buildRepositoryGraph(
             addNode({ id: currentFunctionId, type: "function", name: analyzedFunction.name, path: file.path });
             addEdge({ from: currentFileId, to: currentFunctionId, type: "contains" });
             addSymbol(symbols.functions, analyzedFunction.name, currentFunctionId);
+        }
+    }
+
+    const knownFileIds = new Map<string, string>();
+    for (const file of files) {
+        knownFileIds.set(file.path, fileId(file.path));
+    }
+
+    for (const commit of history) {
+        const currentCommitId = commitId(commit.sha);
+        addNode({
+            id: currentCommitId,
+            type: "commit",
+            sha: commit.sha,
+            message: commit.message,
+            authorName: commit.authorName,
+            authorDate: commit.authorDate
+        });
+
+        for (const changedFile of commit.files) {
+            const changedFileId = knownFileIds.get(changedFile.filename);
+            if (changedFileId) {
+                addEdge({ from: currentCommitId, to: changedFileId, type: "changed" });
+            }
         }
     }
 
