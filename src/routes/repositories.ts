@@ -1,6 +1,10 @@
 import { Request, Response, Router } from "express";
 import { analyzeTypeScript } from "../analyzers/typescript";
 import {
+    analyzeHistoricalTypeScriptChange,
+    isTypeScriptPath
+} from "../analyzers/typescript-history";
+import {
     RepositoryFileAnalysis,
     resolveRelativeImportRelationships
 } from "../resolvers/relative-imports";
@@ -40,6 +44,7 @@ interface GitHubCommitFile {
 
 interface GitHubCommitDetails {
     files?: GitHubCommitFile[];
+    parents?: Array<{ sha: string }>;
 }
 
 interface GitHubFileContent {
@@ -381,6 +386,97 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
             graph: buildRepositoryGraph(repositoryName, files, resolvedRelationships)
         });
     } catch {
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
+router.post("/repositories/analyze-history", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+    const sha = req.body?.sha;
+    const paths = req.body?.paths;
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (typeof sha !== "string" || sha.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) {
+        return res.status(400).json({ error: "Between 1 and 20 file paths are required." });
+    }
+
+    if (paths.some((path) => typeof path !== "string" || path.trim().length === 0)) {
+        return res.status(400).json({ error: "Every path must be a non-empty string." });
+    }
+
+    if (new Set(paths).size !== paths.length) {
+        return res.status(400).json({ error: "Every path must be unique." });
+    }
+
+    const { owner, repository } = parsedRepository;
+
+    try {
+        const commitResponse = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(sha)}`,
+            { headers: { Accept: "application/vnd.github+json" } }
+        );
+
+        if (commitResponse.status === 404) {
+            return res.status(404).json({ error: "GitHub repository or commit not found." });
+        }
+
+        if (!commitResponse.ok) {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        const commit = (await commitResponse.json()) as GitHubCommitDetails;
+        const parentSha = commit.parents?.[0]?.sha ?? null;
+        const files = await Promise.all(paths.map(async (path) => {
+            if (!isTypeScriptPath(path)) {
+                return analyzeHistoricalTypeScriptChange(path, null, null);
+            }
+
+            const [parentResult, currentResult] = await Promise.all([
+                parentSha
+                    ? retrieveHistoricalFileContent(owner, repository, path, parentSha)
+                    : Promise.resolve<HistoricalFileResult>({ status: "not-found" }),
+                retrieveHistoricalFileContent(owner, repository, path, sha)
+            ]);
+
+            for (const result of [parentResult, currentResult]) {
+                if (result.status === "api-failure") {
+                    throw new Error("GitHub file request failed.");
+                }
+
+                if (result.status === "not-file") {
+                    throw new Error("GitHub path is not a file.");
+                }
+            }
+
+            return analyzeHistoricalTypeScriptChange(
+                path,
+                parentResult.status === "success" ? parentResult.content : null,
+                currentResult.status === "success" ? currentResult.content : null
+            );
+        }));
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            sha,
+            parentSha,
+            files
+        });
+    } catch (error) {
+        if (error instanceof Error && error.message === "GitHub path is not a file.") {
+            return res.status(400).json({ error: "The requested path must refer to a file." });
+        }
+
+        if (error instanceof Error && error.message === "GitHub file request failed.") {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });
