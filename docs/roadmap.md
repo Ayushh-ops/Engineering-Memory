@@ -87,6 +87,14 @@ This roadmap records only the capabilities currently present in the repository.
 - Structural nodes and `contains`, `imports`, and `calls` edges retain their existing meanings.
 - This models commit-to-file history only. It does not explain why a change happened, provide line-level diffs, or identify changed symbols; those are future work.
 
+### Historical symbol changes in the repository graph
+
+- `POST /api/repositories/analyze-history` additionally returns an in-memory graph while preserving its existing response fields.
+- The graph represents applicable added, removed, and modified classes, functions, and methods as deterministic `symbol-change` nodes.
+- Each change is linked to its commit with `changed`, to its file with `in-file`, and to an existing structural symbol with `affects` when that symbol is present.
+- Removed symbols do not create phantom structural nodes, and inapplicable non-TypeScript files do not create change nodes.
+- The graph remains bounded to explicitly supplied files and is not persisted or semantically inferred.
+
 ## Next milestone
 
 ### Build on the in-memory temporal repository graph

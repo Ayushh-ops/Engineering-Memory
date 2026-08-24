@@ -8,7 +8,11 @@ import {
     RepositoryFileAnalysis,
     resolveRelativeImportRelationships
 } from "../resolvers/relative-imports";
-import { buildRepositoryGraph } from "../graph/repository-graph";
+import {
+    buildRepositoryGraph,
+    RepositoryHistoricalChanges,
+    RepositoryHistoryCommit
+} from "../graph/repository-graph";
 
 interface GitHubRepository {
     name: string;
@@ -43,6 +47,13 @@ interface GitHubCommitFile {
 }
 
 interface GitHubCommitDetails {
+    commit: {
+        message: string;
+        author: {
+            name: string;
+            date: string;
+        };
+    };
     files?: GitHubCommitFile[];
     parents?: Array<{ sha: string }>;
 }
@@ -433,9 +444,15 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
 
         const commit = (await commitResponse.json()) as GitHubCommitDetails;
         const parentSha = commit.parents?.[0]?.sha ?? null;
-        const files = await Promise.all(paths.map(async (path) => {
+        const historicalResults = await Promise.all(paths.map(async (path) => {
             if (!isTypeScriptPath(path)) {
-                return analyzeHistoricalTypeScriptChange(path, null, null);
+                return {
+                    change: analyzeHistoricalTypeScriptChange(path, null, null),
+                    currentFile: {
+                        path,
+                        analysis: analyzeTypeScript("")
+                    }
+                };
             }
 
             const [parentResult, currentResult] = await Promise.all([
@@ -455,18 +472,49 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
                 }
             }
 
-            return analyzeHistoricalTypeScriptChange(
-                path,
-                parentResult.status === "success" ? parentResult.content : null,
-                currentResult.status === "success" ? currentResult.content : null
-            );
+            return {
+                change: analyzeHistoricalTypeScriptChange(
+                    path,
+                    parentResult.status === "success" ? parentResult.content : null,
+                    currentResult.status === "success" ? currentResult.content : null
+                ),
+                currentFile: {
+                    path,
+                    analysis: currentResult.status === "success"
+                        ? analyzeTypeScript(currentResult.content)
+                        : analyzeTypeScript("")
+                }
+            };
         }));
 
+        const files = historicalResults.map((result) => result.change);
+        const currentFiles = historicalResults.map((result) => result.currentFile);
+        const repositoryName = `${owner}/${repository}`;
+        const historyCommit: RepositoryHistoryCommit = {
+            sha,
+            message: commit.commit.message,
+            authorName: commit.commit.author.name,
+            authorDate: commit.commit.author.date,
+            files: (commit.files ?? []).map((file) => ({ filename: file.filename }))
+        };
+        const historicalChanges: RepositoryHistoricalChanges = {
+            sha,
+            files
+        };
+        const resolvedRelationships = resolveRelativeImportRelationships(currentFiles);
+
         return res.status(200).json({
-            repository: `${owner}/${repository}`,
+            repository: repositoryName,
             sha,
             parentSha,
-            files
+            files,
+            graph: buildRepositoryGraph(
+                repositoryName,
+                currentFiles,
+                resolvedRelationships,
+                [historyCommit],
+                historicalChanges
+            )
         });
     } catch (error) {
         if (error instanceof Error && error.message === "GitHub path is not a file.") {

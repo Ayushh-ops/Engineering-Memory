@@ -1,7 +1,12 @@
+import type {
+    FileChangeAnalysis,
+    HistoricalSymbolType,
+    SymbolChangeType
+} from "../analyzers/typescript-history";
 import type { RepositoryFileAnalysis, ResolvedImportRelationship } from "../resolvers/relative-imports";
 
-export type GraphNodeType = "repository" | "file" | "class" | "function" | "method" | "commit";
-export type GraphEdgeType = "contains" | "imports" | "calls" | "changed";
+export type GraphNodeType = "repository" | "file" | "class" | "function" | "method" | "commit" | "symbol-change";
+export type GraphEdgeType = "contains" | "imports" | "calls" | "changed" | "in-file" | "affects";
 
 interface NamedGraphNode {
     id: string;
@@ -41,13 +46,21 @@ export interface CommitGraphNode {
     authorDate: string;
 }
 
+export interface SymbolChangeGraphNode extends NamedGraphNode {
+    type: "symbol-change";
+    path: string;
+    symbolType: HistoricalSymbolType;
+    changeType: SymbolChangeType;
+}
+
 export type GraphNode =
     | RepositoryGraphNode
     | FileGraphNode
     | ClassGraphNode
     | FunctionGraphNode
     | MethodGraphNode
-    | CommitGraphNode;
+    | CommitGraphNode
+    | SymbolChangeGraphNode;
 
 export interface GraphEdge {
     from: string;
@@ -67,6 +80,11 @@ export interface RepositoryHistoryCommit {
     authorName: string;
     authorDate: string;
     files: Array<{ filename: string }>;
+}
+
+export interface RepositoryHistoricalChanges {
+    sha: string;
+    files: FileChangeAnalysis[];
 }
 
 function idComponent(value: string): string {
@@ -97,18 +115,35 @@ function commitId(sha: string): string {
     return `commit:${sha}`;
 }
 
+function symbolChangeId(
+    sha: string,
+    path: string,
+    symbolType: HistoricalSymbolType,
+    name: string,
+    changeType: SymbolChangeType
+): string {
+    return [sha, path, symbolType, name, changeType]
+        .map(idComponent)
+        .reduce((id, component) => `${id}:${component}`, "symbol-change");
+}
+
 /** Builds an in-memory graph from existing analysis and import-resolution output. */
 export function buildRepositoryGraph(
     repository: string,
     files: RepositoryFileAnalysis[],
     resolvedRelationships: ResolvedImportRelationship[],
-    history: RepositoryHistoryCommit[] = []
+    history: RepositoryHistoryCommit[] = [],
+    historicalChanges: RepositoryHistoricalChanges | null = null
 ): RepositoryGraph {
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
     const nodeIds = new Set<string>();
     const edgeKeys = new Set<string>();
-    const fileSymbols = new Map<string, { functions: Map<string, string | null>; methods: Map<string, string | null> }>();
+    const fileSymbols = new Map<string, {
+        classes: Map<string, string | null>;
+        functions: Map<string, string | null>;
+        methods: Map<string, string | null>;
+    }>();
 
     const addNode = (node: GraphNode): void => {
         if (!nodeIds.has(node.id)) {
@@ -142,7 +177,11 @@ export function buildRepositoryGraph(
         addEdge({ from: rootId, to: currentFileId, type: "contains" });
         if (builtPaths.has(file.path)) continue;
         builtPaths.add(file.path);
-        const symbols = fileSymbols.get(file.path) ?? { functions: new Map(), methods: new Map() };
+        const symbols = fileSymbols.get(file.path) ?? {
+            classes: new Map(),
+            functions: new Map(),
+            methods: new Map()
+        };
         fileSymbols.set(file.path, symbols);
 
         for (const analyzedClass of file.analysis.classes) {
@@ -150,6 +189,7 @@ export function buildRepositoryGraph(
             const currentClassId = classId(file.path, analyzedClass.name);
             addNode({ id: currentClassId, type: "class", name: analyzedClass.name, path: file.path });
             addEdge({ from: currentFileId, to: currentClassId, type: "contains" });
+            addSymbol(symbols.classes, analyzedClass.name, currentClassId);
             for (const analyzedMethod of analyzedClass.methods) {
                 const currentMethodId = methodId(file.path, analyzedClass.name, analyzedMethod.name);
                 addNode({ id: currentMethodId, type: "method", name: `${analyzedClass.name}.${analyzedMethod.name}`, path: file.path });
@@ -188,6 +228,45 @@ export function buildRepositoryGraph(
             const changedFileId = knownFileIds.get(changedFile.filename);
             if (changedFileId) {
                 addEdge({ from: currentCommitId, to: changedFileId, type: "changed" });
+            }
+        }
+    }
+
+    if (historicalChanges) {
+        const currentCommitId = commitId(historicalChanges.sha);
+
+        for (const fileChange of historicalChanges.files) {
+            if (!fileChange.applicable) continue;
+
+            const currentFileId = fileId(fileChange.path);
+            for (const change of fileChange.changes) {
+                const currentChangeId = symbolChangeId(
+                    historicalChanges.sha,
+                    fileChange.path,
+                    change.symbolType,
+                    change.name,
+                    change.type
+                );
+                addNode({
+                    id: currentChangeId,
+                    type: "symbol-change",
+                    name: change.name,
+                    path: fileChange.path,
+                    symbolType: change.symbolType,
+                    changeType: change.type
+                });
+                addEdge({ from: currentCommitId, to: currentChangeId, type: "changed" });
+                addEdge({ from: currentChangeId, to: currentFileId, type: "in-file" });
+
+                const symbols = fileSymbols.get(fileChange.path);
+                if (!symbols) continue;
+
+                const symbolId = change.symbolType === "class"
+                    ? symbols.classes.get(change.name)
+                    : change.symbolType === "function"
+                        ? symbols.functions.get(change.name)
+                        : symbols.methods.get(change.name);
+                if (symbolId) addEdge({ from: currentChangeId, to: symbolId, type: "affects" });
             }
         }
     }

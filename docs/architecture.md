@@ -16,6 +16,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories/file` | `POST` | Validates a GitHub repository URL, file path, and commit SHA, then retrieves UTF-8 file content at that revision. |
 | `/api/repositories/analyze-file` | `POST` | Retrieves one historical file at a supplied SHA and returns the existing TypeScript analyzer's structured result. |
 | `/api/repositories/analyze` | `POST` | Retrieves and analyzes up to 20 supplied files at one supplied SHA, returning one structured result per path, resolved relative-import links, and an in-memory structural graph. |
+| `/api/repositories/analyze-history` | `POST` | Retrieves a commit and its first-parent comparison for up to 20 supplied files, returning structural TypeScript symbol changes and an additive historical graph. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -50,6 +51,8 @@ GitHub fetching remains in the repository route and AST traversal remains exclus
 8. It returns `repository`, the supplied `sha`, ordered file entries containing each requested `path` and its structured `analysis`, ordered, de-duplicated `resolvedRelationships`, and `graph`. A target is emitted only when exactly one supplied path matches; unmatched or ambiguous imports remain absent from this repository-level list while their original AST-derived import relationship remains in the file analysis.
 
 The resolver and graph builder do not access the filesystem or implement full TypeScript module resolution. The graph uses only resolved relative imports and local structural calls whose endpoints are known in the same file; it does not infer property-call targets. When supplied with existing commit-history data, it also represents commits and known-file changes, but does not infer why code changed or attribute changes to symbols. It does not resolve packages, aliases, project references, package exports, or files not explicitly supplied. The graph is in-memory only. The endpoint does not enumerate or automatically analyze a repository, fetch commit history, expose source or raw AST data, or persist analysis.
+
+The historical graph extends this model with `symbol-change` nodes. Each node represents one applicable added, removed, or modified class, function, or method for the requested commit and file. A `changed` edge connects the commit to the change event, an `in-file` edge connects the event to the file, and an `affects` edge connects it to an existing structural symbol when available. Removed symbols therefore retain historical event and file relationships without creating current structural symbol nodes. Existing `/api/repositories/analyze` graph behavior and IDs are unchanged.
 
 ## GitHub repository metadata flow
 
