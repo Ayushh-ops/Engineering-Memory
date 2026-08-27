@@ -121,6 +121,22 @@ The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves e
 
 `POST /api/repositories/analyze-history` preserves its existing `repository`, `sha`, `parentSha`, and `files` fields and additionally returns `graph`. The graph includes `symbol-change` nodes for applicable added, removed, and modified classes, functions, and methods. Each change node has a deterministic ID containing the commit SHA, file path, symbol type, symbol name, and change type. It has a `changed` edge from the commit and an `in-file` edge to the file. Added and modified changes also have an `affects` edge to an existing structural symbol node; removed symbols do not create phantom structural nodes. Inapplicable non-TypeScript files produce no symbol-change nodes.
 
+### Repository graph queries
+
+`POST /api/repositories/graph/query` accepts a graph returned by a repository analysis endpoint and a read-only query. Graphs are queried in memory and are not stored.
+
+```http
+POST /api/repositories/graph/query
+Content-Type: application/json
+
+{
+  "graph": { "nodes": [], "edges": [] },
+  "query": { "type": "file-imports", "path": "src/auth.ts" }
+}
+```
+
+Supported query types are `related-files`, `file-symbols`, `file-imports`, `symbol-callers`, `commit-changes`, `commit-symbol-changes`, and `affected-symbols`. The response contains the echoed `query` and `{ files, symbols, commits, symbolChanges }`. Results are direct relationships only, preserve graph insertion order, and deduplicate repeated node IDs. Unknown entities return empty result arrays.
+
 ## Documentation
 
 - [Roadmap](docs/roadmap.md)

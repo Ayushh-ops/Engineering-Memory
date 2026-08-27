@@ -95,6 +95,13 @@ This roadmap records only the capabilities currently present in the repository.
 - Removed symbols do not create phantom structural nodes, and inapplicable non-TypeScript files do not create change nodes.
 - The graph remains bounded to explicitly supplied files and is not persisted or semantically inferred.
 
+### Read-only repository graph queries
+
+- A `POST /api/repositories/graph/query` endpoint executes typed queries over a caller-supplied graph.
+- Supported queries return related files, file symbols, imports, symbol callers, commit changes, commit symbol changes, and affected symbols.
+- Query results preserve graph insertion order, deduplicate node IDs, and return empty results for unknown entities.
+- Querying does not mutate, persist, expand, or semantically reinterpret the existing graph.
+
 ## Next milestone
 
 ### Build on the in-memory temporal repository graph

@@ -13,6 +13,11 @@ import {
     RepositoryHistoricalChanges,
     RepositoryHistoryCommit
 } from "../graph/repository-graph";
+import {
+    isRepositoryGraph,
+    isRepositoryGraphQuery,
+    queryRepositoryGraph
+} from "../graph/repository-query";
 
 interface GitHubRepository {
     name: string;
@@ -527,6 +532,17 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
 
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
+});
+
+router.post("/repositories/graph/query", (req: Request, res: Response) => {
+    const graph = req.body?.graph;
+    const query = req.body?.query;
+
+    if (!isRepositoryGraph(graph) || !isRepositoryGraphQuery(query)) {
+        return res.status(400).json({ error: "A valid graph and query are required." });
+    }
+
+    return res.status(200).json({ query, results: queryRepositoryGraph(graph, query) });
 });
 
 export default router;

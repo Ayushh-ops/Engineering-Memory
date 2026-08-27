@@ -17,6 +17,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories/analyze-file` | `POST` | Retrieves one historical file at a supplied SHA and returns the existing TypeScript analyzer's structured result. |
 | `/api/repositories/analyze` | `POST` | Retrieves and analyzes up to 20 supplied files at one supplied SHA, returning one structured result per path, resolved relative-import links, and an in-memory structural graph. |
 | `/api/repositories/analyze-history` | `POST` | Retrieves a commit and its first-parent comparison for up to 20 supplied files, returning structural TypeScript symbol changes and an additive historical graph. |
+| `/api/repositories/graph/query` | `POST` | Executes a validated, read-only query against a caller-supplied in-memory repository graph. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -53,6 +54,15 @@ GitHub fetching remains in the repository route and AST traversal remains exclus
 The resolver and graph builder do not access the filesystem or implement full TypeScript module resolution. The graph uses only resolved relative imports and local structural calls whose endpoints are known in the same file; it does not infer property-call targets. When supplied with existing commit-history data, it also represents commits and known-file changes, but does not infer why code changed or attribute changes to symbols. It does not resolve packages, aliases, project references, package exports, or files not explicitly supplied. The graph is in-memory only. The endpoint does not enumerate or automatically analyze a repository, fetch commit history, expose source or raw AST data, or persist analysis.
 
 The historical graph extends this model with `symbol-change` nodes. Each node represents one applicable added, removed, or modified class, function, or method for the requested commit and file. A `changed` edge connects the commit to the change event, an `in-file` edge connects the event to the file, and an `affects` edge connects it to an existing structural symbol when available. Removed symbols therefore retain historical event and file relationships without creating current structural symbol nodes. Existing `/api/repositories/analyze` graph behavior and IDs are unchanged.
+
+## Repository graph query flow
+
+1. A client sends `POST /api/repositories/graph/query` with a graph payload and one typed query.
+2. `src/routes/repositories.ts` validates the graph's node and edge arrays and the query discriminator and identifiers.
+3. `src/graph/repository-query.ts` performs direct lookups over existing node and edge types. It does not rebuild, mutate, persist, resolve, or expand the graph transitively.
+4. Results are returned in graph node order, with duplicate node IDs removed after their first occurrence. Unknown files, symbols, and commits return empty arrays.
+
+The supported queries are related files, symbols in a file, imported files, callers of a symbol, files and symbol changes for a commit, symbol changes for a commit, and structural symbols affected by a commit. The endpoint only answers questions about the explicitly supplied graph; it does not retrieve GitHub data or discover additional files.
 
 ## GitHub repository metadata flow
 

@@ -21,3 +21,7 @@ The repository lookup calls GitHub's public `repos/{owner}/{repository}` endpoin
 ## Ignoring `node_modules` in Git
 
 `node_modules/` is ignored by Git because it is generated from the dependency manifests and lockfile during installation. Tracking it would add a large, platform-dependent dependency tree to source control; `package.json` and `package-lock.json` define the dependencies needed to reproduce it.
+
+## Querying supplied graphs without persistence
+
+Repository graph queries operate on a graph supplied in the request rather than introducing storage or a graph identifier. This preserves the current bounded, request-scoped architecture and makes the query layer a pure read-only projection over existing node and edge semantics. Queries are direct only; they do not crawl repositories, resolve additional modules, or traverse dependencies transitively.
