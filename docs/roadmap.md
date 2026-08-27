@@ -102,6 +102,13 @@ This roadmap records only the capabilities currently present in the repository.
 - Query results preserve graph insertion order, deduplicate node IDs, and return empty results for unknown entities.
 - Querying does not mutate, persist, expand, or semantically reinterpret the existing graph.
 
+### Milestone 14.5: Optional GitHub authentication and rate-limit handling
+
+- GitHub requests optionally use `GITHUB_TOKEN` as a Bearer token.
+- Requests without a token retain unauthenticated public-API behavior.
+- Rate-limit responses are returned as controlled HTTP `429` errors without automatic retries.
+- Local environment guidance and secret-file protections are documented.
+
 ## Next milestone
 
 ### Build on the in-memory temporal repository graph

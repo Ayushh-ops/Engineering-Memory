@@ -18,6 +18,10 @@ The GitHub integration uses the global `fetch` API supplied by Node.js. Axios is
 
 The repository lookup calls GitHub's public `repos/{owner}/{repository}` endpoint without an authorization header. The first version therefore supports publicly accessible repository metadata and does not require token configuration or credential storage.
 
+## Optional GitHub authentication without automatic retries
+
+GitHub authentication is opt-in through the `GITHUB_TOKEN` process environment variable. A shared request-options helper adds a Bearer authorization header only when a non-empty token is present, preserving unauthenticated behavior otherwise. Rate-limit responses are surfaced as controlled errors rather than triggering automatic retries, avoiding request amplification and keeping the service's behavior predictable. Tokens are not returned, logged, or included in error messages.
+
 ## Ignoring `node_modules` in Git
 
 `node_modules/` is ignored by Git because it is generated from the dependency manifests and lockfile during installation. Tracking it would add a large, platform-dependent dependency tree to source control; `package.json` and `package-lock.json` define the dependencies needed to reproduce it.

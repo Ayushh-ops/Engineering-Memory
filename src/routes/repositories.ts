@@ -18,6 +18,10 @@ import {
     isRepositoryGraphQuery,
     queryRepositoryGraph
 } from "../graph/repository-query";
+import {
+    getGitHubRateLimitError,
+    getGitHubRequestOptions
+} from "../github/client";
 
 interface GitHubRepository {
     name: string;
@@ -73,6 +77,7 @@ type HistoricalFileResult =
     | { status: "success"; content: string }
     | { status: "not-found" }
     | { status: "not-file" }
+    | { status: "rate-limit" }
     | { status: "api-failure" };
 
 const router = Router();
@@ -114,11 +119,15 @@ async function retrieveHistoricalFileContent(
     const encodedPath = path.split("/").map(encodeURIComponent).join("/");
     const githubResponse = await fetch(
         `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
-        { headers: { Accept: "application/vnd.github+json" } }
+        getGitHubRequestOptions()
     );
 
     if (githubResponse.status === 404) {
         return { status: "not-found" };
+    }
+
+    if (getGitHubRateLimitError(githubResponse)) {
+        return { status: "rate-limit" };
     }
 
     if (!githubResponse.ok) {
@@ -149,11 +158,16 @@ router.post("/repositories", async (req: Request, res: Response) => {
     try {
         const githubResponse = await fetch(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}`,
-            { headers: { Accept: "application/vnd.github+json" } }
+            getGitHubRequestOptions()
         );
 
         if (githubResponse.status === 404) {
             return res.status(404).json({ error: "GitHub repository not found." });
+        }
+
+        const rateLimitError = getGitHubRateLimitError(githubResponse);
+        if (rateLimitError) {
+            return res.status(429).json({ error: rateLimitError });
         }
 
         if (!githubResponse.ok) {
@@ -189,11 +203,16 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
     try {
         const githubResponse = await fetch(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits?per_page=10`,
-            { headers: { Accept: "application/vnd.github+json" } }
+            getGitHubRequestOptions()
         );
 
         if (githubResponse.status === 404) {
             return res.status(404).json({ error: "GitHub repository not found." });
+        }
+
+        const rateLimitError = getGitHubRateLimitError(githubResponse);
+        if (rateLimitError) {
+            return res.status(429).json({ error: rateLimitError });
         }
 
         if (!githubResponse.ok) {
@@ -206,8 +225,13 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             githubCommits.map(async (commit) => {
                 const commitDetailsResponse = await fetch(
                     `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(commit.sha)}`,
-                    { headers: { Accept: "application/vnd.github+json" } }
+                    getGitHubRequestOptions()
                 );
+
+                const rateLimitError = getGitHubRateLimitError(commitDetailsResponse);
+                if (rateLimitError) {
+                    throw new Error(rateLimitError);
+                }
 
                 if (!commitDetailsResponse.ok) {
                     throw new Error("GitHub commit details request failed.");
@@ -240,6 +264,10 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             return res.status(502).json({ error: "GitHub API request failed." });
         }
 
+        if (error instanceof Error && error.message.startsWith("GitHub API rate limit exceeded.")) {
+            return res.status(429).json({ error: error.message });
+        }
+
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });
@@ -268,6 +296,10 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
 
         if (result.status === "not-found") {
             return res.status(404).json({ error: "GitHub repository or file not found." });
+        }
+
+        if (result.status === "rate-limit") {
+            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
         }
 
         if (result.status === "api-failure") {
@@ -313,6 +345,10 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
 
         if (result.status === "not-found") {
             return res.status(404).json({ error: "GitHub repository or file not found." });
+        }
+
+        if (result.status === "rate-limit") {
+            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
         }
 
         if (result.status === "api-failure") {
@@ -369,6 +405,10 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
         for (const result of results) {
             if (result.status === "not-found") {
                 return res.status(404).json({ error: "GitHub repository or file not found." });
+            }
+
+            if (result.status === "rate-limit") {
+                return res.status(429).json({ error: "GitHub API rate limit exceeded." });
             }
 
             if (result.status === "api-failure") {
@@ -436,11 +476,16 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
     try {
         const commitResponse = await fetch(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits/${encodeURIComponent(sha)}`,
-            { headers: { Accept: "application/vnd.github+json" } }
+            getGitHubRequestOptions()
         );
 
         if (commitResponse.status === 404) {
             return res.status(404).json({ error: "GitHub repository or commit not found." });
+        }
+
+        const rateLimitError = getGitHubRateLimitError(commitResponse);
+        if (rateLimitError) {
+            return res.status(429).json({ error: rateLimitError });
         }
 
         if (!commitResponse.ok) {
@@ -470,6 +515,10 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
             for (const result of [parentResult, currentResult]) {
                 if (result.status === "api-failure") {
                     throw new Error("GitHub file request failed.");
+                }
+
+                if (result.status === "rate-limit") {
+                    throw new Error("GitHub API rate limit exceeded.");
                 }
 
                 if (result.status === "not-file") {
@@ -528,6 +577,10 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
 
         if (error instanceof Error && error.message === "GitHub file request failed.") {
             return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        if (error instanceof Error && error.message.startsWith("GitHub API rate limit exceeded.")) {
+            return res.status(429).json({ error: error.message });
         }
 
         return res.status(502).json({ error: "Unable to reach the GitHub API." });

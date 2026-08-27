@@ -75,6 +75,12 @@ The supported queries are related files, symbols in a file, imported files, call
 
 The current integration uses the public GitHub API without authentication. No repository metadata is stored locally.
 
+## GitHub request configuration and rate limits
+
+All GitHub requests use the request options from `src/github/client.ts`. The helper always supplies GitHub's JSON `Accept` header and adds `Authorization: Bearer <token>` only when the trimmed `GITHUB_TOKEN` environment variable is non-empty. Without that variable, requests retain unauthenticated public-API behavior. The application does not load `.env` files itself; the variable must be supplied by the process environment or a development environment manager.
+
+The helper identifies HTTP `429` responses and HTTP `403` responses with `x-ratelimit-remaining: 0` as rate-limit failures. Routes return HTTP `429` with a clear error and, when GitHub supplies a valid reset timestamp, its UTC retry time. No automatic retries are performed. Tokens and sensitive headers are not returned or included in errors.
+
 ## GitHub commit-history flow
 
 1. A client sends `POST /api/repositories/commits` with a JSON body containing `url`.
@@ -104,6 +110,7 @@ The current integration uses the public GitHub API without authentication. No re
 | `src/analyzers/typescript.ts` | TypeScript Compiler API source parsing, AST traversal, and focused analysis result shaping. |
 | `src/resolvers/relative-imports.ts` | Repository-level, supplied-path-only resolution of supported relative AST import relationships. |
 | `src/graph/repository-graph.ts` | Transformation of existing analysis, resolved imports, and caller-supplied commit history into an in-memory repository graph. |
+| `src/github/client.ts` | Shared GitHub request headers and rate-limit response classification. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |
 | `.gitignore` | Excludes dependency installation, compiled output, and environment files from Git. |

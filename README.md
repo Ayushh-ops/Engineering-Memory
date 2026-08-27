@@ -20,6 +20,16 @@ npm run dev
 
 The service listens on port `3000` by default. Set `PORT` to use a different port.
 
+### Optional GitHub authentication
+
+GitHub requests work without configuration and use the public unauthenticated API quota. For local development and repeated repository testing, set an optional Personal Access Token in the process environment:
+
+```text
+GITHUB_TOKEN=your-token-here
+```
+
+The service sends `Authorization: Bearer <token>` when `GITHUB_TOKEN` is non-empty. Authenticated requests receive GitHub's substantially higher API rate limit. Never commit a real token; `.env` files are ignored and [.env.example](.env.example) contains only a placeholder. The application does not load `.env` files automatically, so configure the variable through your shell, VS Code launch configuration, or another environment manager.
+
 ## API
 
 ### Health check
