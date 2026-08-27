@@ -109,8 +109,17 @@ This roadmap records only the capabilities currently present in the repository.
 - Rate-limit responses are returned as controlled HTTP `429` errors without automatic retries.
 - Local environment guidance and secret-file protections are documented.
 
-## Next milestone
+## Completed milestone
 
-### Build on the in-memory temporal repository graph
+### Milestone 15: Deterministic graph context assembly
+
+- A pure context assembler accepts an existing `RepositoryGraph` and a typed file, symbol, or commit target.
+- It reuses existing direct graph-query semantics and returns bounded `files`, `symbols`, `imports`, `callers`, `commits`, and `symbolChanges` sections.
+- Context traversal is strictly one-hop/direct, deterministic, and controlled by configurable limits with enforced maxima.
+- The additive `/api/repositories/graph/context` endpoint assembles context from a caller-supplied graph and performs no GitHub requests.
+- Removed symbols remain represented only by historical `symbol-change` events.
+- No LLM, embeddings, persistence, vector search, or automatic repository discovery is introduced.
+
+### Future work
 
 Future milestones can build on the in-memory graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, line-level or symbol-level history, or semantic change explanations.

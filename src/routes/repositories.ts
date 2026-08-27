@@ -19,6 +19,10 @@ import {
     queryRepositoryGraph
 } from "../graph/repository-query";
 import {
+    assembleRepositoryContext,
+    isRepositoryContextRequest
+} from "../graph/repository-context";
+import {
     getGitHubRateLimitError,
     getGitHubRequestOptions
 } from "../github/client";
@@ -596,6 +600,24 @@ router.post("/repositories/graph/query", (req: Request, res: Response) => {
     }
 
     return res.status(200).json({ query, results: queryRepositoryGraph(graph, query) });
+});
+
+router.post("/repositories/graph/context", (req: Request, res: Response) => {
+    const graph = req.body?.graph;
+    const request = req.body?.request;
+
+    if (!isRepositoryGraph(graph) || !isRepositoryContextRequest(request)) {
+        return res.status(400).json({ error: "A valid graph and context request are required." });
+    }
+
+    const result = assembleRepositoryContext(graph, request);
+    if (result.status === "missing") {
+        return res.status(400).json({ error: "The requested context target was not found." });
+    }
+    if (result.status === "ambiguous") {
+        return res.status(400).json({ error: "The requested context target is ambiguous." });
+    }
+    return res.status(200).json(result.context);
 });
 
 export default router;

@@ -10,6 +10,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
 - `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
+- `POST /api/repositories/graph/context` assembles bounded, deterministic context for a file, symbol, or commit from a caller-supplied graph.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -146,6 +147,25 @@ Content-Type: application/json
 ```
 
 Supported query types are `related-files`, `file-symbols`, `file-imports`, `symbol-callers`, `commit-changes`, `commit-symbol-changes`, and `affected-symbols`. The response contains the echoed `query` and `{ files, symbols, commits, symbolChanges }`. Results are direct relationships only, preserve graph insertion order, and deduplicate repeated node IDs. Unknown entities return empty result arrays.
+
+### Repository graph context
+
+`POST /api/repositories/graph/context` accepts a graph returned by a repository analysis endpoint and assembles one-hop context without making GitHub requests:
+
+```http
+POST /api/repositories/graph/context
+Content-Type: application/json
+
+{
+  "graph": { "nodes": [], "edges": [] },
+  "request": {
+    "target": { "type": "file", "path": "src/auth.ts" },
+    "limits": { "maxFiles": 5, "maxSymbols": 20 }
+  }
+}
+```
+
+Targets are `file`, `symbol` (with `class`, `function`, or `method` identity), and `commit`. The response contains `target`, `files`, `symbols`, `imports`, `callers`, `commits`, and `symbolChanges`. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes; hard maxima are 50, 200, 100, 50, and 200 respectively. Results preserve graph insertion order and are truncated after deduplication. Removed symbols appear only as `symbol-change` nodes and are never fabricated as structural symbols. Missing or ambiguous targets return `400`.
 
 ## Documentation
 

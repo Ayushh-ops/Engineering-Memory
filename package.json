@@ -10,6 +10,7 @@
     "test:graph": "npm run build && node dist/graph/repository-graph.test.js",
     "test:history": "npm run build && node dist/analyzers/typescript-history.test.js",
     "test:query": "npm run build && node dist/graph/repository-query.test.js",
+    "test:context": "npm run build && node dist/graph/repository-context.test.js",
     "test:github": "npm run build && node dist/github/client.test.js"
   },
   "keywords": [],

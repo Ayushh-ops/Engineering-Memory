@@ -18,6 +18,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories/analyze` | `POST` | Retrieves and analyzes up to 20 supplied files at one supplied SHA, returning one structured result per path, resolved relative-import links, and an in-memory structural graph. |
 | `/api/repositories/analyze-history` | `POST` | Retrieves a commit and its first-parent comparison for up to 20 supplied files, returning structural TypeScript symbol changes and an additive historical graph. |
 | `/api/repositories/graph/query` | `POST` | Executes a validated, read-only query against a caller-supplied in-memory repository graph. |
+| `/api/repositories/graph/context` | `POST` | Assembles bounded, deterministic one-hop context for a target in a caller-supplied graph. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -63,6 +64,14 @@ The historical graph extends this model with `symbol-change` nodes. Each node re
 4. Results are returned in graph node order, with duplicate node IDs removed after their first occurrence. Unknown files, symbols, and commits return empty arrays.
 
 The supported queries are related files, symbols in a file, imported files, callers of a symbol, files and symbol changes for a commit, symbol changes for a commit, and structural symbols affected by a commit. The endpoint only answers questions about the explicitly supplied graph; it does not retrieve GitHub data or discover additional files.
+
+## Repository graph context assembly
+
+`src/graph/repository-context.ts` is a pure projection over an existing `RepositoryGraph`. It reuses `queryRepositoryGraph` for file symbols, direct imports, symbol callers, commit changes, and affected symbols. It adds no node or edge types and does not change graph identifiers or query behavior.
+
+The context endpoint supports file, symbol, and commit targets. File context includes the target and directly imported files, symbols in the target file, direct callers, directly changing commits, and same-file symbol changes. Symbol context includes its containing file, the target symbol, direct callers, directly changing commits, and symbol changes in that file. Commit context includes the commit, directly changed known files, affected structural symbols, and directly changed symbol-change events. Imports are limited to edges originating from included files.
+
+Traversal is strictly one-hop/direct. Each result section is deduplicated in graph insertion order and truncated by independent limits. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes. Maximums are 50 files, 200 symbols, 100 callers, 50 commits, and 200 symbol changes. Removed symbols remain historical `symbol-change` events only; the assembler never creates structural nodes for them. The endpoint accepts the graph in the request and performs no GitHub access, persistence, crawling, or semantic ranking.
 
 ## GitHub repository metadata flow
 
@@ -110,6 +119,7 @@ The helper identifies HTTP `429` responses and HTTP `403` responses with `x-rate
 | `src/analyzers/typescript.ts` | TypeScript Compiler API source parsing, AST traversal, and focused analysis result shaping. |
 | `src/resolvers/relative-imports.ts` | Repository-level, supplied-path-only resolution of supported relative AST import relationships. |
 | `src/graph/repository-graph.ts` | Transformation of existing analysis, resolved imports, and caller-supplied commit history into an in-memory repository graph. |
+| `src/graph/repository-context.ts` | Pure, bounded, one-hop context assembly over an existing repository graph. |
 | `src/github/client.ts` | Shared GitHub request headers and rate-limit response classification. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |

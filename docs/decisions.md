@@ -29,3 +29,9 @@ GitHub authentication is opt-in through the `GITHUB_TOKEN` process environment v
 ## Querying supplied graphs without persistence
 
 Repository graph queries operate on a graph supplied in the request rather than introducing storage or a graph identifier. This preserves the current bounded, request-scoped architecture and makes the query layer a pure read-only projection over existing node and edge semantics. Queries are direct only; they do not crawl repositories, resolve additional modules, or traverse dependencies transitively.
+
+## Deterministic bounded context assembly
+
+Milestone 15 context assembly is a pure module over an existing `RepositoryGraph`. It composes the existing direct query functions instead of defining another graph-resolution model. It supports file, symbol, and commit targets and performs only fixed one-hop selection. Results preserve graph insertion order, deduplicate node IDs, and apply independent configurable limits with hard maximums. The additive context endpoint accepts the graph in the request and does not contact GitHub or introduce persistence, AI, embeddings, or vector search.
+
+Historical context uses existing commit and `symbol-change` nodes. Removed symbols are historical events only because the graph intentionally does not create structural nodes for removed declarations. Missing and ambiguous target identities are reported as client errors at the HTTP boundary.
