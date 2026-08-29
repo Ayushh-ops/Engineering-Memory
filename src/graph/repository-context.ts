@@ -192,10 +192,13 @@ export function assembleRepositoryContext(
             type: "file-imports",
             path: targetPath
         }).files];
-        symbols = limited(
-            queryRepositoryGraph(graph, { type: "file-symbols", path: targetPath }).symbols,
-            limits.maxSymbols
-        );
+
+        const fileSymbols = files.flatMap((file) => queryRepositoryGraph(graph, {
+            type: "file-symbols",
+            path: file.path
+        }).symbols);
+        symbols = limited(unique(fileSymbols), limits.maxSymbols);
+
         for (const symbol of symbols) {
             callers.push(...queryRepositoryGraph(graph, {
                 type: "symbol-callers",
