@@ -12,6 +12,8 @@ import {
     createOpenAIConfigFromEnvironment
 } from "./config";
 import { OpenAIProvider } from "./openai-provider";
+import { createLlmProviderFromEnvironment } from "./provider-factory";
+import { createAiRouter } from "../routes/ai";
 
 class FakeLlmProvider implements LlmProvider {
     public calls: LlmRequest[] = [];
@@ -166,6 +168,24 @@ async function main(): Promise<void> {
 
     const service = new AiAnswerService(fakeProvider);
 
+    const factoryProvider = createLlmProviderFromEnvironment({
+        LLM_PROVIDER: "openai",
+        OPENAI_API_KEY: "test-key",
+        OPENAI_MODEL: "gpt-4o-mini",
+        LLM_TIMEOUT_MS: "2000",
+        LLM_MAX_TOKENS: "200"
+    });
+
+    assert.equal(
+        factoryProvider instanceof OpenAIProvider,
+        true
+    );
+
+    assert.throws(
+        () => createLlmProviderFromEnvironment({ LLM_PROVIDER: "gemini" }),
+        /Unsupported LLM provider/
+    );
+
     const answer = await service.answer({
         repository: "example/repository",
         target: {
@@ -293,6 +313,61 @@ async function main(): Promise<void> {
             baseUrl: "https://api.openai.com/v1"
         }
     );
+
+    const aiRouter = createAiRouter(
+        new AiAnswerService(
+            new FakeLlmProvider({
+                status: "ok",
+                answer: "This file defines auth.",
+                citations: [{ type: "file", path: "src/auth.ts" }],
+                confidence: "medium"
+            })
+        )
+    );
+
+    const app = (await import("express")).default();
+    app.use((await import("express")).json());
+    app.use("/api", aiRouter);
+
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const port = (server.address() as { port: number }).port;
+
+    const validResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "What does this file do?",
+            graph
+        })
+    });
+
+    assert.equal(validResponse.status, 200);
+    const validBody = await validResponse.json() as {
+        status: string;
+        answer: string;
+        citations: Array<{ path?: string }>;
+    };
+    assert.equal(validBody.status, "ok");
+    assert.equal(validBody.answer, "This file defines auth.");
+    assert.equal(validBody.citations.length, 1);
+
+    const invalidResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" }
+        })
+    });
+
+    assert.equal(invalidResponse.status, 400);
+    const invalidBody = await invalidResponse.json() as { error: string };
+    assert.match(invalidBody.error, /question/i);
+
+    server.close();
 
     const originalFetch = globalThis.fetch;
 

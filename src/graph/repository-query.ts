@@ -203,13 +203,17 @@ export function isRepositoryGraph(value: unknown): value is RepositoryGraph {
     return candidate.nodes.every((node) => {
         if (!node || typeof node !== "object") return false;
         const item = node as Record<string, unknown>;
-        if (typeof item.id !== "string" || item.id.length === 0 ||
-            typeof item.name !== "string" || typeof item.type !== "string") {
+        if (typeof item.id !== "string" || item.id.length === 0 || typeof item.type !== "string") {
             return false;
         }
 
+        if (item.type === "repository") {
+            return typeof item.name === "string" && item.name.length > 0;
+        }
+
         if (["file", "class", "function", "method", "symbol-change"].includes(item.type)) {
-            return typeof item.path === "string" && item.path.length > 0;
+            return typeof item.name === "string" && item.name.length > 0 &&
+                typeof item.path === "string" && item.path.length > 0;
         }
 
         if (item.type === "commit") {
@@ -219,7 +223,7 @@ export function isRepositoryGraph(value: unknown): value is RepositoryGraph {
                 typeof item.authorDate === "string";
         }
 
-        return item.type === "repository";
+        return false;
     }) && candidate.edges.every((edge) => {
         if (!edge || typeof edge !== "object") return false;
         const item = edge as { from?: unknown; to?: unknown; type?: unknown };
