@@ -5,15 +5,6 @@ import {
     isTypeScriptPath
 } from "../analyzers/typescript-history";
 import {
-    RepositoryFileAnalysis,
-    resolveRelativeImportRelationships
-} from "../resolvers/relative-imports";
-import {
-    buildRepositoryGraph,
-    RepositoryHistoricalChanges,
-    RepositoryHistoryCommit
-} from "../graph/repository-graph";
-import {
     isRepositoryGraph,
     isRepositoryGraphQuery,
     queryRepositoryGraph
@@ -26,6 +17,7 @@ import {
     getGitHubRateLimitError,
     getGitHubRequestOptions
 } from "../github/client";
+import { RepositoryAnalysisService } from "../services/repository-analysis-service";
 
 interface GitHubRepository {
     name: string;
@@ -85,6 +77,7 @@ type HistoricalFileResult =
     | { status: "api-failure" };
 
 const router = Router();
+const repositoryAnalysisService = new RepositoryAnalysisService();
 
 function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
     if (typeof value !== "string") {
@@ -363,12 +356,14 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
             return res.status(400).json({ error: "The requested path must refer to a file." });
         }
 
-        return res.status(200).json({
-            repository: `${owner}/${repository}`,
-            path,
-            sha,
-            analysis: analyzeTypeScript(result.content)
-        });
+        return res.status(200).json(
+            repositoryAnalysisService.analyzeFile(
+                { owner, repository },
+                sha,
+                path,
+                result.content
+            )
+        );
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
@@ -424,27 +419,24 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
             }
         }
 
-        const files: RepositoryFileAnalysis[] = results.map((result, index) => {
+        const repositoryFiles = results.map((result, index) => {
             if (result.status !== "success") {
                 throw new Error("Unexpected historical file result.");
             }
 
             return {
                 path: paths[index],
-                analysis: analyzeTypeScript(result.content)
+                content: result.content
             };
         });
 
-        const repositoryName = `${owner}/${repository}`;
-        const resolvedRelationships = resolveRelativeImportRelationships(files);
-
-        return res.status(200).json({
-            repository: repositoryName,
-            sha,
-            files,
-            resolvedRelationships,
-            graph: buildRepositoryGraph(repositoryName, files, resolvedRelationships)
-        });
+        return res.status(200).json(
+            repositoryAnalysisService.analyzeFiles(
+                { owner, repository },
+                sha,
+                repositoryFiles
+            )
+        );
     } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
@@ -505,7 +497,9 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
                     currentFile: {
                         path,
                         analysis: analyzeTypeScript("")
-                    }
+                    },
+                    parentContent: null,
+                    currentContent: null
                 };
             }
 
@@ -530,50 +524,49 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
                 }
             }
 
+            const parentContent = parentResult.status === "success" ? parentResult.content : null;
+            const currentContent = currentResult.status === "success" ? currentResult.content : null;
+
             return {
-                change: analyzeHistoricalTypeScriptChange(
-                    path,
-                    parentResult.status === "success" ? parentResult.content : null,
-                    currentResult.status === "success" ? currentResult.content : null
-                ),
+                change: analyzeHistoricalTypeScriptChange(path, parentContent, currentContent),
                 currentFile: {
                     path,
-                    analysis: currentResult.status === "success"
-                        ? analyzeTypeScript(currentResult.content)
+                    analysis: currentContent !== null
+                        ? analyzeTypeScript(currentContent)
                         : analyzeTypeScript("")
-                }
+                },
+                parentContent,
+                currentContent
             };
         }));
 
         const files = historicalResults.map((result) => result.change);
-        const currentFiles = historicalResults.map((result) => result.currentFile);
-        const repositoryName = `${owner}/${repository}`;
-        const historyCommit: RepositoryHistoryCommit = {
+        const historyCommit = {
             sha,
             message: commit.commit.message,
             authorName: commit.commit.author.name,
             authorDate: commit.commit.author.date,
             files: (commit.files ?? []).map((file) => ({ filename: file.filename }))
         };
-        const historicalChanges: RepositoryHistoricalChanges = {
+        const historicalChanges = {
             sha,
             files
         };
-        const resolvedRelationships = resolveRelativeImportRelationships(currentFiles);
 
-        return res.status(200).json({
-            repository: repositoryName,
-            sha,
-            parentSha,
-            files,
-            graph: buildRepositoryGraph(
-                repositoryName,
-                currentFiles,
-                resolvedRelationships,
+        return res.status(200).json(
+            repositoryAnalysisService.analyzeHistoricalFiles(
+                { owner, repository },
+                sha,
+                parentSha,
+                historicalResults.map((result) => ({
+                    path: result.currentFile.path,
+                    parentContent: result.parentContent,
+                    currentContent: result.currentContent
+                })),
                 [historyCommit],
                 historicalChanges
             )
-        });
+        );
     } catch (error) {
         if (error instanceof Error && error.message === "GitHub path is not a file.") {
             return res.status(400).json({ error: "The requested path must refer to a file." });
