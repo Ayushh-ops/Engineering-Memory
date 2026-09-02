@@ -1,7 +1,6 @@
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
 import { buildAiContext, type AiRepositoryContext } from "./context";
-import { buildPrompt } from "./prompt-builder";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 
 export interface AiAnswerRequest extends RepositoryContextRequest {
@@ -103,17 +102,6 @@ export class AiAnswerService {
                 missingData: ["question_requires_unavailable_repository_context"]
             };
         }
-
-        const prompt = buildPrompt({
-            repository: request.repository,
-            target: aiContext.target,
-            question: request.question,
-            facts: aiContext,
-            instructions: [
-                "Answer only from the supplied repository facts.",
-                "If the supplied facts do not support the question, explicitly say so."
-            ]
-        });
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
