@@ -14,6 +14,8 @@ import {
 import { OpenAIProvider } from "./openai-provider";
 import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter } from "../routes/ai";
+import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
+import type { AiAnswerResult } from "./answer-service";
 
 class FakeLlmProvider implements LlmProvider {
     public calls: LlmRequest[] = [];
@@ -314,15 +316,25 @@ async function main(): Promise<void> {
         }
     );
 
+    const routeAiService = new AiAnswerService(
+        new FakeLlmProvider({
+            status: "ok",
+            answer: "This file defines auth.",
+            citations: [{ type: "file", path: "src/auth.ts" }],
+            confidence: "medium"
+        })
+    );
+    const repositoryAnswer: AiAnswerResult = {
+        status: "ok",
+        answer: "Repository answer",
+        citations: [{ type: "file", path: "src/auth.ts" }],
+        confidence: "high"
+    };
     const aiRouter = createAiRouter(
-        new AiAnswerService(
-            new FakeLlmProvider({
-                status: "ok",
-                answer: "This file defines auth.",
-                citations: [{ type: "file", path: "src/auth.ts" }],
-                confidence: "medium"
-            })
-        )
+        routeAiService,
+        {
+            answer: async (_request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> => repositoryAnswer
+        }
     );
 
     const app = (await import("express")).default();
@@ -353,6 +365,36 @@ async function main(): Promise<void> {
     assert.equal(validBody.status, "ok");
     assert.equal(validBody.answer, "This file defines auth.");
     assert.equal(validBody.citations.length, 1);
+
+    const repositoryResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask-repository`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            url: "https://github.com/example/repository",
+            sha: "abc123",
+            paths: ["src/auth.ts"],
+            target: { type: "file", path: "src/auth.ts" },
+            question: "What does auth do?"
+        })
+    });
+
+    assert.equal(repositoryResponse.status, 200);
+    const repositoryBody = await repositoryResponse.json() as {
+        status: string;
+        answer: string;
+        citations: Array<{ path?: string }>;
+        confidence: string;
+        missingData: string[];
+        error: unknown;
+    };
+    assert.deepEqual(repositoryBody, {
+        status: "ok",
+        answer: "Repository answer",
+        citations: [{ type: "file", path: "src/auth.ts" }],
+        confidence: "high",
+        missingData: [],
+        error: null
+    });
 
     const invalidResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
         method: "POST",

@@ -79,7 +79,7 @@ type HistoricalFileResult =
 const router = Router();
 const repositoryAnalysisService = new RepositoryAnalysisService();
 
-function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
+export function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
     if (typeof value !== "string") {
         return null;
     }
