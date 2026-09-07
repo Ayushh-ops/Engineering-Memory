@@ -54,6 +54,34 @@ function getCandidatePaths(importingPath: string, moduleSpecifier: string): stri
     ];
 }
 
+export function getRelativeImportCandidatePaths(
+    files: RepositoryFileAnalysis[],
+    maxCandidates = 20
+): string[] {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+
+    for (const file of files) {
+        for (const relationship of file.analysis.relationships) {
+            if (
+                relationship.type !== "imports" ||
+                (!relationship.to.startsWith("./") && !relationship.to.startsWith("../"))
+            ) {
+                continue;
+            }
+
+            for (const candidate of getCandidatePaths(file.path, relationship.to)) {
+                if (seen.has(candidate)) continue;
+                seen.add(candidate);
+                candidates.push(candidate);
+                if (candidates.length >= maxCandidates) return candidates;
+            }
+        }
+    }
+
+    return candidates;
+}
+
 /**
  * Resolves only relative import declarations against the explicitly supplied
  * repository paths. This intentionally does not perform TypeScript module resolution.

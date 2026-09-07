@@ -3,7 +3,7 @@ import type { AiAnswerRequest, AiAnswerResult } from "../ai/answer-service";
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
 import { RepositoryAiOrchestrationService } from "./repository-ai-orchestration-service";
-import type { RepositoryFileInput } from "./repository-analysis-service";
+import { RepositoryAnalysisService, type RepositoryFileInput } from "./repository-analysis-service";
 
 const graph = { nodes: [], edges: [] } as RepositoryGraph;
 const answerResult: AiAnswerResult = {
@@ -50,6 +50,50 @@ class FakeAiService {
     }
 }
 
+class ImportFileClient {
+    public calls: string[][] = [];
+
+    async loadFiles(
+        _owner: string,
+        _repository: string,
+        paths: string[],
+        _sha: string
+    ): Promise<RepositoryFileInput[]> {
+        this.calls.push(paths);
+        const path = paths[0];
+        if (path === "src/auth.ts") {
+            return [{
+                path,
+                content: "import { formatUser } from './user'; export function auth() { return formatUser(); }"
+            }];
+        }
+        if (path === "src/user.ts") {
+            return [{
+                path,
+                content: "export function formatUser() { return 'user'; }"
+            }];
+        }
+        if (path === "src/shared.ts") {
+            return [{ path, content: "export const shared = true;" }];
+        }
+        throw new GitHubRepositoryFileError("not_found", "File not found.");
+    }
+}
+
+class RelatedExpansionService {
+    public readonly maxAdditionalFiles = 2;
+
+    selectImportCandidates(_files: unknown[], existingPaths: string[]): string[] {
+        return existingPaths.includes("src/auth.ts") && !existingPaths.includes("src/user.ts")
+            ? ["src/user.ts"]
+            : [];
+    }
+
+    selectRelatedFiles(_graph: RepositoryGraph, selectedPaths: string[]): string[] {
+        return selectedPaths.includes("src/user.ts") ? ["src/shared.ts"] : [];
+    }
+}
+
 async function main(): Promise<void> {
     const fileClient = new FakeFileClient();
     const analysisService = new FakeAnalysisService();
@@ -78,6 +122,34 @@ async function main(): Promise<void> {
     assert.strictEqual(aiService.calls[0]?.graph, graph);
     assert.equal(aiService.calls[0]?.repository, "example/repository");
     assert.equal(aiService.calls[0]?.question, "What does auth do?");
+
+    const expandingFileClient = new ImportFileClient();
+    const expandingAnalysisService = new RepositoryAnalysisService();
+    const expandingAiService = new FakeAiService();
+    const expandingService = new RepositoryAiOrchestrationService(
+        expandingFileClient,
+        expandingAnalysisService,
+        expandingAiService,
+        new RelatedExpansionService()
+    );
+
+    await expandingService.answer({
+        owner: "example",
+        repository: "repository",
+        sha: "abc123",
+        paths: ["src/auth.ts"],
+        target: { type: "file", path: "src/auth.ts" },
+        question: "What does auth do?"
+    });
+    assert.deepEqual(expandingFileClient.calls, [
+        ["src/auth.ts"],
+        ["src/user.ts"],
+        ["src/shared.ts"]
+    ]);
+    assert.ok(expandingAiService.calls[0]?.graph.nodes.some(
+        (node) => node.type === "file" && node.path === "src/shared.ts"
+    ));
+    assert.equal(expandingFileClient.calls.length, 3);
 
     const failingFileClient = new FakeFileClient();
     failingFileClient.failure = new GitHubRepositoryFileError("rate_limit", "GitHub API rate limit exceeded.");
