@@ -149,6 +149,9 @@ async function main(): Promise<void> {
     assert.ok(expandingAiService.calls[0]?.graph.nodes.some(
         (node) => node.type === "file" && node.path === "src/shared.ts"
     ));
+    assert.ok(expandingAiService.calls[0]?.evidence?.some(
+        (evidence) => evidence.path === "src/user.ts" && evidence.symbol.name === "formatUser"
+    ));
     assert.equal(expandingFileClient.calls.length, 3);
 
     const failingFileClient = new FakeFileClient();

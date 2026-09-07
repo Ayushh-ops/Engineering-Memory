@@ -2,12 +2,14 @@ import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
 import { buildAiContext, type AiRepositoryContext } from "./context";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
+import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 
 export interface AiAnswerRequest extends RepositoryContextRequest {
     repository: string;
     question: string;
     graph: RepositoryGraph;
     allowInsufficientContext?: boolean;
+    evidence?: RepositorySourceEvidence[];
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -77,7 +79,7 @@ export class AiAnswerService {
             };
         }
 
-        const aiContext = buildAiContext(result.context, request.repository);
+        const aiContext = buildAiContext(result.context, request.repository, request.evidence);
         const serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             return {

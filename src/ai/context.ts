@@ -1,4 +1,5 @@
 import type { RepositoryContext } from "../graph/repository-context";
+import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 
 export type AiTarget = {
     type: "file" | "symbol" | "commit";
@@ -44,6 +45,7 @@ export interface AiRepositoryContext {
     callers: AiSymbolContext[];
     commits: AiCommitContext[];
     symbolChanges: AiSymbolChangeContext[];
+    evidence?: RepositorySourceEvidence[];
 }
 
 function toTarget(context: RepositoryContext["target"]["request"]): AiTarget {
@@ -66,7 +68,11 @@ function decodeGraphFileId(id: string): string | null {
     return decodeURIComponent(id.slice("file:".length));
 }
 
-export function buildAiContext(context: RepositoryContext, repository: string): AiRepositoryContext {
+export function buildAiContext(
+    context: RepositoryContext,
+    repository: string,
+    evidence: RepositorySourceEvidence[] = []
+): AiRepositoryContext {
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
         const imports = context.imports
@@ -125,6 +131,7 @@ export function buildAiContext(context: RepositoryContext, repository: string): 
             .filter((edge) => edge.from.startsWith("src/") || edge.from.startsWith("lib/") || edge.from.startsWith("test/") || edge.from.startsWith("packages/") || edge.to.startsWith("src/") || edge.to.startsWith("lib/") || edge.to.startsWith("test/") || edge.to.startsWith("packages/")),
         callers,
         commits,
-        symbolChanges
+        symbolChanges,
+        ...(evidence.length > 0 ? { evidence } : {})
     };
 }

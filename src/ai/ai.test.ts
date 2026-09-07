@@ -225,6 +225,10 @@ async function main(): Promise<void> {
         fakeProvider.calls.length,
         1
     );
+    assert.equal(
+        "evidence" in (fakeProvider.calls[0]?.facts as Record<string, unknown>),
+        false
+    );
 
     const insufficient = await service.answer({
         repository: "example/repository",

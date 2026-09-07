@@ -4,6 +4,7 @@ import type { GitHubRepositoryFileClient } from "../github/repository-file-clien
 import type { RepositoryAnalysisService } from "./repository-analysis-service";
 import { RepositoryContextExpansionService } from "./repository-context-expansion-service";
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
+import { RepositorySourceEvidenceService } from "./repository-source-evidence-service";
 
 export interface RepositoryAiOrchestrationRequest {
     owner: string;
@@ -21,7 +22,8 @@ export class RepositoryAiOrchestrationService {
         private readonly fileClient: Pick<GitHubRepositoryFileClient, "loadFiles">,
         private readonly analysisService: Pick<RepositoryAnalysisService, "analyzeFiles">,
         private readonly aiService: Pick<AiAnswerService, "answer">,
-        private readonly expansionService: Pick<RepositoryContextExpansionService, "maxAdditionalFiles" | "selectRelatedFiles" | "selectImportCandidates"> = new RepositoryContextExpansionService()
+        private readonly expansionService: Pick<RepositoryContextExpansionService, "maxAdditionalFiles" | "selectRelatedFiles" | "selectImportCandidates"> = new RepositoryContextExpansionService(),
+        private readonly sourceEvidenceService: Pick<RepositorySourceEvidenceService, "select"> = new RepositorySourceEvidenceService()
     ) {}
 
     async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
@@ -95,7 +97,8 @@ export class RepositoryAiOrchestrationService {
             question: request.question,
             graph: finalAnalysis.graph,
             limits: request.limits,
-            allowInsufficientContext: request.allowInsufficientContext
+            allowInsufficientContext: request.allowInsufficientContext,
+            evidence: this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles)
         };
 
         return this.aiService.answer(aiRequest);

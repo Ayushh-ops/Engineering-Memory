@@ -29,6 +29,28 @@ export interface TypeScriptAnalysis {
     relationships: CodeRelationship[];
 }
 
+export type TypeScriptDeclarationType = "class" | "function" | "method";
+
+export interface TypeScriptDeclaration {
+    type: TypeScriptDeclarationType;
+    name: string;
+    startLine: number;
+    endLine: number;
+    source: string;
+}
+
+function createTypeScriptSourceFile(source: string, path: string): ts.SourceFile {
+    return ts.createSourceFile(
+        path,
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        path.toLowerCase().endsWith(".tsx")
+            ? ts.ScriptKind.TSX
+            : ts.ScriptKind.TS
+    );
+}
+
 function getParameterNames(parameters: ts.NodeArray<ts.ParameterDeclaration>, sourceFile: ts.SourceFile): string[] {
     return parameters.map((parameter) => parameter.name.getText(sourceFile));
 }
@@ -50,13 +72,7 @@ function getCallTarget(expression: ts.Expression, sourceFile: ts.SourceFile): st
 }
 
 export function analyzeTypeScript(source: string): TypeScriptAnalysis {
-    const sourceFile = ts.createSourceFile(
-        "input.ts",
-        source,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS
-    );
+    const sourceFile = createTypeScriptSourceFile(source, "input.ts");
 
     const analysis: TypeScriptAnalysis = {
         imports: [],
@@ -132,4 +148,49 @@ export function analyzeTypeScript(source: string): TypeScriptAnalysis {
     visit(sourceFile);
 
     return analysis;
+}
+
+/**
+ * Extracts declaration source evidence using the same TypeScript Compiler API
+ * as structural analysis. Callers must supply source that has already been
+ * fetched; this function never reads files or resolves modules.
+ */
+export function extractTypeScriptDeclarations(source: string, path: string): TypeScriptDeclaration[] {
+    const sourceFile = createTypeScriptSourceFile(source, path);
+    const declarations: TypeScriptDeclaration[] = [];
+
+    const add = (type: TypeScriptDeclarationType, name: string, node: ts.Node): void => {
+        const start = node.getStart(sourceFile);
+        const end = node.getEnd();
+        const startLine = sourceFile.getLineAndCharacterOfPosition(start).line + 1;
+        const endLine = sourceFile.getLineAndCharacterOfPosition(end).line + 1;
+        declarations.push({
+            type,
+            name,
+            startLine,
+            endLine,
+            source: source.slice(start, end)
+        });
+    };
+
+    const visit = (node: ts.Node): void => {
+        if (ts.isClassDeclaration(node) && node.name) {
+            add("class", node.name.text, node);
+            for (const member of node.members) {
+                if (ts.isMethodDeclaration(member) && member.name) {
+                    add("method", `${node.name.text}.${getDeclarationName(member.name, sourceFile)}`, member);
+                }
+            }
+            return;
+        }
+
+        if (ts.isFunctionDeclaration(node) && node.name) {
+            add("function", node.name.text, node);
+        }
+
+        ts.forEachChild(node, visit);
+    };
+
+    visit(sourceFile);
+    return declarations;
 }
