@@ -5,6 +5,7 @@ import type { RepositoryAnalysisService } from "./repository-analysis-service";
 import { RepositoryContextExpansionService } from "./repository-context-expansion-service";
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
 import { RepositorySourceEvidenceService } from "./repository-source-evidence-service";
+import { QuestionContextPlanner } from "./question-context-planner";
 
 export interface RepositoryAiOrchestrationRequest {
     owner: string;
@@ -23,7 +24,8 @@ export class RepositoryAiOrchestrationService {
         private readonly analysisService: Pick<RepositoryAnalysisService, "analyzeFiles">,
         private readonly aiService: Pick<AiAnswerService, "answer">,
         private readonly expansionService: Pick<RepositoryContextExpansionService, "maxAdditionalFiles" | "selectRelatedFiles" | "selectImportCandidates"> = new RepositoryContextExpansionService(),
-        private readonly sourceEvidenceService: Pick<RepositorySourceEvidenceService, "select"> = new RepositorySourceEvidenceService()
+        private readonly sourceEvidenceService: Pick<RepositorySourceEvidenceService, "select"> = new RepositorySourceEvidenceService(),
+        private readonly questionContextPlanner: Pick<QuestionContextPlanner, "plan"> = new QuestionContextPlanner()
     ) {}
 
     async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
@@ -45,16 +47,21 @@ export class RepositoryAiOrchestrationService {
         let additionalFileCount = 0;
         const maxAdditionalFiles = this.expansionService.maxAdditionalFiles;
         let relatedPaths: string[] = [];
+        const contextPlan = this.questionContextPlanner.plan(request.question, request.target);
 
         while (additionalFileCount < maxAdditionalFiles) {
             const importCandidatePaths = this.expansionService.selectImportCandidates(
                 finalAnalysis.files,
                 [...knownPaths, ...relatedPaths, ...attemptedPaths]
             );
-            const candidatePaths = [
-                ...relatedPaths.filter((path) => !knownPaths.has(path) && !attemptedPaths.has(path)),
-                ...importCandidatePaths
-            ];
+            const relatedCandidates = relatedPaths.filter((path) => !knownPaths.has(path) && !attemptedPaths.has(path));
+            const candidatePaths = contextPlan.prioritizedContextTypes.flatMap((contextType) =>
+                contextType === "related-files"
+                    ? relatedCandidates
+                    : contextType === "imports"
+                        ? importCandidatePaths
+                        : []
+            );
             if (candidatePaths.length === 0) break;
 
             let expanded = false;
