@@ -7,6 +7,7 @@ export type QuestionIntent =
     | "dependencies"
     | "history"
     | "related-files"
+    | "impact"
     | "general";
 
 export type QuestionContextType =
@@ -15,7 +16,8 @@ export type QuestionContextType =
     | "callees"
     | "imports"
     | "history"
-    | "related-files";
+    | "related-files"
+    | "impact";
 
 export interface QuestionContextPlan {
     intent: QuestionIntent;
@@ -37,6 +39,21 @@ const signals: Array<{
     weight: number;
     patterns: Array<string | RegExp>;
 }> = [
+    {
+        contexts: ["impact"],
+        weight: 5,
+        patterns: [
+            "if i remove this",
+            "what will be affected",
+            "what could be impacted",
+            "what should i check before refactoring",
+            "what should i review before changing",
+            "is it safe to remove",
+            "what could break if i remove",
+            "what would break if i remove",
+            /what could break if i remove/
+        ]
+    },
     {
         contexts: ["callers"],
         weight: 3,
@@ -158,7 +175,8 @@ const intentByContext: Record<QuestionContextType, QuestionIntent> = {
     callees: "callees",
     imports: "dependencies",
     history: "history",
-    "related-files": "related-files"
+    "related-files": "related-files",
+    impact: "impact"
 };
 
 function normalizeQuestion(question: string): string {
@@ -179,10 +197,11 @@ function scoreContexts(question: string): Map<QuestionContextType, number> {
 }
 
 function prioritize(scores: Map<QuestionContextType, number>): QuestionContextType[] {
-    return balancedPriority
+    const priority = balancedPriority
         .map((context, index) => ({ context, index, score: scores.get(context) ?? 0 }))
         .sort((left, right) => right.score - left.score || left.index - right.index)
         .map(({ context }) => context);
+    return (scores.get("impact") ?? 0) > 0 ? ["impact", ...priority] : priority;
 }
 
 function detectIntent(prioritizedContextTypes: QuestionContextType[], scores: Map<QuestionContextType, number>): QuestionIntent {

@@ -6,6 +6,7 @@ import { RepositoryContextExpansionService } from "./repository-context-expansio
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
 import { RepositorySourceEvidenceService } from "./repository-source-evidence-service";
 import { QuestionContextPlanner } from "./question-context-planner";
+import { ChangeImpactAnalysisService } from "./change-impact-analysis-service";
 
 export interface RepositoryAiOrchestrationRequest {
     owner: string;
@@ -25,7 +26,8 @@ export class RepositoryAiOrchestrationService {
         private readonly aiService: Pick<AiAnswerService, "answer">,
         private readonly expansionService: Pick<RepositoryContextExpansionService, "maxAdditionalFiles" | "selectRelatedFiles" | "selectImportCandidates"> = new RepositoryContextExpansionService(),
         private readonly sourceEvidenceService: Pick<RepositorySourceEvidenceService, "select"> = new RepositorySourceEvidenceService(),
-        private readonly questionContextPlanner: Pick<QuestionContextPlanner, "plan"> = new QuestionContextPlanner()
+        private readonly questionContextPlanner: Pick<QuestionContextPlanner, "plan"> = new QuestionContextPlanner(),
+        private readonly changeImpactAnalysisService: Pick<ChangeImpactAnalysisService, "analyze"> = new ChangeImpactAnalysisService()
     ) {}
 
     async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
@@ -98,6 +100,15 @@ export class RepositoryAiOrchestrationService {
 
             if (!expanded) break;
         }
+        const impactTarget = request.target.type === "symbol" || request.target.type === "file"
+            ? request.target
+            : null;
+        const impact = contextPlan.prioritizedContextTypes.includes("impact") && impactTarget
+            ? this.changeImpactAnalysisService.analyze(finalAnalysis.graph, impactTarget, undefined, analyzedFiles)
+            : undefined;
+        const evidence = impact && impact.sourceEvidence.length > 0
+            ? undefined
+            : this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles);
         const aiRequest: AiAnswerRequest = {
             repository: `${request.owner}/${request.repository}`,
             target: request.target,
@@ -105,7 +116,8 @@ export class RepositoryAiOrchestrationService {
             graph: finalAnalysis.graph,
             limits: request.limits,
             allowInsufficientContext: request.allowInsufficientContext,
-            evidence: this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles)
+            evidence,
+            impact
         };
 
         return this.aiService.answer(aiRequest);

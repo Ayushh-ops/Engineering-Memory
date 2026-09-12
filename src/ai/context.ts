@@ -1,5 +1,6 @@
 import type { RepositoryContext } from "../graph/repository-context";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
+import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 
 export type AiTarget = {
     type: "file" | "symbol" | "commit";
@@ -46,6 +47,7 @@ export interface AiRepositoryContext {
     commits: AiCommitContext[];
     symbolChanges: AiSymbolChangeContext[];
     evidence?: RepositorySourceEvidence[];
+    impact?: ChangeImpactAnalysisResult;
 }
 
 function toTarget(context: RepositoryContext["target"]["request"]): AiTarget {
@@ -71,7 +73,8 @@ function decodeGraphFileId(id: string): string | null {
 export function buildAiContext(
     context: RepositoryContext,
     repository: string,
-    evidence: RepositorySourceEvidence[] = []
+    evidence: RepositorySourceEvidence[] = [],
+    impact?: ChangeImpactAnalysisResult
 ): AiRepositoryContext {
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
@@ -132,6 +135,7 @@ export function buildAiContext(
         callers,
         commits,
         symbolChanges,
-        ...(evidence.length > 0 ? { evidence } : {})
+        ...(evidence.length > 0 ? { evidence } : {}),
+        ...(impact ? { impact } : {})
     };
 }

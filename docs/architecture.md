@@ -73,6 +73,16 @@ The context endpoint supports file, symbol, and commit targets. File context inc
 
 Traversal is strictly one-hop/direct. Each result section is deduplicated in graph insertion order and truncated by independent limits. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes. Maximums are 50 files, 200 symbols, 100 callers, 50 commits, and 200 symbol changes. Removed symbols remain historical `symbol-change` events only; the assembler never creates structural nodes for them. The endpoint accepts the graph in the request and performs no GitHub access, persistence, crawling, or semantic ranking.
 
+## Repository change-impact analysis
+
+`src/services/change-impact-analysis-service.ts` performs bounded, deterministic change-impact analysis over the existing in-memory `RepositoryGraph`. For symbol targets, it traverses incoming `calls` edges with breadth-first search and reports direct callers separately from transitive consumers. Traversal is cycle-safe; `maxDepth` and `maxResults` bound the analysis, and `truncated` indicates that configured bounds prevented complete traversal.
+
+For file targets, direct imports, reverse-import dependents, and related files remain separate relationship categories. Test consumers are identified heuristically from path conventions such as `*.test.ts`, `*.test.tsx`, `*.spec.ts`, `*.spec.tsx`, `test`, `tests`, and `__tests__`. This classification does not prove that a test exercises the target.
+
+Source evidence can be selected through the existing `src/services/repository-source-evidence-service.ts`. Evidence uses only already-supplied files and remains bounded. The service does not fetch files, enumerate repositories, execute code, or use an LLM. M24 is invoked in repository AI Q&A only when `QuestionContextPlanner` identifies an `impact` context, and its structured result is passed into the AI context alongside existing graph and source evidence.
+
+The results describe statically observed relationships and potential review candidates. They do not claim guaranteed breakage, safety of removal, complete usage discovery, or runtime impact.
+
 ## GitHub repository metadata flow
 
 1. A client sends `POST /api/repositories` with a JSON body containing `url`.
@@ -120,6 +130,10 @@ The helper identifies HTTP `429` responses and HTTP `403` responses with `x-rate
 | `src/resolvers/relative-imports.ts` | Repository-level, supplied-path-only resolution of supported relative AST import relationships. |
 | `src/graph/repository-graph.ts` | Transformation of existing analysis, resolved imports, and caller-supplied commit history into an in-memory repository graph. |
 | `src/graph/repository-context.ts` | Pure, bounded, one-hop context assembly over an existing repository graph. |
+| `src/services/change-impact-analysis-service.ts` | Bounded, deterministic symbol and file change-impact analysis and review-candidate selection over the existing graph. |
+| `src/services/question-context-planner.ts` | Question-aware prioritization of source, graph, history, and impact context types. |
+| `src/services/repository-ai-orchestration-service.ts` | Controlled repository file loading, analysis, context planning, M24 impact integration, and AI request composition. |
+| `src/services/repository-source-evidence-service.ts` | Bounded source-snippet selection from already-fetched files for graph and impact context. |
 | `src/github/client.ts` | Shared GitHub request headers and rate-limit response classification. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |

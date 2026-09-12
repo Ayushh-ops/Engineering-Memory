@@ -72,7 +72,8 @@ export class RepositorySourceEvidenceService {
     select(
         target: RepositoryContextTarget,
         graph: RepositoryGraph,
-        files: RepositoryFileInput[]
+        files: RepositoryFileInput[],
+        additionalSymbols: GraphSymbolNode[] = []
     ): RepositorySourceEvidence[] {
         const declarations = new Map<string, DeclarationMatch[]>();
 
@@ -133,6 +134,8 @@ export class RepositorySourceEvidenceService {
                 }
             }
         }
+
+        for (const symbol of additionalSymbols) add(resolve(symbol));
 
         const relatedPaths = new Set<string>();
         if (targetPath) {

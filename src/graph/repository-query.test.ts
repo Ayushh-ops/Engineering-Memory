@@ -43,6 +43,10 @@ assert.deepEqual(
     ["src/user.ts"]
 );
 assert.deepEqual(
+    queryRepositoryGraph(graph, { type: "file-dependents", path: "src/app.ts" }).files.map((file) => file.path),
+    ["src/other.ts"]
+);
+assert.deepEqual(
     queryRepositoryGraph(graph, {
         type: "symbol-callers",
         symbol: { type: "function", path: "src/user.ts", name: "format" }
@@ -71,6 +75,7 @@ for (const query of [
     { type: "related-files", path: "missing.ts" } as const,
     { type: "file-symbols", path: "missing.ts" } as const,
     { type: "file-imports", path: "missing.ts" } as const,
+    { type: "file-dependents", path: "missing.ts" } as const,
     { type: "symbol-callers", symbol: { type: "function", path: "missing.ts", name: "missing" } } as const,
     { type: "commit-changes", sha: "missing" } as const,
     { type: "commit-symbol-changes", sha: "missing" } as const,

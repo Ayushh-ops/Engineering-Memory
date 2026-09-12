@@ -11,6 +11,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
 - `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
 - `POST /api/repositories/graph/context` assembles bounded, deterministic context for a file, symbol, or commit from a caller-supplied graph.
+- `POST /api/ai/ask-repository` provides repository context, deterministic graph analysis, bounded source evidence, question-aware context planning, and optional change-impact analysis.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -166,6 +167,12 @@ Content-Type: application/json
 ```
 
 Targets are `file`, `symbol` (with `class`, `function`, or `method` identity), and `commit`. The response contains `target`, `files`, `symbols`, `imports`, `callers`, `commits`, and `symbolChanges`. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes; hard maxima are 50, 200, 100, 50, and 200 respectively. Results preserve graph insertion order and are truncated after deduplication. Removed symbols appear only as `symbol-change` nodes and are never fabricated as structural symbols. Missing or ambiguous targets return `400`.
+
+### Repository AI Q&A
+
+`POST /api/ai/ask-repository` accepts a repository, commit SHA, selected file paths, target, and natural-language question. The orchestration analyzes the supplied files, builds the structural graph, plans context from the question, and provides bounded graph and source evidence to the configured LLM provider.
+
+Impact-shaped questions can additionally produce direct callers, transitive consumers, heuristic test consumers, file dependencies, review candidates, and bounded source evidence. These are potential impact and review signals based on the supplied graph. They do not prove that a change will break code or that a symbol is safe to remove. Analysis is bounded and uses only supplied repository files; cross-file semantic call resolution and runtime behavior are not inferred.
 
 ## Documentation
 

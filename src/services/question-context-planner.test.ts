@@ -13,12 +13,14 @@ function priorities(question: string): string[] {
 
 assert.deepEqual(priorities("Who are the callers of login()?"), ["callers", "source", "related-files", "imports", "callees", "history"]);
 assert.deepEqual(priorities("Where is the login function being used?"), ["callers", "source", "related-files", "imports", "callees", "history"]);
-assert.deepEqual(priorities("What would break if I remove this?"), ["callers", "imports", "callees", "source", "related-files", "history"]);
+assert.deepEqual(priorities("What would break if I remove this?"), ["impact", "callers", "imports", "callees", "source", "related-files", "history"]);
 assert.deepEqual(priorities("What does this function call?"), ["callees", "source", "related-files", "imports", "callers", "history"]);
 assert.deepEqual(priorities("How does this login code actually work?"), ["source", "related-files", "imports", "callers", "callees", "history"]);
 assert.deepEqual(priorities("Where does this database thing come from?"), ["imports", "source", "related-files", "callers", "callees", "history"]);
 assert.deepEqual(priorities("Why was this code changed?"), ["history", "source", "related-files", "imports", "callers", "callees"]);
 assert.deepEqual(priorities("Which files are related to this?"), ["related-files", "source", "imports", "callers", "callees", "history"]);
+assert.deepEqual(priorities("What should I check before refactoring this?"), ["impact", "source", "related-files", "imports", "callers", "callees", "history"]);
+assert.deepEqual(priorities("Is it safe to remove this?"), ["impact", "source", "related-files", "imports", "callers", "callees", "history"]);
 
 const ambiguous = planner.plan("Tell me about this login code.", target);
 assert.equal(ambiguous.intent, "general");

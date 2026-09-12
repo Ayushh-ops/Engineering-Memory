@@ -15,6 +15,7 @@ export type RepositoryGraphQuery =
     | { type: "related-files"; path: string }
     | { type: "file-symbols"; path: string }
     | { type: "file-imports"; path: string }
+    | { type: "file-dependents"; path: string }
     | {
         type: "symbol-callers";
         symbol: {
@@ -106,6 +107,21 @@ function queryFileImports(graph: RepositoryGraph, path: string): RepositoryGraph
     ) };
 }
 
+function queryFileDependents(graph: RepositoryGraph, path: string): RepositoryGraphQueryResult {
+    const files = fileNodes(graph, path);
+    if (files.length === 0) return emptyResult();
+
+    const fileIds = new Set(files.map((file) => file.id));
+    const dependentIds = new Set<string>();
+    for (const edge of graph.edges) {
+        if (edge.type === "imports" && fileIds.has(edge.to)) dependentIds.add(edge.from);
+    }
+
+    return { ...emptyResult(), files: nodesByIds(graph.nodes, dependentIds).filter(
+        (node): node is FileGraphNode => node.type === "file"
+    ) };
+}
+
 function querySymbolCallers(
     graph: RepositoryGraph,
     symbol: Extract<RepositoryGraphQuery, { type: "symbol-callers" }>['symbol']
@@ -184,6 +200,8 @@ export function queryRepositoryGraph(
             return { ...emptyResult(), symbols: symbolNodes(graph, query.path) };
         case "file-imports":
             return queryFileImports(graph, query.path);
+        case "file-dependents":
+            return queryFileDependents(graph, query.path);
         case "symbol-callers":
             return querySymbolCallers(graph, query.symbol);
         case "commit-changes":
@@ -238,9 +256,9 @@ export function isRepositoryGraphQuery(value: unknown): value is RepositoryGraph
     const candidate = value as Record<string, unknown>;
     if (typeof candidate.type !== "string") return false;
 
-    if (["related-files", "file-symbols", "file-imports", "commit-changes", "commit-symbol-changes", "affected-symbols"].includes(candidate.type)) {
+    if (["related-files", "file-symbols", "file-imports", "file-dependents", "commit-changes", "commit-symbol-changes", "affected-symbols"].includes(candidate.type)) {
         return typeof candidate.path === "string"
-            ? ["related-files", "file-symbols", "file-imports"].includes(candidate.type) && candidate.path.length > 0
+            ? ["related-files", "file-symbols", "file-imports", "file-dependents"].includes(candidate.type) && candidate.path.length > 0
             : typeof candidate.sha === "string" && candidate.sha.length > 0;
     }
 

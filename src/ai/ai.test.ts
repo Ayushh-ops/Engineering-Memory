@@ -16,6 +16,7 @@ import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter } from "../routes/ai";
 import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
 import type { AiAnswerResult } from "./answer-service";
+import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 
 class FakeLlmProvider implements LlmProvider {
     public calls: LlmRequest[] = [];
@@ -91,6 +92,48 @@ async function main(): Promise<void> {
         contextResult.context,
         "example/repository"
     );
+
+    const impact: ChangeImpactAnalysisResult = {
+        target: { type: "symbol", path: "src/auth.ts", name: "auth" },
+        status: "ok",
+        bounds: { maxDepth: 3, maxResults: 10, truncated: true },
+        directCallers: [{
+            symbol: { type: "function", name: "caller", path: "src/caller.ts", id: "function:src%2Fcaller.ts:caller" },
+            relationship: "direct-caller",
+            evidence: "calls-edge"
+        }],
+        transitiveConsumers: [{
+            symbol: { type: "function", name: "root", path: "src/root.ts", id: "function:src%2Froot.ts:root" },
+            depth: 2,
+            relationship: "transitive-consumer",
+            evidence: "calls-edge"
+        }],
+        tests: [{
+            symbol: { type: "function", name: "authTest", path: "tests/auth.test.ts", id: "function:tests%2Fauth.test.ts:authTest" },
+            relationship: "test-consumer",
+            classification: "path-convention"
+        }],
+        relatedDependencies: [
+            { path: "src/user.ts", relationship: "direct-import", evidence: "imports-edge" },
+            { path: "src/consumer.ts", relationship: "reverse-import", evidence: "imports-edge" }
+        ],
+        reviewCandidates: [{
+            path: "src/caller.ts",
+            relationship: "direct-caller",
+            reason: "should-be-reviewed",
+            evidence: "calls-edge"
+        }],
+        sourceEvidence: [],
+        limitations: ["static-analysis-review-signal"]
+    };
+    const impactContext = buildAiContext(contextResult.context, "example/repository", [], impact);
+    assert.equal(impactContext.impact?.bounds.truncated, true);
+    assert.equal(impactContext.impact?.directCallers[0]?.relationship, "direct-caller");
+    assert.equal(impactContext.impact?.transitiveConsumers[0]?.depth, 2);
+    assert.equal(impactContext.impact?.tests[0]?.classification, "path-convention");
+    assert.equal(impactContext.impact?.relatedDependencies[1]?.relationship, "reverse-import");
+    assert.equal(impactContext.impact?.reviewCandidates[0]?.reason, "should-be-reviewed");
+    assert.deepEqual(impactContext.impact?.limitations, ["static-analysis-review-signal"]);
 
     assert.deepEqual(
         aiContext.target.type,
@@ -202,7 +245,8 @@ async function main(): Promise<void> {
             maxCallers: 20,
             maxCommits: 10,
             maxSymbolChanges: 40
-        }
+        },
+        impact
     });
 
     assert.equal(
@@ -224,6 +268,10 @@ async function main(): Promise<void> {
     assert.equal(
         fakeProvider.calls.length,
         1
+    );
+    assert.equal(
+        (fakeProvider.calls[0]?.facts as { impact?: ChangeImpactAnalysisResult }).impact?.bounds.truncated,
+        true
     );
     assert.equal(
         "evidence" in (fakeProvider.calls[0]?.facts as Record<string, unknown>),

@@ -3,6 +3,7 @@ import { assembleRepositoryContext, type RepositoryContextRequest } from "../gra
 import { buildAiContext, type AiRepositoryContext } from "./context";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
+import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 
 export interface AiAnswerRequest extends RepositoryContextRequest {
     repository: string;
@@ -10,6 +11,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     graph: RepositoryGraph;
     allowInsufficientContext?: boolean;
     evidence?: RepositorySourceEvidence[];
+    impact?: ChangeImpactAnalysisResult;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -79,7 +81,7 @@ export class AiAnswerService {
             };
         }
 
-        const aiContext = buildAiContext(result.context, request.repository, request.evidence);
+        const aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact);
         const serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             return {

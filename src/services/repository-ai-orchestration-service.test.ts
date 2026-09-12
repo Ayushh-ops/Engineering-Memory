@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import type { AiAnswerRequest, AiAnswerResult } from "../ai/answer-service";
 import type { RepositoryGraph } from "../graph/repository-graph";
+import type { RepositoryContextTarget } from "../graph/repository-context";
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
 import { RepositoryAiOrchestrationService } from "./repository-ai-orchestration-service";
 import { RepositoryAnalysisService, type RepositoryFileInput } from "./repository-analysis-service";
+import type { ChangeImpactAnalysisResult } from "./change-impact-analysis-service";
 
 const graph = { nodes: [], edges: [] } as RepositoryGraph;
 const answerResult: AiAnswerResult = {
@@ -46,6 +48,27 @@ class FakeAiService {
 
     async answer(request: AiAnswerRequest): Promise<AiAnswerResult> {
         this.calls.push(request);
+        return this.result;
+    }
+}
+
+class FakeChangeImpactAnalysisService {
+    public calls: Array<{ graph: RepositoryGraph; target: RepositoryContextTarget; files: RepositoryFileInput[] }> = [];
+    public result: ChangeImpactAnalysisResult = {
+        target: { type: "symbol", path: "src/auth.ts", name: "auth" },
+        status: "ok",
+        bounds: { maxDepth: 3, maxResults: 10, truncated: true },
+        directCallers: [],
+        transitiveConsumers: [],
+        tests: [],
+        relatedDependencies: [],
+        reviewCandidates: [],
+        sourceEvidence: [],
+        limitations: ["static-analysis-review-signal"]
+    };
+
+    analyze(graph: RepositoryGraph, target: RepositoryContextTarget, _limits: unknown, files: RepositoryFileInput[]): ChangeImpactAnalysisResult {
+        this.calls.push({ graph, target, files });
         return this.result;
     }
 }
@@ -98,7 +121,16 @@ async function main(): Promise<void> {
     const fileClient = new FakeFileClient();
     const analysisService = new FakeAnalysisService();
     const aiService = new FakeAiService();
-    const service = new RepositoryAiOrchestrationService(fileClient, analysisService, aiService);
+    const nonImpactService = new FakeChangeImpactAnalysisService();
+    const service = new RepositoryAiOrchestrationService(
+        fileClient,
+        analysisService,
+        aiService,
+        undefined,
+        undefined,
+        undefined,
+        nonImpactService
+    );
 
     const result = await service.answer({
         owner: "example",
@@ -122,6 +154,57 @@ async function main(): Promise<void> {
     assert.strictEqual(aiService.calls[0]?.graph, graph);
     assert.equal(aiService.calls[0]?.repository, "example/repository");
     assert.equal(aiService.calls[0]?.question, "What does auth do?");
+    assert.equal(nonImpactService.calls.length, 0);
+
+    const impactFileClient = new FakeFileClient();
+    const impactAnalysisService = new FakeAnalysisService();
+    const impactAiService = new FakeAiService();
+    const impactService = new FakeChangeImpactAnalysisService();
+    const impactOrchestration = new RepositoryAiOrchestrationService(
+        impactFileClient,
+        impactAnalysisService,
+        impactAiService,
+        undefined,
+        undefined,
+        undefined,
+        impactService
+    );
+    await impactOrchestration.answer({
+        owner: "example",
+        repository: "repository",
+        sha: "abc123",
+        paths: ["src/auth.ts"],
+        target: { type: "symbol", symbol: { type: "function", path: "src/auth.ts", name: "auth" } },
+        question: "What should I check before refactoring this?"
+    });
+    assert.equal(impactService.calls.length, 1);
+    assert.equal(impactService.calls[0]?.target.type, "symbol");
+    assert.strictEqual(impactAiService.calls[0]?.impact, impactService.result);
+    assert.deepEqual(impactAiService.calls[0]?.evidence, []);
+
+    impactService.result = { ...impactService.result, status: "ambiguous" };
+    await impactOrchestration.answer({
+        owner: "example",
+        repository: "repository",
+        sha: "abc123",
+        paths: ["src/auth.ts"],
+        target: { type: "symbol", symbol: { type: "function", path: "src/auth.ts", name: "auth" } },
+        question: "What will be affected if I change this?"
+    });
+    assert.equal(impactService.calls.length, 2);
+    assert.equal(impactAiService.calls[1]?.impact?.status, "ambiguous");
+
+    impactService.result = { ...impactService.result, status: "missing" };
+    await impactOrchestration.answer({
+        owner: "example",
+        repository: "repository",
+        sha: "abc123",
+        paths: ["src/auth.ts"],
+        target: { type: "symbol", symbol: { type: "function", path: "src/auth.ts", name: "auth" } },
+        question: "If I remove this function, what could break?"
+    });
+    assert.equal(impactService.calls.length, 3);
+    assert.equal(impactAiService.calls[2]?.impact?.status, "missing");
 
     const expandingFileClient = new ImportFileClient();
     const expandingAnalysisService = new RepositoryAnalysisService();
