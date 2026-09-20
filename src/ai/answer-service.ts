@@ -1,6 +1,7 @@
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
 import { buildAiContext, type AiRepositoryContext } from "./context";
+import { validateRepositoryContextConsistency } from "./consistency-validator";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
@@ -78,6 +79,25 @@ export class AiAnswerService {
                     message: "The requested context target was not found or is ambiguous."
                 },
                 missingData: [result.status === "missing" ? "target_missing" : "target_ambiguous"]
+            };
+        }
+
+        const consistency = validateRepositoryContextConsistency({
+            graph: request.graph,
+            evidence: request.evidence,
+            impact: request.impact
+        });
+        if (consistency.status === "invalid") {
+            return {
+                status: "error",
+                answer: "The assembled repository context contradicts the repository graph, so it was not sent to the AI provider.",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "invalid_graph",
+                    message: "Impact paths or source evidence do not match the repository graph."
+                },
+                missingData: consistency.missingData ?? ["inconsistent_context"]
             };
         }
 

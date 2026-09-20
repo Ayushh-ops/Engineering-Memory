@@ -12,7 +12,8 @@
     "test:query": "npm run build && node dist/graph/repository-query.test.js",
     "test:context": "npm run build && node dist/graph/repository-context.test.js",
     "test:github": "npm run build && node dist/github/client.test.js",
-    "test:ai": "npm run build && node dist/ai/ai.test.js"
+    "test:ai": "npm run build && node dist/ai/ai.test.js",
+    "test:consistency": "npm run build && node dist/ai/consistency-validator.test.js"
   },
   "keywords": [],
   "author": "",

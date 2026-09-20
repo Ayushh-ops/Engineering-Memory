@@ -93,6 +93,31 @@ async function main(): Promise<void> {
         "example/repository"
     );
 
+    // The impact fixture below cites a caller that is not part of the two
+    // analyzed files, so the graph is extended with the deterministic call edge
+    // the fixture references. This keeps the fixture consistent with the graph
+    // that the answer service validates before it contacts the LLM.
+    graph.nodes.push({
+        id: "function:src%2Fcaller.ts:caller",
+        type: "function",
+        name: "caller",
+        path: "src/caller.ts"
+    });
+    graph.edges.push({
+        id: "edge:calls:caller:auth",
+        from: "function:src%2Fcaller.ts:caller",
+        to: "function:src%2Fauth.ts:auth",
+        type: "calls",
+        callSites: [{
+            file: "src/caller.ts",
+            startLine: 1,
+            startColumn: 1,
+            endLine: 1,
+            endColumn: 7,
+            expression: "auth()"
+        }]
+    });
+
     const impact: ChangeImpactAnalysisResult = {
         target: { type: "symbol", path: "src/auth.ts", name: "auth" },
         targetNodeId: "function:src%2Fauth.ts:auth",
@@ -133,7 +158,7 @@ async function main(): Promise<void> {
                 relationshipId: "edge:calls:caller:auth",
                 from: "function:src%2Fcaller.ts:caller",
                 to: "function:src%2Fauth.ts:auth",
-                callSiteIds: ["edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()"],
+                callSiteIds: ["edge%3Acalls%3Acaller%3Aauth:src%2Fcaller.ts:1:1:1:7:auth()"],
                 type: "calls",
                 evidence: "available"
             }],
@@ -145,7 +170,7 @@ async function main(): Promise<void> {
             { id: "function:src%2Fcaller.ts:caller", type: "function", path: "src/caller.ts", name: "caller" }
         ],
         callSiteEvidence: [{
-            id: "edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()",
+            id: "edge%3Acalls%3Acaller%3Aauth:src%2Fcaller.ts:1:1:1:7:auth()",
             file: "src/caller.ts",
             startLine: 1,
             startColumn: 1,
@@ -310,6 +335,28 @@ async function main(): Promise<void> {
         "evidence" in (fakeProvider.calls[0]?.facts as Record<string, unknown>),
         false
     );
+
+    const inconsistentProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "This answer must never be produced.",
+        citations: [],
+        confidence: "low"
+    });
+    const inconsistentAnswer = await new AiAnswerService(inconsistentProvider).answer({
+        repository: "example/repository",
+        target: {
+            type: "file",
+            path: "src/auth.ts"
+        },
+        question: "What does auth do?",
+        graph,
+        impact: {
+            ...impact,
+            targetNodeId: "function:src%2Fghost.ts:ghost"
+        }
+    });
+    assert.equal(inconsistentAnswer.status, "error");
+    assert.equal(inconsistentProvider.calls.length, 0);
 
     const insufficient = await service.answer({
         repository: "example/repository",

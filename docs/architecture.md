@@ -85,6 +85,14 @@ Source evidence can be selected through the existing `src/services/repository-so
 
 The results describe statically observed relationships and potential review candidates. They do not claim guaranteed breakage, safety of removal, complete usage discovery, or runtime impact.
 
+## Evidence consistency validation
+
+`src/ai/answer-service.ts` validates every assembled AI context before it is sent to a provider. After `assembleRepositoryContext` succeeds and before `buildAiContext` runs, the service calls `validateRepositoryContextConsistency` from `src/ai/consistency-validator.ts` with the repository graph, the optional source evidence, and the optional change-impact result.
+
+The validator treats `RepositoryGraph` as the source of truth. It requires that `impact.targetNodeId`, every path node ID, every path relationship ID, every relationship `type`/`from`/`to`, every path `callSiteId`, and every `callSiteEvidence` entry - including its file, line, column, and expression fields - resolve to data that already exists in the supplied graph. Source evidence must resolve to a graph symbol at a graph file path. Impact call-site evidence must also be reachable through the impact path chain - `relationshipId` to graph edge to `edge.callSites` to derived `callSiteId` - so a real call site elsewhere in the graph cannot validate an impact citation. Legacy `calls` edges without an explicit ID are matched through the same deterministic synthesized relationship ID that the impact service derives from `type`, `from`, and `to`, so graphs without edge IDs remain valid.
+
+`impact.status === "missing"` and `impact.status === "ambiguous"` are existing domain outcomes, not contradictions, so the validator returns `ok` for them. Any deterministic contradiction returns `invalid` with stable, ordered failure codes. When the result is `invalid`, the answer service returns a controlled `invalid_graph` error carrying those codes in `missingData` and never calls the LLM provider. The validator is a pure function: it performs no I/O, no mutation of its inputs, no caching, no graph indexing, no embeddings, and no open-ended semantic resolution.
+
 ## GitHub repository metadata flow
 
 1. A client sends `POST /api/repositories` with a JSON body containing `url`.
@@ -136,6 +144,8 @@ The helper identifies HTTP `429` responses and HTTP `403` responses with `x-rate
 | `src/services/question-context-planner.ts` | Question-aware prioritization of source, graph, history, and impact context types. |
 | `src/services/repository-ai-orchestration-service.ts` | Controlled repository file loading, analysis, context planning, M24 impact integration, and AI request composition. |
 | `src/services/repository-source-evidence-service.ts` | Bounded source-snippet selection from already-fetched files for graph and impact context. |
+| `src/ai/answer-service.ts` | Repository context assembly, evidence consistency validation, and LLM answer composition. |
+| `src/ai/consistency-validator.ts` | Pure, deterministic validation of impact and source evidence against the repository graph before provider calls. |
 | `src/github/client.ts` | Shared GitHub request headers and rate-limit response classification. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |
