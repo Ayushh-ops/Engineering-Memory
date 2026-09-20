@@ -65,6 +65,7 @@ class FakeChangeImpactAnalysisService {
         reviewCandidates: [],
         sourceEvidence: [],
         paths: [],
+        callSiteEvidence: [],
         limitations: ["static-analysis-review-signal"]
     };
 

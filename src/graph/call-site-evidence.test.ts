@@ -80,6 +80,25 @@ assert.equal(impact.paths[0]?.classification, "direct-caller");
 assert.equal(impact.paths[0]?.relationships[0]?.relationshipId, callEdges[0]?.id);
 assert.equal(impact.paths[0]?.relationships[0]?.callSiteIds.length, 2);
 assert.ok(impact.paths[0]?.relationships[0]?.callSiteIds.every((id) => id.length > 0));
+assert.deepEqual(impact.callSiteEvidence.map((evidence) => evidence.id), impact.paths[0]?.relationships[0]?.callSiteIds.slice().sort());
+assert.deepEqual(impact.callSiteEvidence.map(({ id: _id, ...evidence }) => evidence), [
+    {
+        file: "src/order.ts",
+        startLine: 2,
+        startColumn: 5,
+        endLine: 2,
+        endColumn: 26,
+        expression: "calculateTotal(items)"
+    },
+    {
+        file: "src/order.ts",
+        startLine: 3,
+        startColumn: 5,
+        endLine: 3,
+        endColumn: 36,
+        expression: "calculateTotal(discountedItems)"
+    }
+]);
 
 const callers = buildRepositoryGraph("example/repository", [
     analyzed("src/a.ts", "function callerA() { target(); } function target() {}"),
@@ -167,12 +186,18 @@ assert.deepEqual(rootPath.relationships.map((relationship) => ({
     }
 ]);
 assert.ok(rootPath.relationships.every((relationship) => relationship.callSiteIds.length === 1));
+for (const relationship of rootPath.relationships) {
+    for (const evidenceId of relationship.callSiteIds) {
+        assert.ok(convergingImpact.callSiteEvidence.some((evidence) => evidence.id === evidenceId));
+    }
+}
 
 const convergingAgain = new ChangeImpactAnalysisService().analyze(converging, {
     type: "symbol",
     symbol: { type: "function", path: "src/converging.ts", name: "target" }
 });
 assert.equal(JSON.stringify(convergingImpact.paths), JSON.stringify(convergingAgain.paths));
+assert.equal(JSON.stringify(convergingImpact.callSiteEvidence), JSON.stringify(convergingAgain.callSiteEvidence));
 
 const boundedImpact = new ChangeImpactAnalysisService().analyze(converging, {
     type: "symbol",
@@ -205,6 +230,7 @@ const emptyEvidence = new ChangeImpactAnalysisService().analyze({
     symbol: { type: "function", path: "src/empty.ts", name: "target" }
 });
 assert.deepEqual(emptyEvidence.paths[0]?.relationships[0]?.callSiteIds, []);
+assert.deepEqual(emptyEvidence.callSiteEvidence, []);
 assert.ok(emptyEvidence.limitations.some((limitation) => limitation.includes("call-site evidence")));
 
 const legacyPath = new ChangeImpactAnalysisService().analyze({
@@ -222,6 +248,7 @@ const legacyPath = new ChangeImpactAnalysisService().analyze({
     symbol: { type: "function", path: "src/legacy.ts", name: "target" }
 });
 assert.equal(legacyPath.paths[0]?.relationships[0]?.callSiteIds.length, 0);
+assert.deepEqual(legacyPath.callSiteEvidence, []);
 assert.ok(legacyPath.limitations.some((limitation) => limitation.includes("call-site evidence")));
 
 const oneFileMultipleCallers = buildRepositoryGraph("example/repository", [

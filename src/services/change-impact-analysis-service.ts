@@ -16,6 +16,16 @@ export interface ChangeImpactPathRelationship {
     callSiteIds: string[];
 }
 
+export interface ChangeImpactCallSiteEvidence {
+    id: string;
+    file: string;
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+    expression: string;
+}
+
 export interface ChangeImpactPath {
     id: string;
     target: string;
@@ -79,6 +89,7 @@ export interface ChangeImpactAnalysisResult {
     reviewCandidates: ChangeImpactReviewCandidate[];
     sourceEvidence: RepositorySourceEvidence[];
     paths: ChangeImpactPath[];
+    callSiteEvidence: ChangeImpactCallSiteEvidence[];
     limitations: string[];
 }
 
@@ -142,6 +153,10 @@ function pathId(target: string, terminal: string): string {
     return `impact-path:${encodeURIComponent(target)}:${encodeURIComponent(terminal)}`;
 }
 
+function toCallSiteEvidence(id: string, callSite: CallSite): ChangeImpactCallSiteEvidence {
+    return { id, ...callSite };
+}
+
 /** Performs bounded, deterministic traversal of incoming symbol call edges. */
 export class ChangeImpactAnalysisService {
     constructor(private readonly sourceEvidenceService = new RepositorySourceEvidenceService()) {}
@@ -165,6 +180,7 @@ export class ChangeImpactAnalysisService {
             reviewCandidates: [] as ChangeImpactReviewCandidate[],
             sourceEvidence: [] as RepositorySourceEvidence[],
             paths: [] as ChangeImpactPath[],
+            callSiteEvidence: [] as ChangeImpactCallSiteEvidence[],
             limitations: [
                 "Results describe statically observed calls in the supplied graph.",
                 "A result is a potential impact or review candidate, not a claim that a change will break it.",
@@ -238,6 +254,7 @@ export class ChangeImpactAnalysisService {
         const result = { ...base, status: "ok" as const };
         let truncated = false;
         let missingRelationshipEvidence = false;
+        const callSiteEvidence = new Map<string, ChangeImpactCallSiteEvidence>();
 
         const incomingEdges = (nodeId: string): typeof graph.edges => graph.edges
             .filter((edge) => edge.type === "calls" && edge.to === nodeId)
@@ -271,7 +288,11 @@ export class ChangeImpactAnalysisService {
                         from: edge.from,
                         to: edge.to,
                         callSiteIds: edge.type === "calls"
-                            ? (edge.callSites ?? []).map((site) => callSiteId(id, site))
+                            ? (edge.callSites ?? []).map((site) => {
+                                const evidenceId = callSiteId(id, site);
+                                callSiteEvidence.set(evidenceId, toCallSiteEvidence(evidenceId, site));
+                                return evidenceId;
+                            })
                             : []
                     };
                 }),
@@ -316,6 +337,7 @@ export class ChangeImpactAnalysisService {
             left.relationships.map((relationship) => relationship.relationshipId).join("\u0000")
                 .localeCompare(right.relationships.map((relationship) => relationship.relationshipId).join("\u0000"))
         );
+            result.callSiteEvidence = [...callSiteEvidence.values()].sort((left, right) => left.id.localeCompare(right.id));
         if (missingRelationshipEvidence) {
             result.limitations.push("Some impact relationships do not include call-site evidence.");
         }

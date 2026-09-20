@@ -137,6 +137,15 @@ async function main(): Promise<void> {
             depth: 1,
             classification: "direct-caller"
         }],
+        callSiteEvidence: [{
+            id: "edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()",
+            file: "src/caller.ts",
+            startLine: 1,
+            startColumn: 1,
+            endLine: 1,
+            endColumn: 7,
+            expression: "auth()"
+        }],
         limitations: ["static-analysis-review-signal"]
     };
     const impactContext = buildAiContext(contextResult.context, "example/repository", [], impact);
@@ -148,6 +157,7 @@ async function main(): Promise<void> {
     assert.equal(impactContext.impact?.reviewCandidates[0]?.reason, "should-be-reviewed");
     assert.deepEqual(impactContext.impact?.limitations, ["static-analysis-review-signal"]);
     assert.deepEqual(impactContext.impact?.paths, impact.paths);
+    assert.deepEqual(impactContext.impact?.callSiteEvidence, impact.callSiteEvidence);
 
     assert.deepEqual(
         aiContext.target.type,
