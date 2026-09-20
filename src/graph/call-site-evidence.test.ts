@@ -66,6 +66,20 @@ assert.deepEqual(callEdges[0]?.callSites, [
         expression: "calculateTotal(discountedItems)"
     }
 ]);
+const impact = new ChangeImpactAnalysisService().analyze(graph, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/order.ts", name: "calculateTotal" }
+});
+assert.equal(impact.paths.length, 1);
+assert.deepEqual(impact.paths[0]?.nodes, [
+    "function:src%2Forder.ts:calculateTotal",
+    "function:src%2Forder.ts:saveOrder"
+]);
+assert.equal(impact.paths[0]?.depth, 1);
+assert.equal(impact.paths[0]?.classification, "direct-caller");
+assert.equal(impact.paths[0]?.relationships[0]?.relationshipId, callEdges[0]?.id);
+assert.equal(impact.paths[0]?.relationships[0]?.callSiteIds.length, 2);
+assert.ok(impact.paths[0]?.relationships[0]?.callSiteIds.every((id) => id.length > 0));
 
 const callers = buildRepositoryGraph("example/repository", [
     analyzed("src/a.ts", "function callerA() { target(); } function target() {}"),
@@ -107,6 +121,108 @@ assert.deepEqual(
     calls(callers).map((edge) => edge.id),
     calls(callersAgain).map((edge) => edge.id)
 );
+
+const converging = buildRepositoryGraph("example/repository", [
+    analyzed("src/converging.ts", [
+        "function target() {}",
+        "function branchA() { target(); }",
+        "function branchB() { target(); }",
+        "function root() { branchA(); branchB(); }"
+    ].join("\n"))
+], []);
+const convergingImpact = new ChangeImpactAnalysisService().analyze(converging, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/converging.ts", name: "target" }
+});
+assert.deepEqual(convergingImpact.paths.map((path) => path.nodes.map((node) => node.split(":").at(-1))), [
+    ["target", "branchA"],
+    ["target", "branchB"],
+    ["target", "branchA", "root"]
+]);
+assert.equal(convergingImpact.paths.filter((path) => path.nodes.at(-1)?.endsWith("root")).length, 1);
+const rootPath = convergingImpact.paths.find((path) => path.nodes.at(-1)?.endsWith("root"));
+assert.ok(rootPath);
+assert.deepEqual(rootPath.nodes, [
+    "function:src%2Fconverging.ts:target",
+    "function:src%2Fconverging.ts:branchA",
+    "function:src%2Fconverging.ts:root"
+]);
+assert.deepEqual(rootPath.relationships.map((relationship) => ({
+    relationshipId: relationship.relationshipId,
+    from: relationship.from,
+    to: relationship.to,
+    callSiteIds: relationship.callSiteIds
+})), [
+    {
+        relationshipId: calls(converging).find((edge) => edge.from.endsWith("branchA"))?.id,
+        from: "function:src%2Fconverging.ts:branchA",
+        to: "function:src%2Fconverging.ts:target",
+        callSiteIds: rootPath.relationships[0]?.callSiteIds
+    },
+    {
+        relationshipId: calls(converging).find((edge) => edge.from.endsWith("root"))?.id,
+        from: "function:src%2Fconverging.ts:root",
+        to: "function:src%2Fconverging.ts:branchA",
+        callSiteIds: rootPath.relationships[1]?.callSiteIds
+    }
+]);
+assert.ok(rootPath.relationships.every((relationship) => relationship.callSiteIds.length === 1));
+
+const convergingAgain = new ChangeImpactAnalysisService().analyze(converging, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/converging.ts", name: "target" }
+});
+assert.equal(JSON.stringify(convergingImpact.paths), JSON.stringify(convergingAgain.paths));
+
+const boundedImpact = new ChangeImpactAnalysisService().analyze(converging, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/converging.ts", name: "target" }
+}, { maxDepth: 1, maxResults: 10 });
+assert.deepEqual(boundedImpact.paths.map((path) => path.depth), [1, 1]);
+assert.equal(boundedImpact.bounds.truncated, true);
+const maxResultsImpact = new ChangeImpactAnalysisService().analyze(converging, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/converging.ts", name: "target" }
+}, { maxResults: 1 });
+assert.equal(maxResultsImpact.paths.length, 1);
+assert.equal(maxResultsImpact.directCallers.length + maxResultsImpact.transitiveConsumers.length, 1);
+assert.equal(maxResultsImpact.bounds.truncated, true);
+
+const emptyEvidence = new ChangeImpactAnalysisService().analyze({
+    nodes: [
+        { id: "function:empty-target", type: "function", name: "target", path: "src/empty.ts" },
+        { id: "function:empty-caller", type: "function", name: "caller", path: "src/empty.ts" }
+    ],
+    edges: [{
+        id: "edge:calls:function%3Aempty-caller:function%3Aempty-target",
+        from: "function:empty-caller",
+        to: "function:empty-target",
+        type: "calls",
+        callSites: []
+    }]
+}, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/empty.ts", name: "target" }
+});
+assert.deepEqual(emptyEvidence.paths[0]?.relationships[0]?.callSiteIds, []);
+assert.ok(emptyEvidence.limitations.some((limitation) => limitation.includes("call-site evidence")));
+
+const legacyPath = new ChangeImpactAnalysisService().analyze({
+    nodes: [
+        { id: "function:legacy-target", type: "function", name: "target", path: "src/legacy.ts" },
+        { id: "function:legacy-caller", type: "function", name: "caller", path: "src/legacy.ts" }
+    ],
+    edges: [{
+        from: "function:legacy-caller",
+        to: "function:legacy-target",
+        type: "calls"
+    }]
+}, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/legacy.ts", name: "target" }
+});
+assert.equal(legacyPath.paths[0]?.relationships[0]?.callSiteIds.length, 0);
+assert.ok(legacyPath.limitations.some((limitation) => limitation.includes("call-site evidence")));
 
 const oneFileMultipleCallers = buildRepositoryGraph("example/repository", [
     analyzed("src/callers.ts", "function callerA() { target(); } function callerB() { target(); } function target() {}")

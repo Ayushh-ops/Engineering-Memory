@@ -64,6 +64,7 @@ class FakeChangeImpactAnalysisService {
         relatedDependencies: [],
         reviewCandidates: [],
         sourceEvidence: [],
+        paths: [],
         limitations: ["static-analysis-review-signal"]
     };
 

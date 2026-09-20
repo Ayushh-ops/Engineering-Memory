@@ -7,6 +7,23 @@ import {
     type RepositorySourceEvidence
 } from "./repository-source-evidence-service";
 import type { RepositoryFileInput } from "./repository-analysis-service";
+import type { CallSite } from "../analyzers/typescript";
+
+export interface ChangeImpactPathRelationship {
+    relationshipId: string;
+    from: string;
+    to: string;
+    callSiteIds: string[];
+}
+
+export interface ChangeImpactPath {
+    id: string;
+    target: string;
+    nodes: string[];
+    relationships: ChangeImpactPathRelationship[];
+    depth: number;
+    classification: "direct-caller" | "transitive-consumer";
+}
 
 export interface ChangeImpactAnalysisLimits {
     maxDepth: number;
@@ -61,6 +78,7 @@ export interface ChangeImpactAnalysisResult {
     relatedDependencies: ChangeImpactDependencyResult[];
     reviewCandidates: ChangeImpactReviewCandidate[];
     sourceEvidence: RepositorySourceEvidence[];
+    paths: ChangeImpactPath[];
     limitations: string[];
 }
 
@@ -101,6 +119,29 @@ function emptyResults(): Pick<ChangeImpactAnalysisResult, "directCallers" | "tra
     return { directCallers: [], transitiveConsumers: [] };
 }
 
+function relationshipId(edge: { id?: string; type: string; from: string; to: string }): string {
+    return edge.id ?? `edge:${encodeURIComponent(edge.type)}:${encodeURIComponent(edge.from)}:${encodeURIComponent(edge.to)}`;
+}
+
+function callSiteId(
+    relationship: string,
+    callSite: CallSite
+): string {
+    return [
+        relationship,
+        callSite.file,
+        callSite.startLine,
+        callSite.startColumn,
+        callSite.endLine,
+        callSite.endColumn,
+        callSite.expression
+    ].map((value) => encodeURIComponent(String(value))).join(":");
+}
+
+function pathId(target: string, terminal: string): string {
+    return `impact-path:${encodeURIComponent(target)}:${encodeURIComponent(terminal)}`;
+}
+
 /** Performs bounded, deterministic traversal of incoming symbol call edges. */
 export class ChangeImpactAnalysisService {
     constructor(private readonly sourceEvidenceService = new RepositorySourceEvidenceService()) {}
@@ -123,6 +164,7 @@ export class ChangeImpactAnalysisService {
             relatedDependencies: [] as ChangeImpactDependencyResult[],
             reviewCandidates: [] as ChangeImpactReviewCandidate[],
             sourceEvidence: [] as RepositorySourceEvidence[],
+            paths: [] as ChangeImpactPath[],
             limitations: [
                 "Results describe statically observed calls in the supplied graph.",
                 "A result is a potential impact or review candidate, not a claim that a change will break it.",
@@ -192,16 +234,57 @@ export class ChangeImpactAnalysisService {
         const directCallerIds = new Set(directCallers.map((caller) => caller.id));
         const visited = new Set<string>([targetNode.id]);
         const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
+        const predecessors = new Map<string, { nodeId: string; edge: typeof graph.edges[number] }>();
         const result = { ...base, status: "ok" as const };
         let truncated = false;
+        let missingRelationshipEvidence = false;
+
+        const incomingEdges = (nodeId: string): typeof graph.edges => graph.edges
+            .filter((edge) => edge.type === "calls" && edge.to === nodeId)
+            .sort((left, right) => {
+                const leftKey = `${relationshipId(left)}\u0000${left.from}\u0000${left.to}`;
+                const rightKey = `${relationshipId(right)}\u0000${right.from}\u0000${right.to}`;
+                return leftKey.localeCompare(rightKey);
+            });
+
+        const reconstructPath = (terminalId: string, depth: number): ChangeImpactPath => {
+            const nodes = [terminalId];
+            const edges: Array<typeof graph.edges[number]> = [];
+            let currentId = terminalId;
+            while (currentId !== targetNode.id) {
+                const predecessor = predecessors.get(currentId);
+                if (!predecessor) break;
+                nodes.push(predecessor.nodeId);
+                edges.push(predecessor.edge);
+                currentId = predecessor.nodeId;
+            }
+            nodes.reverse();
+            edges.reverse();
+            return {
+                id: pathId(targetNode.id, terminalId),
+                target: targetNode.id,
+                nodes,
+                relationships: edges.map((edge) => {
+                    const id = relationshipId(edge);
+                    return {
+                        relationshipId: id,
+                        from: edge.from,
+                        to: edge.to,
+                        callSiteIds: edge.type === "calls"
+                            ? (edge.callSites ?? []).map((site) => callSiteId(id, site))
+                            : []
+                    };
+                }),
+                depth,
+                classification: depth === 1 ? "direct-caller" : "transitive-consumer"
+            };
+        };
 
         while (queue.length > 0) {
             const current = queue.shift();
             if (!current) break;
 
-            for (const edge of graph.edges) {
-                if (edge.type !== "calls" || edge.to !== current.id) continue;
-
+            for (const edge of incomingEdges(current.id)) {
                 const caller = symbolsById.get(edge.from);
                 if (!caller || visited.has(caller.id)) continue;
                 if (current.depth + 1 > limits.maxDepth || result.directCallers.length + result.transitiveConsumers.length >= limits.maxResults) {
@@ -211,6 +294,8 @@ export class ChangeImpactAnalysisService {
 
                 visited.add(caller.id);
                 const depth = current.depth + 1;
+                predecessors.set(caller.id, { nodeId: current.id, edge });
+                if (!edge.callSites || edge.callSites.length === 0) missingRelationshipEvidence = true;
                 const relationship: ChangeImpactSymbolResult = directCallerIds.has(caller.id)
                     ? { symbol: caller, relationship: "direct-caller", evidence: "calls-edge" }
                     : { symbol: caller, depth, relationship: "transitive-consumer", evidence: "calls-edge" };
@@ -219,11 +304,21 @@ export class ChangeImpactAnalysisService {
                 } else {
                     result.transitiveConsumers.push(relationship);
                 }
+                result.paths.push(reconstructPath(caller.id, depth));
                 queue.push({ id: caller.id, depth });
             }
         }
 
         result.bounds.truncated = truncated;
+        result.paths.sort((left, right) =>
+            left.depth - right.depth ||
+            left.nodes[left.nodes.length - 1].localeCompare(right.nodes[right.nodes.length - 1]) ||
+            left.relationships.map((relationship) => relationship.relationshipId).join("\u0000")
+                .localeCompare(right.relationships.map((relationship) => relationship.relationshipId).join("\u0000"))
+        );
+        if (missingRelationshipEvidence) {
+            result.limitations.push("Some impact relationships do not include call-site evidence.");
+        }
         const allCallers = [...result.directCallers, ...result.transitiveConsumers];
         result.tests = allCallers
             .filter((caller) => isTestPath(caller.symbol.path))

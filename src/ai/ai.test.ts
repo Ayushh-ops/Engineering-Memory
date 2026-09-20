@@ -124,6 +124,19 @@ async function main(): Promise<void> {
             evidence: "calls-edge"
         }],
         sourceEvidence: [],
+        paths: [{
+            id: "impact-path:target:caller",
+            target: "function:src%2Fauth.ts:auth",
+            nodes: ["function:src%2Fauth.ts:auth", "function:src%2Fcaller.ts:caller"],
+            relationships: [{
+                relationshipId: "edge:calls:caller:auth",
+                from: "function:src%2Fcaller.ts:caller",
+                to: "function:src%2Fauth.ts:auth",
+                callSiteIds: ["edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()"]
+            }],
+            depth: 1,
+            classification: "direct-caller"
+        }],
         limitations: ["static-analysis-review-signal"]
     };
     const impactContext = buildAiContext(contextResult.context, "example/repository", [], impact);
@@ -134,6 +147,7 @@ async function main(): Promise<void> {
     assert.equal(impactContext.impact?.relatedDependencies[1]?.relationship, "reverse-import");
     assert.equal(impactContext.impact?.reviewCandidates[0]?.reason, "should-be-reviewed");
     assert.deepEqual(impactContext.impact?.limitations, ["static-analysis-review-signal"]);
+    assert.deepEqual(impactContext.impact?.paths, impact.paths);
 
     assert.deepEqual(
         aiContext.target.type,
