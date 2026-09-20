@@ -19,6 +19,16 @@ export interface CodeRelationship {
     type: "imports" | "calls";
     from: string;
     to: string;
+    callSites?: CallSite[];
+}
+
+export interface CallSite {
+    file: string;
+    startLine: number;
+    startColumn: number;
+    endLine: number;
+    endColumn: number;
+    expression: string;
 }
 
 export interface TypeScriptAnalysis {
@@ -71,8 +81,8 @@ function getCallTarget(expression: ts.Expression, sourceFile: ts.SourceFile): st
     return null;
 }
 
-export function analyzeTypeScript(source: string): TypeScriptAnalysis {
-    const sourceFile = createTypeScriptSourceFile(source, "input.ts");
+export function analyzeTypeScript(source: string, path = "input.ts"): TypeScriptAnalysis {
+    const sourceFile = createTypeScriptSourceFile(source, path);
 
     const analysis: TypeScriptAnalysis = {
         imports: [],
@@ -123,10 +133,22 @@ export function analyzeTypeScript(source: string): TypeScriptAnalysis {
             const target = getCallTarget(node.expression, sourceFile);
 
             if (target) {
+                const start = node.getStart(sourceFile);
+                const end = node.getEnd();
+                const startPosition = sourceFile.getLineAndCharacterOfPosition(start);
+                const endPosition = sourceFile.getLineAndCharacterOfPosition(end);
                 analysis.relationships.push({
                     type: "calls",
                     from: containingCallable,
-                    to: target
+                    to: target,
+                    callSites: [{
+                        file: sourceFile.fileName,
+                        startLine: startPosition.line + 1,
+                        startColumn: startPosition.character + 1,
+                        endLine: endPosition.line + 1,
+                        endColumn: endPosition.character + 1,
+                        expression: node.getText(sourceFile)
+                    }]
                 });
             }
         }

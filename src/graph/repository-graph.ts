@@ -3,6 +3,7 @@ import type {
     HistoricalSymbolType,
     SymbolChangeType
 } from "../analyzers/typescript-history";
+import type { CallSite } from "../analyzers/typescript";
 import type { RepositoryFileAnalysis, ResolvedImportRelationship } from "../resolvers/relative-imports";
 
 export type GraphNodeType = "repository" | "file" | "class" | "function" | "method" | "commit" | "symbol-change";
@@ -63,9 +64,11 @@ export type GraphNode =
     | SymbolChangeGraphNode;
 
 export interface GraphEdge {
+    id?: string;
     from: string;
     to: string;
     type: GraphEdgeType;
+    callSites?: CallSite[];
 }
 
 export interface RepositoryGraph {
@@ -127,6 +130,10 @@ function symbolChangeId(
         .reduce((id, component) => `${id}:${component}`, "symbol-change");
 }
 
+function relationshipEdgeId(type: GraphEdgeType, from: string, to: string): string {
+    return `edge:${idComponent(type)}:${idComponent(from)}:${idComponent(to)}`;
+}
+
 /** Builds an in-memory graph from existing analysis and import-resolution output. */
 export function buildRepositoryGraph(
     repository: string,
@@ -138,7 +145,6 @@ export function buildRepositoryGraph(
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
     const nodeIds = new Set<string>();
-    const edgeKeys = new Set<string>();
     const fileSymbols = new Map<string, {
         classes: Map<string, string | null>;
         functions: Map<string, string | null>;
@@ -151,12 +157,18 @@ export function buildRepositoryGraph(
             nodes.push(node);
         }
     };
+    const edgesByKey = new Map<string, GraphEdge>();
     const addEdge = (edge: GraphEdge): void => {
         const key = `${edge.type}\u0000${edge.from}\u0000${edge.to}`;
-        if (!edgeKeys.has(key)) {
-            edgeKeys.add(key);
-            edges.push(edge);
+        const existing = edgesByKey.get(key);
+        if (existing) {
+            if (edge.type === "calls" && edge.callSites) {
+                existing.callSites = [...(existing.callSites ?? []), ...edge.callSites];
+            }
+            return;
         }
+        edgesByKey.set(key, edge);
+        edges.push(edge);
     };
 
     const rootId = repositoryId(repository);
@@ -282,7 +294,15 @@ export function buildRepositoryGraph(
             if (relationship.type !== "calls") continue;
             const from = symbols.functions.get(relationship.from) ?? symbols.methods.get(relationship.from);
             const to = symbols.functions.get(relationship.to) ?? symbols.methods.get(relationship.to);
-            if (from && to) addEdge({ from, to, type: "calls" });
+            if (from && to) {
+                addEdge({
+                    id: relationshipEdgeId("calls", from, to),
+                    from,
+                    to,
+                    type: "calls",
+                    callSites: relationship.callSites ?? []
+                });
+            }
         }
     }
 

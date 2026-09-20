@@ -66,7 +66,7 @@ export class RepositoryAnalysisService {
             repository: `${repository.owner}/${repository.repository}`,
             sha,
             path,
-            analysis: analyzeTypeScript(content)
+            analysis: analyzeTypeScript(content, path)
         };
     }
 
@@ -78,7 +78,7 @@ export class RepositoryAnalysisService {
         const repositoryName = `${repository.owner}/${repository.repository}`;
         const analyzedFiles: RepositoryFileAnalysis[] = files.map((file) => ({
             path: file.path,
-            analysis: analyzeTypeScript(file.content)
+            analysis: analyzeTypeScript(file.content, file.path)
         }));
         const resolvedRelationships = resolveRelativeImportRelationships(analyzedFiles);
 
@@ -115,7 +115,7 @@ export class RepositoryAnalysisService {
 
         const currentFiles: RepositoryFileAnalysis[] = comparisons.map((comparison) => ({
             path: comparison.path,
-            analysis: analyzeTypeScript(comparison.currentContent ?? "")
+            analysis: analyzeTypeScript(comparison.currentContent ?? "", comparison.path)
         }));
 
         const resolvedRelationships = resolveRelativeImportRelationships(currentFiles);
