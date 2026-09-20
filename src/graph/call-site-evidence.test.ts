@@ -77,7 +77,27 @@ assert.deepEqual(impact.paths[0]?.nodes, [
 ]);
 assert.equal(impact.paths[0]?.depth, 1);
 assert.equal(impact.paths[0]?.classification, "direct-caller");
+assert.equal(impact.targetNodeId, "function:src%2Forder.ts:calculateTotal");
+assert.deepEqual(impact.impactNodes, [
+    {
+        id: "function:src%2Forder.ts:calculateTotal",
+        type: "function",
+        path: "src/order.ts",
+        name: "calculateTotal"
+    },
+    {
+        id: "function:src%2Forder.ts:saveOrder",
+        type: "function",
+        path: "src/order.ts",
+        name: "saveOrder"
+    }
+]);
+for (const nodeId of impact.paths[0]?.nodes ?? []) {
+    assert.equal(impact.impactNodes.filter((node) => node.id === nodeId).length, 1);
+}
 assert.equal(impact.paths[0]?.relationships[0]?.relationshipId, callEdges[0]?.id);
+assert.equal(impact.paths[0]?.relationships[0]?.type, "calls");
+assert.equal(impact.paths[0]?.relationships[0]?.evidence, "available");
 assert.equal(impact.paths[0]?.relationships[0]?.callSiteIds.length, 2);
 assert.ok(impact.paths[0]?.relationships[0]?.callSiteIds.every((id) => id.length > 0));
 assert.deepEqual(impact.callSiteEvidence.map((evidence) => evidence.id), impact.paths[0]?.relationships[0]?.callSiteIds.slice().sort());
@@ -159,6 +179,13 @@ assert.deepEqual(convergingImpact.paths.map((path) => path.nodes.map((node) => n
     ["target", "branchA", "root"]
 ]);
 assert.equal(convergingImpact.paths.filter((path) => path.nodes.at(-1)?.endsWith("root")).length, 1);
+assert.deepEqual(convergingImpact.impactNodes.map((node) => node.id), [
+    "function:src%2Fconverging.ts:target",
+    "function:src%2Fconverging.ts:branchA",
+    "function:src%2Fconverging.ts:branchB",
+    "function:src%2Fconverging.ts:root"
+]);
+assert.equal(convergingImpact.impactNodes.length, new Set(convergingImpact.impactNodes.map((node) => node.id)).size);
 const rootPath = convergingImpact.paths.find((path) => path.nodes.at(-1)?.endsWith("root"));
 assert.ok(rootPath);
 assert.deepEqual(rootPath.nodes, [
@@ -170,19 +197,25 @@ assert.deepEqual(rootPath.relationships.map((relationship) => ({
     relationshipId: relationship.relationshipId,
     from: relationship.from,
     to: relationship.to,
-    callSiteIds: relationship.callSiteIds
+    callSiteIds: relationship.callSiteIds,
+    type: relationship.type,
+    evidence: relationship.evidence
 })), [
     {
         relationshipId: calls(converging).find((edge) => edge.from.endsWith("branchA"))?.id,
         from: "function:src%2Fconverging.ts:branchA",
         to: "function:src%2Fconverging.ts:target",
-        callSiteIds: rootPath.relationships[0]?.callSiteIds
+        callSiteIds: rootPath.relationships[0]?.callSiteIds,
+        type: "calls",
+        evidence: "available"
     },
     {
         relationshipId: calls(converging).find((edge) => edge.from.endsWith("root"))?.id,
         from: "function:src%2Fconverging.ts:root",
         to: "function:src%2Fconverging.ts:branchA",
-        callSiteIds: rootPath.relationships[1]?.callSiteIds
+        callSiteIds: rootPath.relationships[1]?.callSiteIds,
+        type: "calls",
+        evidence: "available"
     }
 ]);
 assert.ok(rootPath.relationships.every((relationship) => relationship.callSiteIds.length === 1));
@@ -198,6 +231,7 @@ const convergingAgain = new ChangeImpactAnalysisService().analyze(converging, {
 });
 assert.equal(JSON.stringify(convergingImpact.paths), JSON.stringify(convergingAgain.paths));
 assert.equal(JSON.stringify(convergingImpact.callSiteEvidence), JSON.stringify(convergingAgain.callSiteEvidence));
+assert.equal(JSON.stringify(convergingImpact.impactNodes), JSON.stringify(convergingAgain.impactNodes));
 
 const boundedImpact = new ChangeImpactAnalysisService().analyze(converging, {
     type: "symbol",
@@ -230,7 +264,13 @@ const emptyEvidence = new ChangeImpactAnalysisService().analyze({
     symbol: { type: "function", path: "src/empty.ts", name: "target" }
 });
 assert.deepEqual(emptyEvidence.paths[0]?.relationships[0]?.callSiteIds, []);
+assert.equal(emptyEvidence.paths[0]?.relationships[0]?.type, "calls");
+assert.equal(emptyEvidence.paths[0]?.relationships[0]?.evidence, "unavailable");
 assert.deepEqual(emptyEvidence.callSiteEvidence, []);
+assert.deepEqual(emptyEvidence.impactNodes.map((node) => node.id), [
+    "function:empty-target",
+    "function:empty-caller"
+]);
 assert.ok(emptyEvidence.limitations.some((limitation) => limitation.includes("call-site evidence")));
 
 const legacyPath = new ChangeImpactAnalysisService().analyze({
@@ -248,8 +288,40 @@ const legacyPath = new ChangeImpactAnalysisService().analyze({
     symbol: { type: "function", path: "src/legacy.ts", name: "target" }
 });
 assert.equal(legacyPath.paths[0]?.relationships[0]?.callSiteIds.length, 0);
+assert.equal(legacyPath.paths[0]?.relationships[0]?.type, "calls");
+assert.equal(legacyPath.paths[0]?.relationships[0]?.evidence, "unavailable");
 assert.deepEqual(legacyPath.callSiteEvidence, []);
 assert.ok(legacyPath.limitations.some((limitation) => limitation.includes("call-site evidence")));
+
+const missingTarget = new ChangeImpactAnalysisService().analyze({ nodes: [], edges: [] }, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/missing.ts", name: "missing" }
+});
+assert.equal(missingTarget.status, "missing");
+assert.equal(missingTarget.targetNodeId, undefined);
+assert.deepEqual(missingTarget.impactNodes, []);
+
+const ambiguousTarget = new ChangeImpactAnalysisService().analyze({
+    nodes: [
+        { id: "function:duplicate-one", type: "function", name: "duplicate", path: "src/duplicate.ts" },
+        { id: "function:duplicate-two", type: "function", name: "duplicate", path: "src/duplicate.ts" }
+    ],
+    edges: []
+}, {
+    type: "symbol",
+    symbol: { type: "function", path: "src/duplicate.ts", name: "duplicate" }
+});
+assert.equal(ambiguousTarget.status, "ambiguous");
+assert.equal(ambiguousTarget.targetNodeId, undefined);
+assert.deepEqual(ambiguousTarget.impactNodes, []);
+
+const fileTarget = new ChangeImpactAnalysisService().analyze({
+    nodes: [{ id: "file:src%2Ftarget.ts", type: "file", name: "src/target.ts", path: "src/target.ts" }],
+    edges: []
+}, { type: "file", path: "src/target.ts" });
+assert.equal(fileTarget.status, "ok");
+assert.equal(fileTarget.targetNodeId, undefined);
+assert.deepEqual(fileTarget.impactNodes, []);
 
 const oneFileMultipleCallers = buildRepositoryGraph("example/repository", [
     analyzed("src/callers.ts", "function callerA() { target(); } function callerB() { target(); } function target() {}")

@@ -14,6 +14,8 @@ export interface ChangeImpactPathRelationship {
     from: string;
     to: string;
     callSiteIds: string[];
+    type: "calls";
+    evidence: "available" | "unavailable";
 }
 
 export interface ChangeImpactCallSiteEvidence {
@@ -24,6 +26,13 @@ export interface ChangeImpactCallSiteEvidence {
     endLine: number;
     endColumn: number;
     expression: string;
+}
+
+export interface ChangeImpactNode {
+    id: string;
+    type: "class" | "function" | "method";
+    path: string;
+    name: string;
 }
 
 export interface ChangeImpactPath {
@@ -80,6 +89,7 @@ export interface ChangeImpactAnalysisResult {
         path: string;
         name?: string;
     };
+    targetNodeId?: string;
     status: "ok" | "missing" | "ambiguous";
     bounds: ChangeImpactAnalysisLimits & { truncated: boolean };
     directCallers: ChangeImpactSymbolResult[];
@@ -90,6 +100,7 @@ export interface ChangeImpactAnalysisResult {
     sourceEvidence: RepositorySourceEvidence[];
     paths: ChangeImpactPath[];
     callSiteEvidence: ChangeImpactCallSiteEvidence[];
+    impactNodes: ChangeImpactNode[];
     limitations: string[];
 }
 
@@ -157,6 +168,15 @@ function toCallSiteEvidence(id: string, callSite: CallSite): ChangeImpactCallSit
     return { id, ...callSite };
 }
 
+function toImpactNode(node: GraphSymbolNode): ChangeImpactNode {
+    return {
+        id: node.id,
+        type: node.type,
+        path: node.path,
+        name: node.name
+    };
+}
+
 /** Performs bounded, deterministic traversal of incoming symbol call edges. */
 export class ChangeImpactAnalysisService {
     constructor(private readonly sourceEvidenceService = new RepositorySourceEvidenceService()) {}
@@ -181,6 +201,7 @@ export class ChangeImpactAnalysisService {
             sourceEvidence: [] as RepositorySourceEvidence[],
             paths: [] as ChangeImpactPath[],
             callSiteEvidence: [] as ChangeImpactCallSiteEvidence[],
+            impactNodes: [] as ChangeImpactNode[],
             limitations: [
                 "Results describe statically observed calls in the supplied graph.",
                 "A result is a potential impact or review candidate, not a claim that a change will break it.",
@@ -251,7 +272,11 @@ export class ChangeImpactAnalysisService {
         const visited = new Set<string>([targetNode.id]);
         const queue: Array<{ id: string; depth: number }> = [{ id: targetNode.id, depth: 0 }];
         const predecessors = new Map<string, { nodeId: string; edge: typeof graph.edges[number] }>();
-        const result = { ...base, status: "ok" as const };
+        const result = {
+            ...base,
+            status: "ok" as const,
+            targetNodeId: target.type === "symbol" ? targetNode.id : undefined
+        };
         let truncated = false;
         let missingRelationshipEvidence = false;
         const callSiteEvidence = new Map<string, ChangeImpactCallSiteEvidence>();
@@ -293,7 +318,9 @@ export class ChangeImpactAnalysisService {
                                 callSiteEvidence.set(evidenceId, toCallSiteEvidence(evidenceId, site));
                                 return evidenceId;
                             })
-                            : []
+                            : [],
+                        type: "calls",
+                        evidence: edge.callSites && edge.callSites.length > 0 ? "available" : "unavailable"
                     };
                 }),
                 depth,
@@ -337,7 +364,15 @@ export class ChangeImpactAnalysisService {
             left.relationships.map((relationship) => relationship.relationshipId).join("\u0000")
                 .localeCompare(right.relationships.map((relationship) => relationship.relationshipId).join("\u0000"))
         );
-            result.callSiteEvidence = [...callSiteEvidence.values()].sort((left, right) => left.id.localeCompare(right.id));
+        result.callSiteEvidence = [...callSiteEvidence.values()].sort((left, right) => left.id.localeCompare(right.id));
+        const impactNodeIds = new Set<string>([targetNode.id]);
+        for (const path of result.paths) {
+            for (const nodeId of path.nodes) impactNodeIds.add(nodeId);
+        }
+        result.impactNodes = [...impactNodeIds]
+            .map((nodeId) => symbolsById.get(nodeId))
+            .filter((node): node is GraphSymbolNode => node !== undefined)
+            .map(toImpactNode);
         if (missingRelationshipEvidence) {
             result.limitations.push("Some impact relationships do not include call-site evidence.");
         }

@@ -95,6 +95,7 @@ async function main(): Promise<void> {
 
     const impact: ChangeImpactAnalysisResult = {
         target: { type: "symbol", path: "src/auth.ts", name: "auth" },
+        targetNodeId: "function:src%2Fauth.ts:auth",
         status: "ok",
         bounds: { maxDepth: 3, maxResults: 10, truncated: true },
         directCallers: [{
@@ -132,11 +133,17 @@ async function main(): Promise<void> {
                 relationshipId: "edge:calls:caller:auth",
                 from: "function:src%2Fcaller.ts:caller",
                 to: "function:src%2Fauth.ts:auth",
-                callSiteIds: ["edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()"]
+                callSiteIds: ["edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()"],
+                type: "calls",
+                evidence: "available"
             }],
             depth: 1,
             classification: "direct-caller"
         }],
+        impactNodes: [
+            { id: "function:src%2Fauth.ts:auth", type: "function", path: "src/auth.ts", name: "auth" },
+            { id: "function:src%2Fcaller.ts:caller", type: "function", path: "src/caller.ts", name: "caller" }
+        ],
         callSiteEvidence: [{
             id: "edge:calls:caller:auth:src%2Fcaller.ts:1:1:1:7:auth()",
             file: "src/caller.ts",
@@ -157,6 +164,8 @@ async function main(): Promise<void> {
     assert.equal(impactContext.impact?.reviewCandidates[0]?.reason, "should-be-reviewed");
     assert.deepEqual(impactContext.impact?.limitations, ["static-analysis-review-signal"]);
     assert.deepEqual(impactContext.impact?.paths, impact.paths);
+    assert.equal(impactContext.impact?.targetNodeId, impact.targetNodeId);
+    assert.deepEqual(impactContext.impact?.impactNodes, impact.impactNodes);
     assert.deepEqual(impactContext.impact?.callSiteEvidence, impact.callSiteEvidence);
 
     assert.deepEqual(
