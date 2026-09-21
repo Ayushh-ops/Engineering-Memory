@@ -12,6 +12,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
 - `POST /api/repositories/graph/context` assembles bounded, deterministic context for a file, symbol, or commit from a caller-supplied graph.
 - `POST /api/ai/ask-repository` provides repository context, deterministic graph analysis, bounded source evidence, question-aware context planning, and optional change-impact analysis.
+- `POST /api/ai/ask` answers a question from a repository graph the caller already has, without contacting GitHub.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
 
 ## Run locally
@@ -173,6 +174,25 @@ Targets are `file`, `symbol` (with `class`, `function`, or `method` identity), a
 `POST /api/ai/ask-repository` accepts a repository, commit SHA, selected file paths, target, and natural-language question. The orchestration analyzes the supplied files, builds the structural graph, plans context from the question, and provides bounded graph and source evidence to the configured LLM provider.
 
 Impact-shaped questions can additionally produce direct callers, transitive consumers, heuristic test consumers, file dependencies, review candidates, and bounded source evidence. These are potential impact and review signals based on the supplied graph. They do not prove that a change will break code or that a symbol is safe to remove. Analysis is bounded and uses only supplied repository files; cross-file semantic call resolution and runtime behavior are not inferred.
+Whatever the answer, the AI context carries a bounded, deterministic compact projection of any change-impact result rather than the full rich result. The projection keeps every affected consumer together with its relationship chains and call-site evidence, and it declares anything it had to omit so the model always knows it is reading a bounded view. The full change-impact result is unchanged and remains available to backend and future visualization consumers.
+
+### Repository AI Q&A with a supplied graph
+
+`POST /api/ai/ask` answers a question from a graph the caller already has, for example the `graph` returned by `POST /api/repositories/analyze`, instead of loading files from GitHub.
+
+```http
+POST /api/ai/ask
+Content-Type: application/json
+
+{
+  "repository": "owner/repository",
+  "target": { "type": "file", "path": "src/auth.ts" },
+  "question": "What does auth do?",
+  "graph": { "nodes": [], "edges": [] }
+}
+```
+
+The response contains `status`, `answer`, `citations`, `confidence`, `missingData`, and `error`. If the assembled context contradicts the supplied graph, the request is rejected with an `invalid_graph` error and nothing is sent to the provider.
 
 ## Documentation
 

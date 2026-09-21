@@ -1,6 +1,6 @@
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
-import { buildAiContext, type AiRepositoryContext } from "./context";
+import { buildAiContext, MAX_AI_CONTEXT_BYTES, type AiRepositoryContext } from "./context";
 import { validateRepositoryContextConsistency } from "./consistency-validator";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
@@ -18,8 +18,6 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
 export interface AiAnswerResult extends LlmResponse {
     status: "ok" | "insufficient_context" | "error";
 }
-
-const MAX_AI_CONTEXT_BYTES = 16000;
 
 function isGroundedQuestion(question: string, target: { type: string; path?: string; symbolName?: string; sha?: string }): boolean {
     const normalized = question.toLowerCase();
@@ -104,6 +102,16 @@ export class AiAnswerService {
         const aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact);
         const serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
+            if (request.allowInsufficientContext) {
+                return {
+                    status: "insufficient_context",
+                    answer: "The assembled repository context is too large for the AI provider, so it was not sent.",
+                    citations: [],
+                    confidence: "low",
+                    missingData: ["context_too_large"]
+                };
+            }
+
             return {
                 status: "error",
                 answer: "",

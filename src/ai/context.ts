@@ -1,6 +1,7 @@
 import type { RepositoryContext } from "../graph/repository-context";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
+import { buildAiImpactContext, type AiImpactContext } from "./impact-context";
 
 export type AiTarget = {
     type: "file" | "symbol" | "commit";
@@ -47,8 +48,18 @@ export interface AiRepositoryContext {
     commits: AiCommitContext[];
     symbolChanges: AiSymbolChangeContext[];
     evidence?: RepositorySourceEvidence[];
-    impact?: ChangeImpactAnalysisResult;
+    impact?: AiImpactContext;
 }
+
+/**
+ * Upper bound, in characters, for the serialized AI context. It is a safety
+ * boundary for the whole context object; `buildAiContext` keeps the compact
+ * impact projection inside it and `AiAnswerService` re-checks the result.
+ */
+export const MAX_AI_CONTEXT_BYTES = 16000;
+
+/** Reserved for the `"impact"` property wrapper around the compact projection. */
+const AI_CONTEXT_IMPACT_WRAPPER_CHARS = 32;
 
 function toTarget(context: RepositoryContext["target"]["request"]): AiTarget {
     if (context.type === "file") {
@@ -121,7 +132,7 @@ export function buildAiContext(
         sha: change.id.split(":")[1] ?? undefined
     }));
 
-    return {
+    const base: AiRepositoryContext = {
         repository,
         target: toTarget(context.target.request),
         files,
@@ -135,7 +146,18 @@ export function buildAiContext(
         callers,
         commits,
         symbolChanges,
-        ...(evidence.length > 0 ? { evidence } : {}),
-        ...(impact ? { impact } : {})
+        ...(evidence.length > 0 ? { evidence } : {})
+    };
+
+    if (!impact) return base;
+
+    const impactBudgetChars = Math.max(
+        0,
+        MAX_AI_CONTEXT_BYTES - JSON.stringify(base).length - AI_CONTEXT_IMPACT_WRAPPER_CHARS
+    );
+
+    return {
+        ...base,
+        impact: buildAiImpactContext(impact, { budgetChars: impactBudgetChars })
     };
 }

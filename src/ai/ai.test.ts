@@ -3,7 +3,8 @@ import { analyzeTypeScript } from "../analyzers/typescript";
 import { resolveRelativeImportRelationships } from "../resolvers/relative-imports";
 import { buildRepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext } from "../graph/repository-context";
-import { buildAiContext } from "./context";
+import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
+import type { AiImpactContext } from "./impact-context";
 import { buildPrompt } from "./prompt-builder";
 import { AiAnswerService } from "./answer-service";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
@@ -16,7 +17,10 @@ import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter } from "../routes/ai";
 import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
 import type { AiAnswerResult } from "./answer-service";
-import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
+import {
+    ChangeImpactAnalysisService,
+    type ChangeImpactAnalysisResult
+} from "../services/change-impact-analysis-service";
 
 class FakeLlmProvider implements LlmProvider {
     public calls: LlmRequest[] = [];
@@ -181,17 +185,56 @@ async function main(): Promise<void> {
         limitations: ["static-analysis-review-signal"]
     };
     const impactContext = buildAiContext(contextResult.context, "example/repository", [], impact);
-    assert.equal(impactContext.impact?.bounds.truncated, true);
-    assert.equal(impactContext.impact?.directCallers[0]?.relationship, "direct-caller");
-    assert.equal(impactContext.impact?.transitiveConsumers[0]?.depth, 2);
-    assert.equal(impactContext.impact?.tests[0]?.classification, "path-convention");
-    assert.equal(impactContext.impact?.relatedDependencies[1]?.relationship, "reverse-import");
-    assert.equal(impactContext.impact?.reviewCandidates[0]?.reason, "should-be-reviewed");
-    assert.deepEqual(impactContext.impact?.limitations, ["static-analysis-review-signal"]);
-    assert.deepEqual(impactContext.impact?.paths, impact.paths);
-    assert.equal(impactContext.impact?.targetNodeId, impact.targetNodeId);
-    assert.deepEqual(impactContext.impact?.impactNodes, impact.impactNodes);
-    assert.deepEqual(impactContext.impact?.callSiteEvidence, impact.callSiteEvidence);
+    const compactImpact = impactContext.impact;
+    assert.ok(compactImpact);
+    assert.equal(compactImpact.status, "ok");
+    assert.equal(compactImpact.targetNodeId, impact.targetNodeId);
+    assert.deepEqual(compactImpact.bounds, impact.bounds);
+    assert.deepEqual(compactImpact.sourceEvidence, impact.sourceEvidence);
+    assert.deepEqual(compactImpact.dependencies, impact.relatedDependencies);
+    assert.deepEqual(compactImpact.totals, {
+        directCallers: impact.directCallers.length,
+        transitiveConsumers: impact.transitiveConsumers.length,
+        testConsumers: impact.tests.length,
+        paths: impact.paths.length,
+        relationships: impact.paths.reduce((total, path) => total + path.relationships.length, 0),
+        callSites: impact.callSiteEvidence.length,
+        dependencies: impact.relatedDependencies.length
+    });
+    assert.deepEqual(compactImpact.consumers.map((consumer) => ({
+        id: consumer.id,
+        depth: consumer.depth,
+        relationship: consumer.relationship
+    })), [
+        { id: "function:src%2Fcaller.ts:caller", depth: 1, relationship: "direct-caller" },
+        { id: "function:src%2Froot.ts:root", depth: 2, relationship: "transitive-consumer" }
+    ]);
+    assert.deepEqual(compactImpact.consumers[0].chain, [0]);
+    assert.deepEqual(compactImpact.relationships, [{
+        id: "edge:calls:caller:auth",
+        type: "calls",
+        from: "function:src%2Fcaller.ts:caller",
+        to: "function:src%2Fauth.ts:auth",
+        evidence: "available",
+        callSites: [{
+            file: "src/caller.ts",
+            startLine: 1,
+            startColumn: 1,
+            endLine: 1,
+            endColumn: 7,
+            expression: "auth()"
+        }]
+    }]);
+    assert.equal(compactImpact.compaction.analysisTruncated, true);
+    assert.equal(compactImpact.compaction.omittedCallSites, 0);
+    assert.equal(compactImpact.compaction.omittedPaths, 0);
+    assert.equal(compactImpact.compaction.reason, undefined);
+    // The fixture lists a transitive consumer without a matching path, so its
+    // detail is reported as unavailable rather than fabricated.
+    assert.equal(compactImpact.compaction.detailOmittedConsumers, 1);
+    assert.equal(compactImpact.limitations[0], "static-analysis-review-signal");
+    assert.ok(compactImpact.limitations.some((limitation) => limitation.includes("bounded")));
+
 
     assert.deepEqual(
         aiContext.target.type,
@@ -328,7 +371,7 @@ async function main(): Promise<void> {
         1
     );
     assert.equal(
-        (fakeProvider.calls[0]?.facts as { impact?: ChangeImpactAnalysisResult }).impact?.bounds.truncated,
+        (fakeProvider.calls[0]?.facts as { impact?: AiImpactContext }).impact?.bounds.truncated,
         true
     );
     assert.equal(
@@ -336,6 +379,75 @@ async function main(): Promise<void> {
         false
     );
 
+    // M26.1: the compact AI impact context is bounded, so impact questions stay
+    // answerable at every caller count instead of becoming oversized_context.
+    const fanoutFixture = (callerCount: number) => {
+        const lines = ["export function targetFn() { return 1; }"];
+        for (let index = 0; index < callerCount; index++) {
+            lines.push(`export function direct${index}() { return targetFn(); }`);
+        }
+        const fanoutGraph = buildRepositoryGraph(
+            "example/repository",
+            [{ path: "src/fanout.ts", analysis: analyzeTypeScript(lines.join(" "), "src/fanout.ts") }],
+            []
+        );
+        const fanoutTarget = {
+            type: "symbol" as const,
+            symbol: { type: "function" as const, path: "src/fanout.ts", name: "targetFn" }
+        };
+        return {
+            graph: fanoutGraph,
+            impact: new ChangeImpactAnalysisService().analyze(fanoutGraph, fanoutTarget)
+        };
+    };
+
+    for (const callerCount of [8, 9, 20, 50]) {
+        const fixture = fanoutFixture(callerCount);
+        const fanoutProvider = new FakeLlmProvider({
+            status: "ok",
+            answer: "Fan-out answer",
+            citations: [],
+            confidence: "medium"
+        });
+        const fanoutAnswer = await new AiAnswerService(fanoutProvider).answer({
+            repository: "example/repository",
+            target: {
+                type: "symbol",
+                symbol: { type: "function", path: "src/fanout.ts", name: "targetFn" }
+            },
+            question: "What breaks if I remove targetFn?",
+            graph: fixture.graph,
+            impact: fixture.impact,
+            allowInsufficientContext: true
+        });
+
+        assert.equal(fanoutAnswer.status, "ok", `expected an answer for ${callerCount} callers`);
+        assert.equal(fanoutProvider.calls.length, 1, `expected one provider call for ${callerCount} callers`);
+        const serializedFacts = JSON.stringify(fanoutProvider.calls[0]?.facts);
+        assert.ok(
+            serializedFacts.length <= MAX_AI_CONTEXT_BYTES,
+            `expected ${callerCount} callers to fit the AI context, got ${serializedFacts.length}`
+        );
+
+        const fanoutFacts = fanoutProvider.calls[0]?.facts as { impact?: AiImpactContext };
+        const compaction = fanoutFacts.impact?.compaction;
+        assert.equal(fanoutFacts.impact?.consumers.length, callerCount);
+        assert.equal(
+            (compaction?.consumersWithDetail ?? 0) + (compaction?.detailOmittedConsumers ?? 0),
+            callerCount
+        );
+        if ((compaction?.detailOmittedConsumers ?? 0) > 0) {
+            assert.ok(fanoutFacts.impact?.limitations.some((limitation) => limitation.includes("bounded")));
+        }
+    }
+
+    const nonImpactFacts = JSON.parse(
+        JSON.stringify(buildAiContext(contextResult.context, "example/repository"))
+    ) as Record<string, unknown>;
+    assert.deepEqual(
+        Object.keys(nonImpactFacts),
+        ["repository", "target", "files", "symbols", "imports", "callers", "commits", "symbolChanges"]
+    );
     const inconsistentProvider = new FakeLlmProvider({
         status: "ok",
         answer: "This answer must never be produced.",

@@ -81,7 +81,7 @@ Traversal is strictly one-hop/direct. Each result section is deduplicated in gra
 
 For file targets, direct imports, reverse-import dependents, and related files remain separate relationship categories. Test consumers are identified heuristically from path conventions such as `*.test.ts`, `*.test.tsx`, `*.spec.ts`, `*.spec.tsx`, `test`, `tests`, and `__tests__`. This classification does not prove that a test exercises the target.
 
-Source evidence can be selected through the existing `src/services/repository-source-evidence-service.ts`. Evidence uses only already-supplied files and remains bounded. The service does not fetch files, enumerate repositories, execute code, or use an LLM. M24 is invoked in repository AI Q&A only when `QuestionContextPlanner` identifies an `impact` context, and its structured result is passed into the AI context alongside existing graph and source evidence.
+Source evidence can be selected through the existing `src/services/repository-source-evidence-service.ts`. Evidence uses only already-supplied files and remains bounded. The service does not fetch files, enumerate repositories, execute code, or use an LLM. M24 is invoked in repository AI Q&A only when `QuestionContextPlanner` identifies an `impact` context, and its structured result is projected into a bounded, deterministic compact form before it is serialized into the AI context. The two evidence sources remain mutually exclusive: when the impact result already carries declaration evidence, the standalone selection is omitted so the same snippets are never serialized twice.
 
 The results describe statically observed relationships and potential review candidates. They do not claim guaranteed breakage, safety of removal, complete usage discovery, or runtime impact.
 
@@ -93,6 +93,13 @@ The validator treats `RepositoryGraph` as the source of truth. It requires that 
 
 `impact.status === "missing"` and `impact.status === "ambiguous"` are existing domain outcomes, not contradictions, so the validator returns `ok` for them. Any deterministic contradiction returns `invalid` with stable, ordered failure codes. When the result is `invalid`, the answer service returns a controlled `invalid_graph` error carrying those codes in `missingData` and never calls the LLM provider. The validator is a pure function: it performs no I/O, no mutation of its inputs, no caching, no graph indexing, no embeddings, and no open-ended semantic resolution.
 
+## Compact AI impact context
+
+`src/ai/impact-context.ts` projects a validated `ChangeImpactAnalysisResult` into `AiImpactContext`, the only impact representation serialized into the LLM payload. The full result remains unchanged as the backend and future frontend source of truth. The projection is derived per request, is never persisted or returned over HTTP, and constructs no identifiers of its own: it joins against the relationship, path, node, and call-site identifiers already present in the validated result.
+
+The compact form is consumer centric. `consumers[]` lists every affected symbol with its depth, relationship, and test classification; `consumer.chain[]` indexes `relationships[]`; and each `relationships[]` entry carries the graph relationship id together with its own call sites. Path node sequences are recoverable from the ordered chain, so `paths`, `impactNodes`, and the separate `directCallers`, `transitiveConsumers`, `tests`, and `reviewCandidates` collections are not repeated. Evidence is nested inside the relationship that cites it and is never sampled, and the encoded call-site identifier is omitted because the relationship id plus the call-site span already determine it.
+
+`AiAnswerService` validates the full result first. `buildAiContext` then measures the non-impact payload and passes the remaining budget to the projection. Detail is preferred whenever it fits; when the budget binds, whole consumers lose their chain as a unit and the omission is reported through `compaction`, `totals`, and a generated limitation, so the model is always told that it is reading a bounded view. No string is ever truncated and evidence is never removed to save space. `MAX_AI_CONTEXT_BYTES` remains 16,000 and is still re-checked on the assembled context; if the payload cannot fit even at the consumer-only floor, the answer service returns a controlled `insufficient_context` result with `context_too_large` instead of failing the request.
 ## GitHub repository metadata flow
 
 1. A client sends `POST /api/repositories` with a JSON body containing `url`.
@@ -146,6 +153,7 @@ The helper identifies HTTP `429` responses and HTTP `403` responses with `x-rate
 | `src/services/repository-source-evidence-service.ts` | Bounded source-snippet selection from already-fetched files for graph and impact context. |
 | `src/ai/answer-service.ts` | Repository context assembly, evidence consistency validation, and LLM answer composition. |
 | `src/ai/consistency-validator.ts` | Pure, deterministic validation of impact and source evidence against the repository graph before provider calls. |
+| `src/ai/impact-context.ts` | Bounded, deterministic projection of a validated change-impact result into the compact AI context representation. |
 | `src/github/client.ts` | Shared GitHub request headers and rate-limit response classification. |
 | `package.json` | Project metadata, scripts, runtime dependency, and development tooling dependencies. |
 | `tsconfig.json` | TypeScript compilation settings, including `src` input and `dist` output directories. |

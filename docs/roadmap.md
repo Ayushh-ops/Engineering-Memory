@@ -120,6 +120,14 @@ This roadmap records only the capabilities currently present in the repository.
 - Removed symbols remain represented only by historical `symbol-change` events.
 - No LLM, embeddings, persistence, vector search, or automatic repository discovery is introduced.
 
+### Milestone 26.1: Compact AI impact context
+
+- The deterministic `ChangeImpactAnalysisResult` stays unchanged as the backend and future frontend source of truth; only its representation inside the AI context changes.
+- A new pure projection (`src/ai/impact-context.ts`) normalizes it into a consumer-centric form: every affected consumer, ordered relationship chains, and nested call-site evidence.
+- `buildAiContext` derives the remaining AI context budget from the non-impact payload and bounds the projection to it, preferring full detail whenever it fits.
+- Bounded detail is explicit: `compaction` counters, `totals`, and a generated limitation describe exactly what was omitted, and no string is truncated.
+- Evidence is never removed to save space, the 16,000-character limit is unchanged, and the consistency validator still runs on the full result before compaction.
+- Impact questions succeed at every caller count; a payload that cannot fit even at the consumer-only floor returns a controlled `insufficient_context` result instead of a serialization failure.
 ### Future work
 
 Future milestones can build on the in-memory graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, line-level or symbol-level history, or semantic change explanations.
