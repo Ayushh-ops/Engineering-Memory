@@ -69,6 +69,22 @@ interface GitHubFileContent {
     encoding: string;
 }
 
+interface GitHubTreeItem {
+    path: string;
+    mode: string;
+    type: string;
+    size?: number;
+    sha: string;
+    url: string;
+}
+
+interface GitHubTreeResponse {
+    sha: string;
+    url: string;
+    tree: GitHubTreeItem[];
+    truncated: boolean;
+}
+
 type HistoricalFileResult =
     | { status: "success"; content: string }
     | { status: "not-found" }
@@ -265,6 +281,58 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             return res.status(429).json({ error: error.message });
         }
 
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
+router.post("/repositories/tree", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+    const sha = req.body?.sha;
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (typeof sha !== "string" || sha.trim().length === 0) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    const { owner, repository } = parsedRepository;
+
+    try {
+        const githubResponse = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/git/trees/${encodeURIComponent(sha)}?recursive=1`,
+            getGitHubRequestOptions()
+        );
+
+        if (githubResponse.status === 404) {
+            return res.status(404).json({ error: "GitHub repository or commit not found." });
+        }
+
+        const rateLimitError = getGitHubRateLimitError(githubResponse);
+        if (rateLimitError) {
+            return res.status(429).json({ error: rateLimitError });
+        }
+
+        if (!githubResponse.ok) {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        const treeResponse = (await githubResponse.json()) as GitHubTreeResponse;
+
+        // Filter to only blobs (files) and supported typescript source files mapping deterministic results
+        const files = (treeResponse.tree ?? [])
+            .filter(item => item.type === "blob" && typeof item.path === "string" && isTypeScriptPath(item.path))
+            .map(item => item.path)
+            .sort();
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            sha,
+            files,
+            truncated: !!treeResponse.truncated
+        });
+    } catch {
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });
