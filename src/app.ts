@@ -4,6 +4,7 @@ import { createLlmProviderFromEnvironment } from "./ai/provider-factory";
 import { createAiRouter } from "./routes/ai";
 import analysisRouter from "./routes/analysis";
 import healthRouter from "./routes/health";
+import { createImpactRouter } from "./routes/impact";
 import repositoriesRouter from "./routes/repositories";
 
 const app: Application = express();
@@ -13,6 +14,7 @@ app.use(express.json());
 app.use("/api", analysisRouter);
 app.use("/api", healthRouter);
 app.use("/api", repositoriesRouter);
+app.use("/api", createImpactRouter());
 app.use("/api", createAiRouter(aiService));
 
 export default app;

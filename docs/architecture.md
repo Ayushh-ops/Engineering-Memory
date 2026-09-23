@@ -19,6 +19,7 @@ Engineering Memory is currently a small Node.js HTTP service written in TypeScri
 | `/api/repositories/analyze-history` | `POST` | Retrieves a commit and its first-parent comparison for up to 20 supplied files, returning structural TypeScript symbol changes and an additive historical graph. |
 | `/api/repositories/graph/query` | `POST` | Executes a validated, read-only query against a caller-supplied in-memory repository graph. |
 | `/api/repositories/graph/context` | `POST` | Assembles bounded, deterministic one-hop context for a target in a caller-supplied graph. |
+| `/api/repositories/graph/impact` | `POST` | Returns the deterministic change-impact result for a file or symbol target in a caller-supplied graph, re-validated against that graph. |
 | `/api/analyze` | `POST` | Validates a TypeScript source string and returns focused AST-derived structure. |
 
 ## TypeScript AST analysis flow
@@ -93,6 +94,18 @@ The validator treats `RepositoryGraph` as the source of truth. It requires that 
 
 `impact.status === "missing"` and `impact.status === "ambiguous"` are existing domain outcomes, not contradictions, so the validator returns `ok` for them. Any deterministic contradiction returns `invalid` with stable, ordered failure codes. When the result is `invalid`, the answer service returns a controlled `invalid_graph` error carrying those codes in `missingData` and never calls the LLM provider. The validator is a pure function: it performs no I/O, no mutation of its inputs, no caching, no graph indexing, no embeddings, and no open-ended semantic resolution.
 
+## Deterministic impact API
+
+`src/routes/impact.ts` exposes `POST /api/repositories/graph/impact`, the HTTP surface for the deterministic change-impact result. The flow is: validate the request, call `ChangeImpactAnalysisService.analyze` with the supplied graph, target, limits, and optional files, re-validate the returned result against that graph with `validateRepositoryContextConsistency`, and return the result unchanged.
+
+The endpoint composes existing modules instead of defining another analysis model. `ChangeImpactAnalysisService` remains the single source of truth for impact semantics, and the route owns only request validation, so target shape checks never duplicate the service's target resolution and node matching. No LLM provider, GitHub request, persistence layer, or graph exposure is involved, and no trace of the raw `RepositoryGraph` reaches the response: `impactNodes`, path relationships, and call-site evidence are the focused projections the result already contains.
+
+The response body is `ChangeImpactAnalysisResult` itself - the same type the AI path validates before compaction - rather than a response DTO or the M26.1 compact projection. The projection exists only to bound the LLM payload; it is lossy under budget and is never an API contract. Returning the result directly keeps one semantic contract for backend, frontend, and AI consumers, and preserves its `bounds`, `limitations`, and `status` honesty fields. Serialization therefore needs no separate layer: optional keys such as `targetNodeId` are simply omitted when unset, and ordering is whatever the service produced.
+
+`status: "missing"` and `"ambiguous"` are returned with `200` because the result models them as domain outcomes and the consistency validator treats them as valid. This deliberately differs from `POST /api/repositories/graph/context`, which reports the same conditions as `400`: that endpoint's response type has no status field to carry the outcome, while this one does. `commit` targets and malformed input are request defects and return `400`; the same applies to a derived result that fails the fail-closed consistency gate, which is answered with stable failure codes in `missingData` instead of the unverified result.
+
+Boundary limits are transport policy, not analysis semantics. `ChangeImpactAnalysisService` keeps its existing rules (integer `maxDepth >= 1`, integer `maxResults >= 0`, no maximum) and its defaults of 3 and 50. The route additionally caps requests at `maxDepth` 1-10 and `maxResults` 0-500 and rejects unknown limit keys, which keeps a caller-supplied graph from amplifying the response, and the effective limits stay visible in `bounds.truncated`. Expected validation, input, and service-contract failures are all handled by explicit `400` branches. There is no catch-all error handler added for this route, so an unexpected runtime exception propagates to the existing Express error handling like any other route.
+
 ## Compact AI impact context
 
 `src/ai/impact-context.ts` projects a validated `ChangeImpactAnalysisResult` into `AiImpactContext`, the only impact representation serialized into the LLM payload. The full result remains unchanged as the backend and future frontend source of truth. The projection is derived per request, is never persisted or returned over HTTP, and constructs no identifiers of its own: it joins against the relationship, path, node, and call-site identifiers already present in the validated result.
@@ -148,6 +161,7 @@ The helper identifies HTTP `429` responses and HTTP `403` responses with `x-rate
 | `src/graph/repository-graph.ts` | Transformation of existing analysis, resolved imports, and caller-supplied commit history into an in-memory repository graph. |
 | `src/graph/repository-context.ts` | Pure, bounded, one-hop context assembly over an existing repository graph. |
 | `src/services/change-impact-analysis-service.ts` | Bounded, deterministic symbol and file change-impact analysis and review-candidate selection over the existing graph. |
+| `src/routes/impact.ts` | Request validation, boundary limits, and response handling for the deterministic change-impact endpoint. |
 | `src/services/question-context-planner.ts` | Question-aware prioritization of source, graph, history, and impact context types. |
 | `src/services/repository-ai-orchestration-service.ts` | Controlled repository file loading, analysis, context planning, M24 impact integration, and AI request composition. |
 | `src/services/repository-source-evidence-service.ts` | Bounded source-snippet selection from already-fetched files for graph and impact context. |

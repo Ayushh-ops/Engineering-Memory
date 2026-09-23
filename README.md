@@ -11,6 +11,7 @@ Engineering Memory is a TypeScript and Express backend for retrieving public Git
 - `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
 - `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
 - `POST /api/repositories/graph/context` assembles bounded, deterministic context for a file, symbol, or commit from a caller-supplied graph.
+- `POST /api/repositories/graph/impact` returns the full deterministic change-impact result for a file or symbol target in a caller-supplied graph.
 - `POST /api/ai/ask-repository` provides repository context, deterministic graph analysis, bounded source evidence, question-aware context planning, and optional change-impact analysis.
 - `POST /api/ai/ask` answers a question from a repository graph the caller already has, without contacting GitHub.
 - `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
@@ -168,6 +169,39 @@ Content-Type: application/json
 ```
 
 Targets are `file`, `symbol` (with `class`, `function`, or `method` identity), and `commit`. The response contains `target`, `files`, `symbols`, `imports`, `callers`, `commits`, and `symbolChanges`. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes; hard maxima are 50, 200, 100, 50, and 200 respectively. Results preserve graph insertion order and are truncated after deduplication. Removed symbols appear only as `symbol-change` nodes and are never fabricated as structural symbols. Missing or ambiguous targets return `400`.
+
+### Deterministic change-impact analysis
+
+`POST /api/repositories/graph/impact` returns the full deterministic change-impact result for one `file` or `symbol` target in a caller-supplied graph. It makes no GitHub requests, never invokes an LLM, performs no persistence, and never exposes the raw graph:
+
+```http
+POST /api/repositories/graph/impact
+Content-Type: application/json
+
+{
+  "graph": { "nodes": [], "edges": [] },
+  "request": {
+    "target": {
+      "type": "symbol",
+      "symbol": { "type": "function", "path": "src/auth.ts", "name": "authenticate" }
+    },
+    "limits": { "maxDepth": 3, "maxResults": 50 }
+  },
+  "files": [
+    { "path": "src/auth.ts", "content": "export function authenticate() {}" }
+  ]
+}
+```
+
+The response is the complete change-impact result: `target`, an optional `targetNodeId`, `status`, `bounds`, `directCallers`, `transitiveConsumers`, `tests`, `relatedDependencies`, `reviewCandidates`, `sourceEvidence`, `paths`, `callSiteEvidence`, `impactNodes`, and `limitations`, with unset optional keys omitted. This is the full result that the AI path compacts for its own provider payload, never the compact projection, and it is returned unchanged instead of being reshaped into a separate response model.
+
+`status` is `ok`, `missing`, or `ambiguous`, and all three are returned with `200`: an absent or duplicated target is a deterministic outcome of the analysis, not a transport error, and the result still reports the requested target, the effective `bounds`, and why the arrays are empty. `commit` targets are rejected with `400` because change-impact analysis cannot represent them, and malformed requests return `400` as well.
+
+`maxDepth` and `maxResults` are optional and default to 3 and 50. The analysis service itself accepts any positive `maxDepth` and any non-negative `maxResults` and applies no maximum. This endpoint additionally enforces transport-level boundary limits of `maxDepth` 1–10 and `maxResults` 0–500 and rejects other limit keys, so a caller-supplied graph cannot amplify the response. Effective limits are always echoed in `bounds`, where `truncated` reports that bounds prevented complete traversal.
+
+Caller-supplied `files` (at most 20 unique `{ path, content }` entries) enable bounded `sourceEvidence` snippets. When they are omitted, `sourceEvidence` is empty and `limitations` states that no fetched files were supplied. Call-site evidence for relationships is read from the graph and does not require files.
+
+Every response is validated against the supplied graph before it is returned. If the derived result cannot be verified against that graph, the request fails closed with `400` and stable failure codes in `missingData`, so unverified impact facts are never served. Identical requests produce identical responses, and the ordering produced by the analysis is preserved exactly.
 
 ### Repository AI Q&A
 

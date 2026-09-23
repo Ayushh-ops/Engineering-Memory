@@ -128,6 +128,17 @@ This roadmap records only the capabilities currently present in the repository.
 - Bounded detail is explicit: `compaction` counters, `totals`, and a generated limitation describe exactly what was omitted, and no string is truncated.
 - Evidence is never removed to save space, the 16,000-character limit is unchanged, and the consistency validator still runs on the full result before compaction.
 - Impact questions succeed at every caller count; a payload that cannot fit even at the consumer-only floor returns a controlled `insufficient_context` result instead of a serialization failure.
+
+### Milestone 26.2: Deterministic impact API
+
+- An additive `POST /api/repositories/graph/impact` endpoint returns the full deterministic change-impact result for one file or symbol target in a caller-supplied graph.
+- `ChangeImpactAnalysisService` remains the single source of truth: the new `src/routes/impact.ts` validates the request and delegates, defining no second analysis engine and no duplicate target resolution.
+- The response body is the unchanged `ChangeImpactAnalysisResult`, not a DTO and not the M26.1 compact projection, so `bounds`, `limitations`, and `status` reach the caller intact with unset optional keys omitted.
+- Missing and ambiguous targets are deterministic domain outcomes and return `200` with the full result; commit targets and malformed requests return `400`, since the result type cannot represent them.
+- Every response is re-validated against the supplied graph and fails closed with `400` and stable `missingData` codes instead of serving unverified facts.
+- Defaults stay 3 and 50 with `bounds` echoing effective limits; the endpoint adds transport-level boundary limits of `maxDepth` 1-10 and `maxResults` 0-500 while the service keeps its existing rules and maxima-free behavior for direct callers.
+- No LLM, GitHub request, persistence, raw graph exposure, response DTO, or serializer is introduced.
+
 ### Future work
 
 Future milestones can build on the in-memory graph toward broader codebase context and history. The repository does not yet define a persistence approach, additional GitHub resources, line-level or symbol-level history, or semantic change explanations.
