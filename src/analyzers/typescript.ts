@@ -1,52 +1,44 @@
 import ts from "typescript";
+import type {
+    AnalyzedClass,
+    AnalyzedFunction,
+    AnalyzedMethod,
+    CallSite,
+    CodeRelationship,
+    LanguageAnalysisResult,
+    LanguageDeclaration,
+    LanguageDeclarationType,
+    TypeScriptAnalysis,
+    TypeScriptDeclaration,
+    TypeScriptDeclarationType
+} from "./types";
 
-export interface AnalyzedMethod {
-    name: string;
-    parameters: string[];
-}
+export type {
+    AnalyzedClass,
+    AnalyzedFunction,
+    AnalyzedMethod,
+    CallSite,
+    CodeRelationship,
+    LanguageAnalysisResult,
+    LanguageDeclaration,
+    LanguageDeclarationType,
+    TypeScriptAnalysis,
+    TypeScriptDeclaration,
+    TypeScriptDeclarationType
+};
 
-export interface AnalyzedClass {
-    name: string | null;
-    methods: AnalyzedMethod[];
-}
-
-export interface AnalyzedFunction {
-    name: string | null;
-    parameters: string[];
-}
-
-export interface CodeRelationship {
-    type: "imports" | "calls";
-    from: string;
-    to: string;
-    callSites?: CallSite[];
-}
-
-export interface CallSite {
-    file: string;
-    startLine: number;
-    startColumn: number;
-    endLine: number;
-    endColumn: number;
-    expression: string;
-}
-
-export interface TypeScriptAnalysis {
-    imports: string[];
-    classes: AnalyzedClass[];
-    functions: AnalyzedFunction[];
-    variables: string[];
-    relationships: CodeRelationship[];
-}
-
-export type TypeScriptDeclarationType = "class" | "function" | "method";
-
-export interface TypeScriptDeclaration {
-    type: TypeScriptDeclarationType;
-    name: string;
-    startLine: number;
-    endLine: number;
-    source: string;
+function getScriptKindForPath(path: string): ts.ScriptKind {
+    const lower = path.toLowerCase();
+    if (lower.endsWith(".tsx")) {
+        return ts.ScriptKind.TSX;
+    }
+    if (lower.endsWith(".jsx")) {
+        return ts.ScriptKind.JSX;
+    }
+    if (lower.endsWith(".js") || lower.endsWith(".mjs") || lower.endsWith(".cjs")) {
+        return ts.ScriptKind.JS;
+    }
+    return ts.ScriptKind.TS;
 }
 
 function createTypeScriptSourceFile(source: string, path: string): ts.SourceFile {
@@ -55,9 +47,7 @@ function createTypeScriptSourceFile(source: string, path: string): ts.SourceFile
         source,
         ts.ScriptTarget.Latest,
         true,
-        path.toLowerCase().endsWith(".tsx")
-            ? ts.ScriptKind.TSX
-            : ts.ScriptKind.TS
+        getScriptKindForPath(path)
     );
 }
 
@@ -81,6 +71,26 @@ function getCallTarget(expression: ts.Expression, sourceFile: ts.SourceFile): st
     return null;
 }
 
+function getFunctionLikeInitializer(initializer: ts.Expression | undefined): ts.ArrowFunction | ts.FunctionExpression | null {
+    if (!initializer) return null;
+    let current: ts.Expression = initializer;
+    while (true) {
+        if (ts.isParenthesizedExpression(current)) {
+            current = current.expression;
+        } else if (ts.isAsExpression(current)) {
+            current = current.expression;
+        } else if (ts.isTypeAssertionExpression(current)) {
+            current = current.expression;
+        } else {
+            break;
+        }
+    }
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+        return current;
+    }
+    return null;
+}
+
 export function analyzeTypeScript(source: string, path = "input.ts"): TypeScriptAnalysis {
     const sourceFile = createTypeScriptSourceFile(source, path);
 
@@ -90,6 +100,16 @@ export function analyzeTypeScript(source: string, path = "input.ts"): TypeScript
         functions: [],
         variables: [],
         relationships: []
+    };
+
+    const synthesizedNameCounts = new Map<string, number>();
+    const getSynthesizedCallbackName = (calleeText: string, argIndex: number, callNode: ts.CallExpression): string => {
+        const startPosition = sourceFile.getLineAndCharacterOfPosition(callNode.getStart(sourceFile));
+        const startLine = startPosition.line + 1;
+        const baseName = `${calleeText}#${argIndex}@L${startLine}`;
+        const count = (synthesizedNameCounts.get(baseName) ?? 0) + 1;
+        synthesizedNameCounts.set(baseName, count);
+        return count === 1 ? baseName : `${baseName}#${count}`;
     };
 
     const visit = (
@@ -103,6 +123,23 @@ export function analyzeTypeScript(source: string, path = "input.ts"): TypeScript
                 type: "imports",
                 from: "file",
                 to: node.moduleSpecifier.text
+            });
+        }
+
+        // CommonJS require extraction: require("module-path") or require('module-path')
+        if (
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === "require" &&
+            node.arguments.length === 1 &&
+            ts.isStringLiteral(node.arguments[0]!)
+        ) {
+            const modulePath = (node.arguments[0] as ts.StringLiteral).text;
+            analysis.imports.push(modulePath);
+            analysis.relationships.push({
+                type: "imports",
+                from: "file",
+                to: modulePath
             });
         }
 
@@ -125,46 +162,98 @@ export function analyzeTypeScript(source: string, path = "input.ts"): TypeScript
             });
         }
 
+        const fnInitializer = ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+            ? getFunctionLikeInitializer(node.initializer)
+            : null;
+
         if (ts.isVariableDeclaration(node)) {
             analysis.variables.push(getDeclarationName(node.name, sourceFile));
+            if (fnInitializer && ts.isIdentifier(node.name)) {
+                analysis.functions.push({
+                    name: node.name.text,
+                    parameters: getParameterNames(fnInitializer.parameters, sourceFile)
+                });
+            }
+        }
+
+        // Inline callback arguments for top-level call expressions
+        // Synthesizes <calleeText>#<argumentIndex>@L<startLine> using 0-indexed position and line disambiguation
+        const argCallables = new Map<ts.Node, string>();
+        if (ts.isCallExpression(node) && !containingCallable && !containingClass) {
+            const calleeText = getCallTarget(node.expression, sourceFile) || node.expression.getText(sourceFile).trim();
+            node.arguments.forEach((arg, index) => {
+                const fn = getFunctionLikeInitializer(arg);
+                if (fn) {
+                    const synthesizedName = getSynthesizedCallbackName(calleeText, index, node);
+                    analysis.functions.push({
+                        name: synthesizedName,
+                        parameters: getParameterNames(fn.parameters, sourceFile)
+                    });
+                    argCallables.set(arg, synthesizedName);
+                    argCallables.set(fn, synthesizedName);
+                }
+            });
         }
 
         if (ts.isCallExpression(node) && containingCallable) {
-            const target = getCallTarget(node.expression, sourceFile);
+            // Avoid recording require('...') as a call relationship
+            const isRequire = ts.isIdentifier(node.expression) &&
+                node.expression.text === "require" &&
+                node.arguments.length === 1 &&
+                ts.isStringLiteral(node.arguments[0]!);
 
-            if (target) {
-                const start = node.getStart(sourceFile);
-                const end = node.getEnd();
-                const startPosition = sourceFile.getLineAndCharacterOfPosition(start);
-                const endPosition = sourceFile.getLineAndCharacterOfPosition(end);
-                analysis.relationships.push({
-                    type: "calls",
-                    from: containingCallable,
-                    to: target,
-                    callSites: [{
-                        file: sourceFile.fileName,
-                        startLine: startPosition.line + 1,
-                        startColumn: startPosition.character + 1,
-                        endLine: endPosition.line + 1,
-                        endColumn: endPosition.character + 1,
-                        expression: node.getText(sourceFile)
-                    }]
-                });
+            if (!isRequire) {
+                const target = getCallTarget(node.expression, sourceFile);
+
+                if (target) {
+                    const start = node.getStart(sourceFile);
+                    const end = node.getEnd();
+                    const startPosition = sourceFile.getLineAndCharacterOfPosition(start);
+                    const endPosition = sourceFile.getLineAndCharacterOfPosition(end);
+                    analysis.relationships.push({
+                        type: "calls",
+                        from: containingCallable,
+                        to: target,
+                        callSites: [{
+                            file: sourceFile.fileName,
+                            startLine: startPosition.line + 1,
+                            startColumn: startPosition.character + 1,
+                            endLine: endPosition.line + 1,
+                            endColumn: endPosition.character + 1,
+                            expression: node.getText(sourceFile)
+                        }]
+                    });
+                }
             }
         }
 
         const nextClass = ts.isClassDeclaration(node)
             ? node.name?.text ?? containingClass
             : containingClass;
-        const nextCallable = ts.isFunctionDeclaration(node)
-            ? node.name?.text ?? containingCallable
-            : ts.isMethodDeclaration(node)
-                ? nextClass
-                    ? `${nextClass}.${getDeclarationName(node.name, sourceFile)}`
-                    : getDeclarationName(node.name, sourceFile)
-                : containingCallable;
 
-        ts.forEachChild(node, (child) => visit(child, nextCallable, nextClass));
+        let nextCallable = containingCallable;
+        if (ts.isFunctionDeclaration(node)) {
+            nextCallable = node.name?.text ?? containingCallable;
+        } else if (ts.isMethodDeclaration(node)) {
+            nextCallable = nextClass
+                ? `${nextClass}.${getDeclarationName(node.name, sourceFile)}`
+                : getDeclarationName(node.name, sourceFile);
+        } else if (ts.isVariableDeclaration(node)) {
+            if (fnInitializer && ts.isIdentifier(node.name)) {
+                nextCallable = node.name.text;
+            }
+        } else if (ts.isPropertyAssignment(node)) {
+            const propFn = getFunctionLikeInitializer(node.initializer);
+            if (propFn) {
+                const propName = getDeclarationName(node.name, sourceFile);
+                nextCallable = nextClass ? `${nextClass}.${propName}` : propName;
+            }
+        }
+
+        ts.forEachChild(node, (child) => {
+            const childCallable = argCallables.get(child) ?? nextCallable;
+            visit(child, childCallable, nextClass);
+        });
     };
 
     visit(sourceFile);
@@ -181,6 +270,16 @@ export function extractTypeScriptDeclarations(source: string, path: string): Typ
     const sourceFile = createTypeScriptSourceFile(source, path);
     const declarations: TypeScriptDeclaration[] = [];
 
+    const synthesizedNameCounts = new Map<string, number>();
+    const getSynthesizedCallbackName = (calleeText: string, argIndex: number, callNode: ts.CallExpression): string => {
+        const startPosition = sourceFile.getLineAndCharacterOfPosition(callNode.getStart(sourceFile));
+        const startLine = startPosition.line + 1;
+        const baseName = `${calleeText}#${argIndex}@L${startLine}`;
+        const count = (synthesizedNameCounts.get(baseName) ?? 0) + 1;
+        synthesizedNameCounts.set(baseName, count);
+        return count === 1 ? baseName : `${baseName}#${count}`;
+    };
+
     const add = (type: TypeScriptDeclarationType, name: string, node: ts.Node): void => {
         const start = node.getStart(sourceFile);
         const end = node.getEnd();
@@ -195,7 +294,7 @@ export function extractTypeScriptDeclarations(source: string, path: string): Typ
         });
     };
 
-    const visit = (node: ts.Node): void => {
+    const visit = (node: ts.Node, containingCallable: string | null = null): void => {
         if (ts.isClassDeclaration(node) && node.name) {
             add("class", node.name.text, node);
             for (const member of node.members) {
@@ -210,7 +309,44 @@ export function extractTypeScriptDeclarations(source: string, path: string): Typ
             add("function", node.name.text, node);
         }
 
-        ts.forEachChild(node, visit);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+            const fn = getFunctionLikeInitializer(node.initializer);
+            if (fn) {
+                const declNode = (
+                    node.parent &&
+                    ts.isVariableDeclarationList(node.parent) &&
+                    node.parent.declarations.length === 1 &&
+                    node.parent.parent &&
+                    ts.isVariableStatement(node.parent.parent)
+                ) ? node.parent.parent : node;
+                add("function", node.name.text, declNode);
+            }
+        }
+
+        const argCallables = new Map<ts.Node, string>();
+        if (ts.isCallExpression(node) && !containingCallable) {
+            const calleeText = getCallTarget(node.expression, sourceFile) || node.expression.getText(sourceFile).trim();
+            node.arguments.forEach((arg, index) => {
+                const fn = getFunctionLikeInitializer(arg);
+                if (fn) {
+                    const synthesizedName = getSynthesizedCallbackName(calleeText, index, node);
+                    add("function", synthesizedName, fn);
+                    argCallables.set(arg, synthesizedName);
+                    argCallables.set(fn, synthesizedName);
+                }
+            });
+        }
+
+        const nextCallable = ts.isFunctionDeclaration(node)
+            ? node.name?.text ?? containingCallable
+            : ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && getFunctionLikeInitializer(node.initializer)
+                ? node.name.text
+                : containingCallable;
+
+        ts.forEachChild(node, (child) => {
+            const childCallable = argCallables.get(child) ?? nextCallable;
+            visit(child, childCallable);
+        });
     };
 
     visit(sourceFile);

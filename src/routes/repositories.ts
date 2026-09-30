@@ -1,5 +1,10 @@
 import { Request, Response, Router } from "express";
-import { analyzeTypeScript } from "../analyzers/typescript";
+import {
+    registry,
+    analyzeSource,
+    getAnalyzerForPath,
+    extractDeclarationsForPath
+} from "../analyzers/registry";
 import {
     analyzeHistoricalTypeScriptChange,
     isTypeScriptPath
@@ -322,7 +327,7 @@ router.post("/repositories/tree", async (req: Request, res: Response) => {
 
         // Filter to only blobs (files) and supported typescript source files mapping deterministic results
         const files = (treeResponse.tree ?? [])
-            .filter(item => item.type === "blob" && typeof item.path === "string" && isTypeScriptPath(item.path))
+            .filter(item => item.type === "blob" && typeof item.path === "string")
             .map(item => item.path)
             .sort();
 
@@ -564,7 +569,7 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
                     change: analyzeHistoricalTypeScriptChange(path, null, null),
                     currentFile: {
                         path,
-                        analysis: analyzeTypeScript("")
+                        analysis: registry.analyzeSource("", path)
                     },
                     parentContent: null,
                     currentContent: null
@@ -600,8 +605,8 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
                 currentFile: {
                     path,
                     analysis: currentContent !== null
-                        ? analyzeTypeScript(currentContent)
-                        : analyzeTypeScript("")
+                        ? registry.analyzeSource(currentContent, path)
+                        : registry.analyzeSource("", path)
                 },
                 parentContent,
                 currentContent

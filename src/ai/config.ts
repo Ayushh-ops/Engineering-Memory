@@ -12,12 +12,14 @@ export function createOpenAIConfigFromEnvironment(env: Record<string, string | u
     const timeoutMs = Number.parseInt(env.LLM_TIMEOUT_MS ?? "15000", 10);
     const maxTokens = Number.parseInt(env.LLM_MAX_TOKENS ?? "800", 10);
 
+    const baseUrl = (env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").trim();
+
     return {
         apiKey,
         model,
         timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 15000,
         maxTokens: Number.isFinite(maxTokens) ? maxTokens : 800,
-        baseUrl: "https://api.openai.com/v1"
+        baseUrl
     };
 }
 
@@ -26,7 +28,8 @@ export function validateOpenAIConfig(config: Partial<OpenAIConfig>): OpenAIConfi
         OPENAI_API_KEY: config.apiKey ?? "",
         OPENAI_MODEL: config.model ?? "gpt-4o-mini",
         LLM_TIMEOUT_MS: String(config.timeoutMs ?? 15000),
-        LLM_MAX_TOKENS: String(config.maxTokens ?? 800)
+        LLM_MAX_TOKENS: String(config.maxTokens ?? 800),
+        OPENAI_BASE_URL: config.baseUrl ?? "https://api.openai.com/v1"
     });
 
     if (!normalized.apiKey) {

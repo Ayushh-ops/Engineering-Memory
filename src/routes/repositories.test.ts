@@ -72,9 +72,11 @@ async function main(): Promise<void> {
         assert.equal(res1.body.sha, "abcdef123");
         assert.equal(res1.body.truncated, true);
         assert.deepEqual(res1.body.files, [
+            "dist/bundle.js",
+            "images/logo.png",
             "src/A.tsx",
             "src/Z.ts",
-            "src/node_modules/index.ts" // It is just checking isTypeScriptPath
+            "src/node_modules/index.ts"
         ]);
 
         // Test: missing URL
@@ -116,6 +118,87 @@ async function main(): Promise<void> {
         };
         const res4 = await request(port, "/api/repositories/tree", { url: "https://github.com/owner/repo", sha: "abcdef123" });
         assert.deepEqual(res4.body.files, []);
+
+        // Test: analyze-file with Python source
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("github.com")) {
+                if (url.toString().includes("/contents/calc.py")) {
+                    return {
+                        status: 200,
+                        ok: true,
+                        headers: new Headers(),
+                        json: async () => ({
+                            type: "file",
+                            encoding: "base64",
+                            content: Buffer.from("def add(a, b):\n    return a + b\n").toString("base64")
+                        })
+                    } as unknown as Response;
+                }
+                return { status: 404, ok: false, headers: new Headers() } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+        const resAnalyzePy = await request(port, "/api/repositories/analyze-file", {
+            url: "https://github.com/owner/repo",
+            sha: "abcdef123",
+            path: "calc.py"
+        });
+        assert.equal(resAnalyzePy.status, 200);
+        assert.equal((resAnalyzePy.body as Record<string, unknown>).path, "calc.py");
+        const pyAnalysis = (resAnalyzePy.body as Record<string, unknown>).analysis as {
+            functions: Array<{ name: string }>;
+        };
+        assert.deepEqual(
+            pyAnalysis.functions.map((f) => f.name),
+            ["add"]
+        );
+
+        // Test: analyze with multi-language files (Python and TypeScript)
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("github.com")) {
+                if (url.toString().includes("/contents/calc.py")) {
+                    return {
+                        status: 200,
+                        ok: true,
+                        headers: new Headers(),
+                        json: async () => ({
+                            type: "file",
+                            encoding: "base64",
+                            content: Buffer.from("def add(a, b):\n    return a + b\n").toString("base64")
+                        })
+                    } as unknown as Response;
+                }
+                if (url.toString().includes("app.ts")) {
+                    return {
+                        status: 200,
+                        ok: true,
+                        headers: new Headers(),
+                        json: async () => ({
+                            type: "file",
+                            encoding: "base64",
+                            content: Buffer.from("export function run(): void {}").toString("base64")
+                        })
+                    } as unknown as Response;
+                }
+                return { status: 404, ok: false, headers: new Headers() } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+        const resAnalyzeMulti = await request(port, "/api/repositories/analyze", {
+            url: "https://github.com/owner/repo",
+            sha: "abcdef123",
+            paths: ["calc.py", "src/app.ts"]
+        });
+        assert.equal(resAnalyzeMulti.status, 200);
+        const multiFiles = (resAnalyzeMulti.body as Record<string, unknown>).files as Array<{
+            path: string;
+            analysis: { functions: Array<{ name: string }> };
+        }>;
+        assert.equal(multiFiles.length, 2);
+        assert.equal(multiFiles[0].path, "calc.py");
+        assert.equal(multiFiles[0].analysis.functions[0].name, "add");
+        assert.equal(multiFiles[1].path, "src/app.ts");
+        assert.equal(multiFiles[1].analysis.functions[0].name, "run");
 
         console.log("repositories route fixtures passed");
     } finally {

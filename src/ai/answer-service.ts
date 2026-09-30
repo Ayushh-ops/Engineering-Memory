@@ -19,10 +19,12 @@ export interface AiAnswerResult extends LlmResponse {
     status: "ok" | "insufficient_context" | "error";
 }
 
-function isGroundedQuestion(question: string, target: { type: string; path?: string; symbolName?: string; sha?: string }): boolean {
+export function isGroundedQuestion(question: string, target: { type: string; path?: string; symbolName?: string; sha?: string }): boolean {
     const normalized = question.toLowerCase();
+    const basename = target.path ? target.path.split(/[/\\]/).pop()?.toLowerCase() : undefined;
     const specificTargets = [
         target.path,
+        basename,
         target.symbolName,
         target.sha
     ].filter((value): value is string => typeof value === "string" && value.length > 0);
@@ -45,7 +47,22 @@ function isGroundedQuestion(question: string, target: { type: string; path?: str
         return true;
     }
 
-    return normalized.includes("what does") || normalized.includes("which") || normalized.includes("who") || normalized.includes("when") || normalized.includes("why") || normalized.includes("how");
+    const questionPatterns = [
+        "what does",
+        "what is",
+        "which",
+        "who",
+        "when",
+        "why",
+        "how",
+        "explain",
+        "describe",
+        "summarize",
+        "tell me about",
+        "show"
+    ];
+
+    return questionPatterns.some((pattern) => normalized.includes(pattern));
 }
 
 export class AiAnswerService {

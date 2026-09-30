@@ -1,4 +1,5 @@
-import { analyzeTypeScript, type TypeScriptAnalysis } from "../analyzers/typescript";
+import { registry } from "../analyzers/registry";
+import type { LanguageAnalysisResult } from "../analyzers/types";
 import {
     analyzeHistoricalTypeScriptChange,
     isTypeScriptPath,
@@ -36,7 +37,7 @@ export interface RepositoryFileAnalysisResult {
     repository: string;
     sha: string;
     path: string;
-    analysis: TypeScriptAnalysis;
+    analysis: LanguageAnalysisResult;
 }
 
 export interface RepositoryFilesAnalysisResult {
@@ -66,7 +67,7 @@ export class RepositoryAnalysisService {
             repository: `${repository.owner}/${repository.repository}`,
             sha,
             path,
-            analysis: analyzeTypeScript(content, path)
+            analysis: registry.analyzeSource(content, path)
         };
     }
 
@@ -78,7 +79,7 @@ export class RepositoryAnalysisService {
         const repositoryName = `${repository.owner}/${repository.repository}`;
         const analyzedFiles: RepositoryFileAnalysis[] = files.map((file) => ({
             path: file.path,
-            analysis: analyzeTypeScript(file.content, file.path)
+            analysis: registry.analyzeSource(file.content, file.path)
         }));
         const resolvedRelationships = resolveRelativeImportRelationships(analyzedFiles);
 
@@ -115,7 +116,7 @@ export class RepositoryAnalysisService {
 
         const currentFiles: RepositoryFileAnalysis[] = comparisons.map((comparison) => ({
             path: comparison.path,
-            analysis: analyzeTypeScript(comparison.currentContent ?? "", comparison.path)
+            analysis: registry.analyzeSource(comparison.currentContent ?? "", comparison.path)
         }));
 
         const resolvedRelationships = resolveRelativeImportRelationships(currentFiles);

@@ -15,7 +15,7 @@ export interface OpenAIChatCompletionResponse {
 }
 
 export class OpenAIProvider implements LlmProvider {
-    constructor(private readonly config = createOpenAIConfigFromEnvironment()) {}
+    constructor(private readonly config = createOpenAIConfigFromEnvironment()) { }
 
     async answer(request: LlmRequest): Promise<LlmResponse> {
         try {
@@ -152,6 +152,7 @@ export class OpenAIProvider implements LlmProvider {
                 };
             }
 
+            console.error("DEBUG: raw OpenAI fetch error:", error);
             return {
                 status: "error",
                 answer: "",

@@ -1,8 +1,14 @@
 import {
-    extractTypeScriptDeclarations,
-    type TypeScriptDeclaration,
-    type TypeScriptDeclarationType
-} from "../analyzers/typescript";
+    analyzeSource,
+    extractDeclarationsForPath,
+    registry
+} from "../analyzers/registry";
+import type {
+    LanguageDeclaration,
+    LanguageDeclarationType,
+    TypeScriptDeclaration,
+    TypeScriptDeclarationType
+} from "../analyzers/types";
 import type { RepositoryContextTarget } from "../graph/repository-context";
 import type { GraphNode, RepositoryGraph } from "../graph/repository-graph";
 import type { RepositoryFileInput } from "./repository-analysis-service";
@@ -78,7 +84,7 @@ export class RepositorySourceEvidenceService {
         const declarations = new Map<string, DeclarationMatch[]>();
 
         for (const file of files) {
-            for (const declaration of extractTypeScriptDeclarations(file.content, file.path)) {
+            for (const declaration of registry.extractDeclarationsForPath(file.content, file.path)) {
                 const match = { path: file.path, declaration };
                 const key = evidenceKey(file.path, declaration.type, declaration.name);
                 const matches = declarations.get(key) ?? [];
