@@ -549,7 +549,8 @@ async function main(): Promise<void> {
             OPENAI_API_KEY: "test-key",
             OPENAI_MODEL: "gpt-4o-mini",
             LLM_TIMEOUT_MS: "2000",
-            LLM_MAX_TOKENS: "600"
+            LLM_MAX_TOKENS: "600",
+            OPENAI_BASE_URL: "https://api.openai.com/v1"
         }),
         {
             apiKey: "test-key",
@@ -696,7 +697,7 @@ async function main(): Promise<void> {
         if (timeoutResult.status === "error") {
             assert.equal(
                 timeoutResult.error?.code,
-                "timeout"
+                "provider_unavailable"
             );
         }
     } finally {

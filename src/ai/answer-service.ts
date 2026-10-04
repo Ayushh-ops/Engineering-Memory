@@ -13,6 +13,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     allowInsufficientContext?: boolean;
     evidence?: RepositorySourceEvidence[];
     impact?: ChangeImpactAnalysisResult;
+    fileContent?: string;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -116,7 +117,7 @@ export class AiAnswerService {
             };
         }
 
-        const aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact);
+        const aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
         const serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             if (request.allowInsufficientContext) {

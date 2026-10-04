@@ -49,6 +49,7 @@ export interface AiRepositoryContext {
     symbolChanges: AiSymbolChangeContext[];
     evidence?: RepositorySourceEvidence[];
     impact?: AiImpactContext;
+    fileContent?: string;
 }
 
 /**
@@ -85,7 +86,8 @@ export function buildAiContext(
     context: RepositoryContext,
     repository: string,
     evidence: RepositorySourceEvidence[] = [],
-    impact?: ChangeImpactAnalysisResult
+    impact?: ChangeImpactAnalysisResult,
+    fileContent?: string
 ): AiRepositoryContext {
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
@@ -132,6 +134,24 @@ export function buildAiContext(
         sha: change.id.split(":")[1] ?? undefined
     }));
 
+    let cappedContent: string | undefined = undefined;
+    if (fileContent) {
+        const rawCapped = fileContent.slice(0, 12000);
+        const baseEstimate = JSON.stringify({
+            repository,
+            target: toTarget(context.target.request),
+            files,
+            symbols,
+            callers,
+            commits,
+            symbolChanges,
+            ...(evidence.length > 0 ? { evidence } : {})
+        }).length;
+        const availableBudget = Math.max(0, MAX_AI_CONTEXT_BYTES - baseEstimate - AI_CONTEXT_IMPACT_WRAPPER_CHARS - 64);
+        const maxLen = Math.min(12000, availableBudget);
+        cappedContent = rawCapped.slice(0, maxLen);
+    }
+
     const base: AiRepositoryContext = {
         repository,
         target: toTarget(context.target.request),
@@ -146,7 +166,8 @@ export function buildAiContext(
         callers,
         commits,
         symbolChanges,
-        ...(evidence.length > 0 ? { evidence } : {})
+        ...(evidence.length > 0 ? { evidence } : {}),
+        ...(cappedContent ? { fileContent: cappedContent } : {})
     };
 
     if (!impact) return base;

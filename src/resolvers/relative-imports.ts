@@ -11,7 +11,7 @@ export interface ResolvedImportRelationship {
     to: string;
 }
 
-const supportedExtensions = [".ts", ".tsx", ".js", ".jsx"];
+const supportedExtensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
 
 function normalizeRepositoryPath(path: string): string {
     const segments: string[] = [];
@@ -46,12 +46,15 @@ function resolveRelativePath(importingPath: string, moduleSpecifier: string): st
 
 function getCandidatePaths(importingPath: string, moduleSpecifier: string): string[] {
     const basePath = resolveRelativePath(importingPath, moduleSpecifier);
-    const candidates = [basePath, ...supportedExtensions.map((extension) => `${basePath}${extension}`)];
+    const strippedBasePath = basePath.replace(/\.(?:js|jsx|mjs|cjs)$/, "");
+    const basePaths = strippedBasePath !== basePath ? [basePath, strippedBasePath] : [basePath];
+    const candidates = basePaths.flatMap((p) => [
+        p,
+        ...supportedExtensions.map((extension) => `${p}${extension}`),
+        ...supportedExtensions.map((extension) => `${p}/index${extension}`)
+    ]);
 
-    return [
-        ...candidates,
-        ...supportedExtensions.map((extension) => `${basePath}/index${extension}`)
-    ];
+    return Array.from(new Set(candidates));
 }
 
 export function getRelativeImportCandidatePaths(

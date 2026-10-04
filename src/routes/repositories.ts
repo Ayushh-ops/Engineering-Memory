@@ -217,8 +217,47 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
     }
 
     const { owner, repository } = parsedRepository;
+    const path = typeof req.body?.path === "string" && req.body.path.trim().length > 0 ? req.body.path.trim() : undefined;
+    const sha = typeof req.body?.sha === "string" && req.body.sha.trim().length > 0 ? req.body.sha.trim() : undefined;
 
     try {
+        if (path) {
+            let commitsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits?per_page=30&path=${encodeURIComponent(path)}`;
+            if (sha) {
+                commitsUrl += `&sha=${encodeURIComponent(sha)}`;
+            }
+
+            const githubResponse = await fetch(commitsUrl, getGitHubRequestOptions());
+
+            if (githubResponse.status === 404) {
+                return res.status(404).json({ error: "GitHub repository or path not found." });
+            }
+
+            const rateLimitError = getGitHubRateLimitError(githubResponse);
+            if (rateLimitError) {
+                return res.status(429).json({ error: rateLimitError });
+            }
+
+            if (!githubResponse.ok) {
+                return res.status(502).json({ error: "GitHub API request failed." });
+            }
+
+            const githubCommits = (await githubResponse.json()) as GitHubCommit[];
+
+            const commits = githubCommits.map((commit) => ({
+                sha: commit.sha,
+                message: commit.commit.message?.split("\n")[0] || commit.commit.message || "",
+                authorName: commit.commit.author?.name || "Unknown",
+                authorDate: commit.commit.author?.date || "",
+                files: []
+            }));
+
+            return res.status(200).json({
+                repository: `${owner}/${repository}`,
+                commits
+            });
+        }
+
         const githubResponse = await fetch(
             `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits?per_page=10`,
             getGitHubRequestOptions()

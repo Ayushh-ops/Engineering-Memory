@@ -6,18 +6,22 @@ export interface OpenAIConfig {
     baseUrl: string;
 }
 
+export function getLlmConfig(): OpenAIConfig {
+    return createOpenAIConfigFromEnvironment();
+}
+
 export function createOpenAIConfigFromEnvironment(env: Record<string, string | undefined> = process.env): OpenAIConfig {
-    const apiKey = (env.OPENAI_API_KEY ?? "").trim();
-    const model = (env.OPENAI_MODEL ?? "gpt-4o-mini").trim() || "gpt-4o-mini";
-    const timeoutMs = Number.parseInt(env.LLM_TIMEOUT_MS ?? "15000", 10);
+    const apiKey = (env.LLM_API_KEY ?? env.OPENAI_API_KEY ?? "").trim();
+    const model = (env.LLM_MODEL ?? env.OPENAI_MODEL ?? "llama-3.3-70b-versatile").trim() || "llama-3.3-70b-versatile";
+    const timeoutMs = Number.parseInt(env.LLM_TIMEOUT_MS ?? "30000", 10);
     const maxTokens = Number.parseInt(env.LLM_MAX_TOKENS ?? "800", 10);
 
-    const baseUrl = (env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").trim();
+    const baseUrl = (env.LLM_BASE_URL ?? env.OPENAI_BASE_URL ?? "https://api.groq.com/openai/v1").trim() || "https://api.groq.com/openai/v1";
 
     return {
         apiKey,
         model,
-        timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 15000,
+        timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 30000,
         maxTokens: Number.isFinite(maxTokens) ? maxTokens : 800,
         baseUrl
     };
@@ -25,19 +29,19 @@ export function createOpenAIConfigFromEnvironment(env: Record<string, string | u
 
 export function validateOpenAIConfig(config: Partial<OpenAIConfig>): OpenAIConfig {
     const normalized = createOpenAIConfigFromEnvironment({
-        OPENAI_API_KEY: config.apiKey ?? "",
-        OPENAI_MODEL: config.model ?? "gpt-4o-mini",
-        LLM_TIMEOUT_MS: String(config.timeoutMs ?? 15000),
+        LLM_API_KEY: config.apiKey ?? "",
+        LLM_MODEL: config.model ?? "llama-3.3-70b-versatile",
+        LLM_TIMEOUT_MS: String(config.timeoutMs ?? 30000),
         LLM_MAX_TOKENS: String(config.maxTokens ?? 800),
-        OPENAI_BASE_URL: config.baseUrl ?? "https://api.openai.com/v1"
+        LLM_BASE_URL: config.baseUrl ?? "https://api.groq.com/openai/v1"
     });
 
     if (!normalized.apiKey) {
-        throw new Error("OPENAI_API_KEY is required.");
+        throw new Error("LLM_API_KEY is required.");
     }
 
     if (!normalized.model) {
-        throw new Error("OPENAI_MODEL is required.");
+        throw new Error("LLM_MODEL is required.");
     }
 
     if (!Number.isFinite(normalized.timeoutMs) || normalized.timeoutMs <= 0) {

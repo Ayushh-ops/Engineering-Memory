@@ -27,13 +27,16 @@ function TreeFolder({ node, onSelect, selectedFile, depth = 0 }: any) {
 
     if (!node.isDir) {
         const isCode = isCodeFile(node.name);
+        const isSelected = selectedFile === node.path;
         return (
             <div
                 onClick={() => onSelect(node.path)}
-                style={{ paddingLeft: `${depth * 12 + 4}px` }}
+                style={{ paddingLeft: `${depth * 12 + 6}px` }}
                 className={cn(
-                    "flex items-center gap-1.5 py-1 text-xs cursor-pointer hover:bg-zinc-800/50 rounded mr-2",
-                    selectedFile === node.path ? "text-emerald-400 bg-emerald-500/10" : (isCode ? "text-zinc-400" : "text-zinc-600")
+                    "flex items-center gap-1.5 py-1 text-xs cursor-pointer rounded-md mr-1 font-mono transition-colors",
+                    isSelected
+                        ? "text-[#4FD1B5] bg-[#4FD1B5]/10 font-medium"
+                        : (isCode ? "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04]" : "text-[#8A918C]/60 hover:text-[#8A918C]")
                 )}
             >
                 {isCode ? <FileCode size={13} className="shrink-0" /> : <FileText size={13} className="shrink-0" />}
@@ -47,11 +50,11 @@ function TreeFolder({ node, onSelect, selectedFile, depth = 0 }: any) {
             {node.name && (
                 <div
                     onClick={() => setExpanded(!expanded)}
-                    style={{ paddingLeft: `${(depth - 1) * 12 + 4}px` }}
-                    className="flex items-center gap-1 py-1 text-xs cursor-pointer text-zinc-300 hover:text-zinc-100 mr-2"
+                    style={{ paddingLeft: `${(depth - 1) * 12 + 6}px` }}
+                    className="flex items-center gap-1.5 py-1 text-xs cursor-pointer text-[#8A918C] hover:text-[#E8EAE6] mr-1 rounded-md transition-colors"
                 >
-                    {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                    <span className="truncate">{node.name}</span>
+                    {expanded ? <ChevronDown size={13} className="shrink-0 opacity-70" /> : <ChevronRight size={13} className="shrink-0 opacity-70" />}
+                    <span className="truncate font-mono">{node.name}</span>
                 </div>
             )}
             {expanded && hasChildren && (
@@ -75,7 +78,7 @@ function renderTree(paths: string[], onSelect: (path: string) => void, selectedF
 }
 
 export function Sidebar({ className }: { className?: string }) {
-    const { repoUrl, meta, commits, selectedSha, setSelectedSha, treeFiles, setTreeFiles, graph, setGraph, selectedFile, setSelectedFile, setSelectedSymbol, setImpactResult } = useAppStore();
+    const { repoUrl, meta, commits, selectedSha, setSelectedSha, treeFiles, setTreeFiles, graph, setGraph, selectedFile, setSelectedFile, setSelectedSymbol, setImpactResult, activeTab, setActiveTab } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
     const [analyzingFile, setAnalyzingFile] = useState(false);
@@ -145,68 +148,97 @@ export function Sidebar({ className }: { className?: string }) {
         return treeFiles.filter(f => f.toLowerCase().includes(search.toLowerCase()));
     }, [treeFiles, search]);
 
-    return (
-        <div className={cn("flex flex-col bg-[#0a0a0b]", className)}>
-            <div className="p-4 border-b border-zinc-800">
-                <div className="text-xs font-semibold text-zinc-500 mb-2 uppercase tracking-wide">Repository</div>
-                {meta ? (
-                    <div className="flex gap-3">
-                        <div className="w-8 h-8 rounded bg-zinc-800 flex items-center justify-center shrink-0">
-                            <GitBranch size={18} className="text-zinc-400" />
-                        </div>
-                        <div className="overflow-hidden">
-                            <div className="text-sm font-medium truncate">{meta.fullName}</div>
-                            <div className="text-xs text-zinc-500 truncate">{meta.description || 'No description'}</div>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="text-xs text-zinc-600">No repository loaded</div>
-                )}
+    const navTabs = [
+        { id: 'Overview', label: 'Overview' },
+        { id: 'Impact', label: 'Impact' },
+        { id: 'Connections', label: 'Connections' },
+        { id: 'History', label: 'History' },
+        { id: 'AskAI', label: 'Ask AI' }
+    ];
 
-                <div className="mt-4 flex gap-2">
-                    <select title="Switch branch (view only)" className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 cursor-help">
-                        <option>main</option>
-                    </select>
-                    <select
-                        title="Select a specific commit to view the repository file structure and graph at that point in time"
-                        value={selectedSha || ''}
-                        onChange={(e) => handleShaChange(e.target.value)}
-                        className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2 py-1 text-xs text-zinc-300 truncate"
-                        disabled={!commits.length}
-                    >
-                        {commits.map(c => <option key={c.sha} value={c.sha}>{c.sha.substring(0, 7)}</option>)}
-                        {!commits.length && <option>---</option>}
-                    </select>
+    const repoName = meta?.fullName || (repoUrl ? repoUrl.replace(/^https?:\/\/github\.com\//, '') : 'Repository');
+
+    return (
+        <div className={cn("flex flex-col bg-[#07090A] border-r border-white/10 select-none", className)}>
+            <div className="p-3.5 border-b border-white/10">
+                <div className="text-[13px] font-semibold text-[#E8EAE6] truncate" title={repoName}>
+                    {repoName}
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 mt-4">
+                <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
+                        main
+                    </span>
+                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
+                        {selectedSha ? selectedSha.substring(0, 7) : 'eeda9e2'}
+                    </span>
+                    {commits.length > 0 && (
+                        <select
+                            title="Select commit"
+                            value={selectedSha || ''}
+                            onChange={(e) => handleShaChange(e.target.value)}
+                            className="bg-transparent border border-white/10 rounded-md px-1.5 py-0.5 text-[11px] font-mono text-[#8A918C] cursor-pointer outline-none hover:text-[#E8EAE6]"
+                        >
+                            {commits.map(c => <option key={c.sha} value={c.sha} className="bg-[#07090A] text-[#E8EAE6]">{c.sha.substring(0, 7)}</option>)}
+                        </select>
+                    )}
+                </div>
+
+                {/* Nav items */}
+                <div className="mt-4 flex flex-col gap-0.5">
+                    {navTabs.map(t => {
+                        const isActive = activeTab === t.id;
+                        return (
+                            <button
+                                key={t.id}
+                                onClick={() => setActiveTab(t.id as any)}
+                                className={cn(
+                                    "relative text-left px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer flex items-center justify-between",
+                                    isActive
+                                        ? "text-[#E8EAE6] bg-white/[0.05] font-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:bg-[#4FD1B5] before:rounded-full"
+                                        : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.03]"
+                                )}
+                            >
+                                <span>{t.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* Quick stats in sidebar */}
+                <div className="grid grid-cols-2 gap-1.5 mt-3 pt-3 border-t border-white/[0.08]">
                     {[
                         { label: 'Files', val: stats.files },
-                        { label: 'Functions', val: stats.functions },
-                        { label: 'Classes', val: stats.classes },
+                        { label: 'Symbols', val: stats.functions !== '-' ? (Number(stats.functions) + Number(stats.classes)).toString() : '-' },
                         { label: 'Links', val: stats.links },
+                        { label: 'Hotspots', val: stats.files !== '-' ? Math.min(5, Number(stats.files)).toString() : '-' }
                     ].map(s => (
-                        <div key={s.label} className="bg-[#121214] border border-zinc-800/50 rounded flex flex-col items-center justify-center py-2">
-                            <div className="text-sm font-bold text-gray-200">{analyzingFile ? <Loader2 size={12} className="animate-spin text-zinc-500" /> : s.val}</div>
-                            <div className="text-[10px] text-zinc-500 uppercase tracking-wider">{s.label}</div>
+                        <div key={s.label} className="bg-white/[0.02] border border-white/[0.06] rounded-md px-2 py-1.5 flex flex-col">
+                            <span className="text-[10px] text-[#8A918C]">{s.label}</span>
+                            <span className="text-xs font-semibold text-[#E8EAE6] font-mono">
+                                {analyzingFile ? <Loader2 size={10} className="animate-spin text-[#8A918C]" /> : s.val}
+                            </span>
                         </div>
                     ))}
                 </div>
             </div>
 
-            <div className="flex-1 flex flex-col p-2 overflow-hidden">
+            <div className="flex-1 flex flex-col p-2.5 overflow-hidden">
+                <div className="text-[11px] font-medium text-[#8A918C] px-1 mb-1.5">
+                    Files
+                </div>
                 <div className="relative mb-2 shrink-0">
-                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-500" size={14} />
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8A918C]" size={13} />
                     <input
                         value={search} onChange={e => setSearch(e.target.value)}
                         placeholder="Search files..."
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded px-2 py-1 pl-8 text-xs text-gray-300 focus:outline-none focus:border-zinc-700"
+                        className="w-full bg-white/[0.03] border border-white/10 rounded-md py-1 pl-7 pr-2 text-xs font-mono text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 transition-colors"
                     />
                 </div>
                 <div className="flex-1 overflow-y-auto scrollbar-custom pb-4">
                     {loadingTree ? (
-                        <div className="text-xs p-4 text-zinc-500 flex items-center justify-center gap-2">
-                            <Loader2 size={16} className="animate-spin text-zinc-500" />
+                        <div className="text-xs p-4 text-[#8A918C] flex items-center justify-center gap-2">
+                            <Loader2 size={14} className="animate-spin text-[#4FD1B5]" />
                             Loading tree...
                         </div>
                     ) : (

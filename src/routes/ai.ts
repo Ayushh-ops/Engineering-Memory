@@ -93,7 +93,7 @@ export function createAiRouter(
                 allowInsufficientContext: true
             });
 
-            return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "invalid_api_key" ? 401 : result.error?.code === "rate_limit" ? 429 : 502).json({
+            return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,
@@ -176,7 +176,7 @@ export function createAiRouter(
                 allowInsufficientContext: true
             });
 
-            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "invalid_api_key" ? 401 : result.error?.code === "rate_limit" ? 429 : 502).json({
+            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,

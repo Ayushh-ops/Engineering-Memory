@@ -183,4 +183,19 @@ assert.equal(
     7
 );
 
+const esmFiles: RepositoryFileAnalysis[] = [
+    {
+        path: "src/index.ts",
+        analysis: analyzeTypeScript("import { meta } from './bootstrap-meta.js';")
+    },
+    {
+        path: "src/bootstrap-meta.ts",
+        analysis: analyzeTypeScript("export const meta = true;")
+    }
+];
+const esmResolved = resolveRelativeImportRelationships(esmFiles);
+assert.equal(esmResolved.length, 1);
+assert.equal(esmResolved[0]?.from, "src/index.ts");
+assert.equal(esmResolved[0]?.to, "src/bootstrap-meta.ts");
+
 console.log("repository graph history fixture passed");

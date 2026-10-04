@@ -90,58 +90,70 @@ export function TopBar() {
     };
 
     return (
-        <div className="h-14 border-b border-zinc-800 flex items-center justify-between px-4 bg-zinc-950">
-            <div className="flex items-center gap-4 flex-1">
-                <div className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity" onClick={handleHomeClick}>
-                    <div className="w-6 h-6 rounded bg-gradient-to-br from-indigo-500 to-emerald-500 flex items-center justify-center">
-                        <Hexagon size={14} className="text-white" />
-                    </div>
-                    <span className="font-bold text-gray-200 tracking-tight flex items-center gap-2">Engineering Memory</span>
+        <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#07090A] select-none">
+            <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2 cursor-pointer hover:opacity-85 transition-opacity" onClick={handleHomeClick}>
+                    <span className="w-4 h-4 border border-[#4FD1B5] rotate-45 rounded-[3px] relative flex items-center justify-center">
+                        <span className="w-1.5 h-1.5 bg-[#4FD1B5] rounded-[1px]" />
+                    </span>
+                    <span className="font-semibold text-xs tracking-tight text-[#E8EAE6]">Engineering Memory</span>
                 </div>
 
-                <div className="flex items-center gap-1 border-l border-zinc-800 pl-4 ml-2">
+                <div className="flex items-center gap-0.5 border-l border-white/10 pl-2.5 ml-1">
                     <button
                         onClick={() => useAppStore.getState().goBack()}
                         disabled={!useAppStore.getState().canGoBack()}
-                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] disabled:opacity-20 disabled:hover:bg-transparent transition-colors cursor-pointer"
+                        title="Back"
                     >
-                        <ChevronLeft size={18} />
+                        <ChevronLeft size={16} />
                     </button>
                     <button
                         onClick={() => useAppStore.getState().goForward()}
                         disabled={!useAppStore.getState().canGoForward()}
-                        className="p-1 rounded hover:bg-zinc-800 text-zinc-400 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+                        className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] disabled:opacity-20 disabled:hover:bg-transparent transition-colors cursor-pointer"
+                        title="Forward"
                     >
-                        <ChevronRight size={18} />
+                        <ChevronRight size={16} />
                     </button>
                 </div>
             </div>
 
-            <div className="flex-1 flex justify-center">
-                <div className="flex items-center w-full max-w-xl">
+            <div className="flex-1 flex justify-center px-4 max-w-xl">
+                <div className="flex items-center w-full">
                     <div className="relative flex-1 group">
-                        <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-emerald-500" size={16} />
+                        <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8A918C]" size={14} />
                         <input
                             value={inputVal}
                             onChange={(e) => setInputVal(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleAnalyze()}
-                            className="w-full bg-[#121214] border border-zinc-800 rounded-l-md py-1.5 pl-9 pr-8 text-sm focus:outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 transition-all placeholder-zinc-600"
+                            className="w-full bg-white/[0.03] border border-white/10 rounded-l-lg py-1.5 pl-8 pr-7 text-xs font-mono text-[#E8EAE6] focus:outline-none focus:border-[#4FD1B5]/50 transition-colors placeholder:text-[#8A918C]/60"
                             placeholder="https://github.com/owner/repo"
                         />
                         {inputVal && (
-                            <button onClick={() => setInputVal('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300">
-                                <X size={14} />
+                            <button onClick={() => setInputVal('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer">
+                                <X size={13} />
                             </button>
                         )}
                     </div>
-                    <Button onClick={handleAnalyze} disabled={loading} className="rounded-l-none min-w-[100px]">
-                        {loading ? '...' : 'Analyze'}
+                    <Button onClick={handleAnalyze} disabled={loading} className="rounded-l-none text-xs py-1.5 px-3 min-w-[76px]">
+                        {loading ? 'Analyzing...' : 'Analyze'}
                     </Button>
                 </div>
             </div>
 
-            <div className="flex-1 flex justify-end items-center gap-6">
-
+            <div className="flex items-center gap-3 text-xs">
+                {useAppStore.getState().selectedFile && (
+                    <span className="font-mono text-[11px] text-[#8A918C] hidden sm:inline truncate max-w-[220px]">
+                        {useAppStore.getState().selectedFile}
+                    </span>
+                )}
+                <button
+                    onClick={handleHomeClick}
+                    className="text-[#8A918C] hover:text-[#E8EAE6] text-xs transition-colors cursor-pointer px-2 py-1 rounded hover:bg-white/[0.04]"
+                >
+                    Home
+                </button>
             </div>
         </div>
     );

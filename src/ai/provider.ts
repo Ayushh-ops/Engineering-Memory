@@ -11,7 +11,7 @@ export type LlmStatus = "ok" | "insufficient_context" | "error";
 export type LlmConfidence = "low" | "medium" | "high";
 
 export interface LlmProviderError {
-    code: "missing_api_key" | "invalid_api_key" | "rate_limit" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context";
+    code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context";
     message: string;
 }
 

@@ -200,6 +200,43 @@ async function main(): Promise<void> {
         assert.equal(multiFiles[1].path, "src/app.ts");
         assert.equal(multiFiles[1].analysis.functions[0].name, "run");
 
+        // Test: commits by path
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("github.com") && url.toString().includes("/commits?per_page=30&path=src%2Fapp.ts")) {
+                return {
+                    status: 200,
+                    ok: true,
+                    headers: new Headers(),
+                    json: async () => ([
+                        {
+                            sha: "c123456",
+                            commit: {
+                                message: "Update app.ts\n\nDetailed body",
+                                author: { name: "Dev User", date: "2026-09-01T10:00:00Z" }
+                            }
+                        }
+                    ])
+                } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+        const resCommitsPath = await request(port, "/api/repositories/commits", {
+            url: "https://github.com/owner/repo",
+            path: "src/app.ts",
+            sha: "abcdef123"
+        });
+        assert.equal(resCommitsPath.status, 200);
+        const commitsList = (resCommitsPath.body as Record<string, unknown>).commits as Array<{
+            sha: string;
+            message: string;
+            authorName: string;
+            authorDate: string;
+        }>;
+        assert.equal(commitsList.length, 1);
+        assert.equal(commitsList[0].sha, "c123456");
+        assert.equal(commitsList[0].message, "Update app.ts");
+        assert.equal(commitsList[0].authorName, "Dev User");
+
         console.log("repositories route fixtures passed");
     } finally {
         globalThis.fetch = originalFetch;

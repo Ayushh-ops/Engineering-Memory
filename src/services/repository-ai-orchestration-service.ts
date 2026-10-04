@@ -100,6 +100,26 @@ export class RepositoryAiOrchestrationService {
 
             if (!expanded) break;
         }
+        const targetFilePath = request.target.type === "file"
+            ? request.target.path
+            : request.target.type === "symbol"
+                ? request.target.symbol.path
+                : null;
+        const targetFile = targetFilePath ? analyzedFiles.find((f) => f.path === targetFilePath) : undefined;
+
+        if (request.target.type === "file" && (!targetFile || typeof targetFile.content !== "string")) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "bad_request",
+                    message: `Could not load file content for ${request.target.path}.`
+                }
+            };
+        }
+
         const impactTarget = request.target.type === "symbol" || request.target.type === "file"
             ? request.target
             : null;
@@ -109,6 +129,7 @@ export class RepositoryAiOrchestrationService {
         const evidence = impact && impact.sourceEvidence.length > 0
             ? undefined
             : this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles);
+        const fileContent = targetFile?.content ? targetFile.content.slice(0, 12000) : undefined;
         const aiRequest: AiAnswerRequest = {
             repository: `${request.owner}/${request.repository}`,
             target: request.target,
@@ -117,7 +138,8 @@ export class RepositoryAiOrchestrationService {
             limits: request.limits,
             allowInsufficientContext: request.allowInsufficientContext,
             evidence,
-            impact
+            impact,
+            fileContent
         };
 
         return this.aiService.answer(aiRequest);

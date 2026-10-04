@@ -117,7 +117,7 @@ export interface AiAnswerResult { status: string; answer: string; citations: any
 export const api = {
     repositories: {
         getMeta(url: string) { return post<RepositoryMetadata>('/api/repositories', { url }); },
-        getCommits(url: string) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url }); },
+        getCommits(url: string, sha?: string | null, path?: string) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url, sha: sha || undefined, path }); },
         getTree(url: string, sha: string) { return post<RepositoryTreeResponse>('/api/repositories/tree', { url, sha }); },
         analyze(url: string, sha: string, paths: string[]) { return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }); },
         analyzeHistory(url: string, sha: string, paths: string[]) { return post<any>('/api/repositories/analyze-history', { url, sha, paths }); },

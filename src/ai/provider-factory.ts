@@ -9,7 +9,7 @@ export function createLlmProviderFromEnvironment(
 
     switch (providerName) {
         case "openai":
-            return new OpenAIProvider(createOpenAIConfigFromEnvironment(env));
+            return new OpenAIProvider(env !== process.env ? createOpenAIConfigFromEnvironment(env) : undefined);
         default:
             throw new Error(`Unsupported LLM provider: ${providerName}. Supported providers: openai.`);
     }
