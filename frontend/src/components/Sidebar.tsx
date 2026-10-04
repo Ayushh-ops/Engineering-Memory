@@ -78,7 +78,7 @@ function renderTree(paths: string[], onSelect: (path: string) => void, selectedF
 }
 
 export function Sidebar({ className }: { className?: string }) {
-    const { repoUrl, meta, commits, selectedSha, setSelectedSha, treeFiles, setTreeFiles, graph, setGraph, selectedFile, setSelectedFile, setSelectedSymbol, setImpactResult, activeTab, setActiveTab } = useAppStore();
+    const { repoUrl, meta, commits, selectedSha, setSelectedSha, treeFiles, setTreeFiles, graph, setGraph, selectedFile, setSelectedFile, setSelectedSymbol, setImpactResult } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
     const [analyzingFile, setAnalyzingFile] = useState(false);
@@ -148,14 +148,6 @@ export function Sidebar({ className }: { className?: string }) {
         return treeFiles.filter(f => f.toLowerCase().includes(search.toLowerCase()));
     }, [treeFiles, search]);
 
-    const navTabs = [
-        { id: 'Overview', label: 'Overview' },
-        { id: 'Impact', label: 'Impact' },
-        { id: 'Connections', label: 'Connections' },
-        { id: 'History', label: 'History' },
-        { id: 'AskAI', label: 'Ask AI' }
-    ];
-
     const repoName = meta?.fullName || (repoUrl ? repoUrl.replace(/^https?:\/\/github\.com\//, '') : 'Repository');
 
     return (
@@ -169,40 +161,24 @@ export function Sidebar({ className }: { className?: string }) {
                     <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
                         main
                     </span>
-                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
-                        {selectedSha ? selectedSha.substring(0, 7) : 'eeda9e2'}
-                    </span>
-                    {commits.length > 0 && (
+                    {commits.length > 0 ? (
                         <select
                             title="Select commit"
                             value={selectedSha || ''}
                             onChange={(e) => handleShaChange(e.target.value)}
-                            className="bg-transparent border border-white/10 rounded-md px-1.5 py-0.5 text-[11px] font-mono text-[#8A918C] cursor-pointer outline-none hover:text-[#E8EAE6]"
+                            className="bg-white/[0.03] border border-white/10 rounded-full px-2 py-0.5 text-[11px] font-mono text-[#8A918C] cursor-pointer outline-none hover:text-[#E8EAE6] hover:border-white/20 transition-colors"
                         >
-                            {commits.map(c => <option key={c.sha} value={c.sha} className="bg-[#07090A] text-[#E8EAE6]">{c.sha.substring(0, 7)}</option>)}
+                            {commits.map(c => (
+                                <option key={c.sha} value={c.sha} className="bg-[#07090A] text-[#E8EAE6]">
+                                    {c.sha.substring(0, 7)}
+                                </option>
+                            ))}
                         </select>
+                    ) : (
+                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
+                            {selectedSha ? selectedSha.substring(0, 7) : 'eeda9e2'}
+                        </span>
                     )}
-                </div>
-
-                {/* Nav items */}
-                <div className="mt-4 flex flex-col gap-0.5">
-                    {navTabs.map(t => {
-                        const isActive = activeTab === t.id;
-                        return (
-                            <button
-                                key={t.id}
-                                onClick={() => setActiveTab(t.id as any)}
-                                className={cn(
-                                    "relative text-left px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer flex items-center justify-between",
-                                    isActive
-                                        ? "text-[#E8EAE6] bg-white/[0.05] font-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:bg-[#4FD1B5] before:rounded-full"
-                                        : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.03]"
-                                )}
-                            >
-                                <span>{t.label}</span>
-                            </button>
-                        );
-                    })}
                 </div>
 
                 {/* Quick stats in sidebar */}
@@ -214,9 +190,15 @@ export function Sidebar({ className }: { className?: string }) {
                         { label: 'Hotspots', val: stats.files !== '-' ? Math.min(5, Number(stats.files)).toString() : '-' }
                     ].map(s => (
                         <div key={s.label} className="bg-white/[0.02] border border-white/[0.06] rounded-md px-2 py-1.5 flex flex-col">
-                            <span className="text-[10px] text-[#8A918C]">{s.label}</span>
-                            <span className="text-xs font-semibold text-[#E8EAE6] font-mono">
-                                {analyzingFile ? <Loader2 size={10} className="animate-spin text-[#8A918C]" /> : s.val}
+                            <span className="text-[10px] text-[#8A918C] font-normal">{s.label}</span>
+                            <span className="text-xs font-semibold text-[#E8EAE6] font-mono mt-0.5 min-h-[16px] flex items-center">
+                                {analyzingFile || (loadingTree && s.val === '-') ? (
+                                    <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
+                                ) : s.val === '-' ? (
+                                    <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
+                                ) : (
+                                    s.val
+                                )}
                             </span>
                         </div>
                     ))}

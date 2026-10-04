@@ -30,8 +30,8 @@ export interface AppState {
     selectedSymbol: { name: string, type: "class" | "function" | "method", path: string } | null;
     setSelectedSymbol: (symbol: { name: string, type: "class" | "function" | "method", path: string } | null) => void;
 
-    activeTab: 'Overview' | 'Impact' | 'Connections' | 'History' | 'AskAI';
-    setActiveTab: (tab: 'Overview' | 'Impact' | 'Connections' | 'History' | 'AskAI') => void;
+    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'History' | 'AskAI';
+    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'History' | 'AskAI') => void;
 
     // Output from impact analysis
     impactResult: import('./api').ChangeImpactAnalysisResult | null;

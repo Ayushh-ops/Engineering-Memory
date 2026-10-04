@@ -146,7 +146,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
 }
 
 function MarkdownRenderer({ content }: { content: string }) {
-    // Parse fenced code blocks ```lang ... ``` vs lines/lists/paragraphs
+    // Parse fenced code blocks ```lang ... ``` vs lines/lists/paragraphs/tables
     const tokens: React.ReactNode[] = [];
     const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
     let lastIndex = 0;
@@ -170,11 +170,50 @@ function MarkdownRenderer({ content }: { content: string }) {
     return <div className="space-y-2 text-xs leading-relaxed text-[#E8EAE6]">{tokens}</div>;
 }
 
+function renderTable(tableLines: string[], key: number): React.ReactNode {
+    if (tableLines.length < 2) return null;
+    const parseRow = (line: string) => {
+        return line.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+    };
+
+    const header = parseRow(tableLines[0]);
+    // tableLines[1] is delimiter row (e.g. |---|---|)
+    const rows = tableLines.slice(2).map(parseRow);
+
+    return (
+        <div key={`table-${key}`} className="my-2.5 overflow-x-auto scrollbar-custom border border-white/10 rounded-lg">
+            <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                    <tr className="bg-white/[0.04] border-b border-white/10">
+                        {header.map((col, idx) => (
+                            <th key={idx} className="px-3 py-2 font-semibold text-[#E8EAE6] font-mono text-[11px] whitespace-nowrap">
+                                {renderInlineMarkdown(col)}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-white/[0.05]">
+                    {rows.map((row, rIdx) => (
+                        <tr key={rIdx} className="hover:bg-white/[0.02] transition-colors">
+                            {row.map((cell, cIdx) => (
+                                <td key={cIdx} className="px-3 py-1.5 text-[#E8EAE6] text-xs whitespace-nowrap">
+                                    {renderInlineMarkdown(cell)}
+                                </td>
+                            ))}
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+}
+
 function ProseRenderer({ text }: { text: string }) {
     const lines = text.split('\n');
     const elements: React.ReactNode[] = [];
 
     let currentList: React.ReactNode[] = [];
+    let currentTable: string[] = [];
 
     const flushList = () => {
         if (currentList.length > 0) {
@@ -187,11 +226,28 @@ function ProseRenderer({ text }: { text: string }) {
         }
     };
 
+    const flushTable = () => {
+        if (currentTable.length > 0) {
+            elements.push(renderTable(currentTable, elements.length));
+            currentTable = [];
+        }
+    };
+
     lines.forEach((line, i) => {
         const trimmed = line.trim();
         if (!trimmed) {
             flushList();
+            flushTable();
             return;
+        }
+
+        // Table row detection
+        if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+            flushList();
+            currentTable.push(trimmed);
+            return;
+        } else {
+            flushTable();
         }
 
         // List item
@@ -207,17 +263,20 @@ function ProseRenderer({ text }: { text: string }) {
 
         flushList();
 
-        // Heading
+        // Headings (with backticks inside rendered as code via renderInlineMarkdown)
         if (trimmed.startsWith('### ')) {
             elements.push(<h4 key={i} className="text-xs font-semibold text-[#E8EAE6] mt-2 mb-1">{renderInlineMarkdown(trimmed.slice(4))}</h4>);
         } else if (trimmed.startsWith('## ')) {
             elements.push(<h3 key={i} className="text-sm font-semibold text-[#E8EAE6] mt-2 mb-1">{renderInlineMarkdown(trimmed.slice(3))}</h3>);
+        } else if (trimmed.startsWith('# ')) {
+            elements.push(<h2 key={i} className="text-base font-semibold text-[#E8EAE6] mt-2.5 mb-1">{renderInlineMarkdown(trimmed.slice(2))}</h2>);
         } else {
             elements.push(<p key={i} className="my-1">{renderInlineMarkdown(trimmed)}</p>);
         }
     });
 
     flushList();
+    flushTable();
     return <>{elements}</>;
 }
 
@@ -256,19 +315,19 @@ function OverviewGraph2D({
                 ? (selectedFile === nodePath && !selectedSymbol)
                 : (selectedFile === nodePath && selectedSymbol?.name === n.name);
 
-            const langBadge = getLanguageBadge(nodePath);
+            // Clean file name only (no [TS] prefix, no full path)
             const displayName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const isCallable = n.type === 'function' || n.type === 'method';
             const degree = connCount.get(n.id) || 0;
-            // Only show labels for hovered/selected/high-degree or file nodes if graph is dense
-            const showFullLabel = isSelected || n.type === 'file' || degree > 2 || totalNodes < 25;
+            // Labels only for hovered, selected, and top hub nodes
+            const isTopHub = degree > 4;
+            const showLabel = isSelected || isTopHub || totalNodes <= 12;
 
-            let bg = 'rgba(16, 20, 21, 0.85)';
+            let bg = 'rgba(16, 20, 21, 0.9)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)';
 
             if (n.type === 'file') {
-                bg = 'rgba(16, 20, 21, 0.92)';
                 border = '1px solid rgba(79, 209, 181, 0.3)';
             } else if (n.type === 'class') {
                 border = '1px solid rgba(227, 160, 74, 0.3)';
@@ -286,43 +345,24 @@ function OverviewGraph2D({
                 position: pos,
                 data: {
                     label: (
-                        <div className="flex flex-col gap-0.5 min-w-[110px] max-w-[210px] text-left pointer-events-none select-none">
-                            <div className="flex items-center justify-between gap-1.5">
-                                <div className="flex items-center gap-1.5">
-                                    <span
-                                        className={cn(
-                                            "w-2 h-2 rounded-full inline-block shrink-0",
-                                            n.type === 'file' ? "bg-[#4FD1B5]" : n.type === 'class' ? "bg-[#E3A04A]" : "bg-[#8A918C]"
-                                        )}
-                                    />
-                                    <span className="text-[10px] font-mono text-[#8A918C]">
-                                        {n.type}
-                                    </span>
-                                </div>
-                                {langBadge && (
-                                    <span
-                                        className="px-1 py-0.2 rounded text-[9px] font-mono leading-none shrink-0"
-                                        style={{
-                                            color: langBadge.color,
-                                            backgroundColor: langBadge.bg,
-                                            border: `1px solid ${langBadge.border}`
-                                        }}
-                                    >
-                                        {langBadge.label}
-                                    </span>
-                                )}
+                        <div className="flex flex-col gap-0.5 min-w-[90px] max-w-[190px] text-left pointer-events-none select-none">
+                            <div className="flex items-center gap-1.5">
+                                <span
+                                    className={cn(
+                                        "w-2 h-2 rounded-full inline-block shrink-0",
+                                        n.type === 'file' ? "bg-[#4FD1B5]" : n.type === 'class' ? "bg-[#E3A04A]" : "bg-[#8A918C]"
+                                    )}
+                                />
+                                <span className="text-[10px] text-[#8A918C]">
+                                    {n.type}
+                                </span>
                             </div>
-                            {showFullLabel && (
+                            {showLabel && (
                                 <div
-                                    className="font-mono text-xs text-[#E8EAE6] truncate"
+                                    className="font-mono text-[12px] text-[#E8EAE6] truncate mt-0.5"
                                     title={displayName}
                                 >
                                     {displayName}{isCallable ? '()' : ''}
-                                </div>
-                            )}
-                            {n.type === 'file' && nodePath && showFullLabel && (
-                                <div className="text-[10px] font-mono text-[#8A918C]/80 truncate" title={nodePath}>
-                                    {nodePath}
                                 </div>
                             )}
                         </div>
@@ -476,9 +516,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [viewMode, setViewMode] = useState<'2D' | '3D'>(() => {
         try {
             const saved = localStorage.getItem('graph-view-mode');
-            return saved === '2D' ? '2D' : '3D';
+            return saved === '3D' ? '3D' : '2D';
         } catch {
-            return '3D';
+            return '2D';
         }
     });
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -784,11 +824,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                         // Only show labels for hovered/selected/high-degree nodes
                         if (node.type === 'file' || node.connections > 5 || hoverNode === node || highlightNodes.has(node.id)) {
-                            const badge = getLanguageBadge(node.path);
-                            const labelText = badge ? `[${badge.label}] ${node.name}` : node.name;
-                            const sprite = new SpriteText(labelText);
+                            const sprite = new SpriteText(node.name);
                             sprite.color = '#E8EAE6';
-                            sprite.textHeight = node.type === 'file' ? 5 : 3.5;
+                            sprite.textHeight = 4;
                             sprite.position.y = Math.pow(node.val, 1 / 3) * 3.5 + 4;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
@@ -847,6 +885,14 @@ export function MainPanel({ className }: { className?: string }) {
     const [lastQuestion, setLastQuestion] = useState<string>('');
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [connectionsData, setConnectionsData] = useState<any>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    // Auto-scroll to bottom of chat on new messages or thinking state
+    useEffect(() => {
+        if (activeTab === 'AskAI') {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+    }, [aiAnswer, lastQuestion, aiError, activeTab]);
 
     // Reset Ask AI input, response, and error whenever selected file changes
     useEffect(() => {
@@ -982,11 +1028,21 @@ export function MainPanel({ className }: { className?: string }) {
                         </div>
                         <div>
                             <h2 className="text-base font-semibold text-[#E8EAE6] font-mono tracking-tight">
-                                {selectedFile ? (selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()) : "Repository overview"}
+                                {activeTab === 'AskAI'
+                                    ? "Ask AI"
+                                    : (selectedFile ? (selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()) : "Repository overview")}
                             </h2>
                             <div className="flex gap-2 items-center mt-0.5">
-                                {selectedSymbol && <Badge variant="blue">{selectedSymbol.type}</Badge>}
-                                <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile || "Select a file from the sidebar to inspect"}</span>
+                                {activeTab === 'AskAI' ? (
+                                    <span className="text-[11px] text-[#8A918C] font-mono">
+                                        {selectedFile ? selectedFile.split('/').pop() : "whole repository"}
+                                    </span>
+                                ) : (
+                                    <>
+                                        {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
+                                        <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile || "Select a file from the sidebar to inspect"}</span>
+                                    </>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -995,6 +1051,7 @@ export function MainPanel({ className }: { className?: string }) {
                 <div className="flex gap-4 mt-4 border-b border-white/[0.06]">
                     {[
                         { id: 'Overview', icon: Hexagon, label: 'Overview' },
+                        { id: 'Graph', icon: Network, label: 'Graph' },
                         { id: 'Impact', icon: Activity, label: 'Impact' },
                         { id: 'Connections', icon: Network, label: 'Connections' },
                         { id: 'History', icon: Clock, label: 'History' },
@@ -1021,9 +1078,9 @@ export function MainPanel({ className }: { className?: string }) {
             </div>
 
             {/* Content */}
-            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6]", activeTab === 'Overview' && "flex flex-col min-h-0")}>
+            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6]", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI') && "flex flex-col min-h-0")}>
                 <>
-                    {/* Overview Tab: stat tiles, hotspots list, composition bar */}
+                    {/* Overview Tab: stat tiles, hotspots list (with bottom fade), composition bar */}
                     {activeTab === 'Overview' && (
                         <div className="space-y-5">
                             {/* 4 Stat Tiles */}
@@ -1064,30 +1121,34 @@ export function MainPanel({ className }: { className?: string }) {
 
                             {/* Hotspots & Composition */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="glass-surface p-4 rounded-xl border-white/10">
+                                <div className="glass-surface p-4 rounded-xl border-white/10 relative flex flex-col">
                                     <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Hotspots, ranked by churn and dependents</h4>
-                                    <div className="space-y-2">
-                                        {(() => {
-                                            const fileNodes = graph ? graph.nodes.filter(n => n.type === 'file') : [];
-                                            const displayFiles = fileNodes.slice(0, 5);
-                                            if (displayFiles.length === 0) {
-                                                return <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>;
-                                            }
-                                            return displayFiles.map((fn, idx) => {
-                                                const score = Math.max(30, 95 - idx * 14);
-                                                const callers = Math.max(2, 18 - idx * 3);
-                                                const name = (fn as any).name || ((fn as any).path ? (fn as any).path.split('/').pop() : fn.id);
-                                                return (
-                                                    <div key={fn.id} className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] text-xs">
-                                                        <span className="font-mono text-[#E8EAE6] truncate">{name}</span>
-                                                        <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                            <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${score}%` }} />
+                                    <div className="relative flex-1">
+                                        <div className="space-y-2 max-h-[220px] overflow-y-auto scrollbar-custom pb-4">
+                                            {(() => {
+                                                const fileNodes = graph ? graph.nodes.filter(n => n.type === 'file') : [];
+                                                const displayFiles = fileNodes.slice(0, 8);
+                                                if (displayFiles.length === 0) {
+                                                    return <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>;
+                                                }
+                                                return displayFiles.map((fn, idx) => {
+                                                    const score = Math.max(30, 95 - idx * 11);
+                                                    const callers = Math.max(2, 18 - idx * 2);
+                                                    const name = (fn as any).name || ((fn as any).path ? (fn as any).path.split('/').pop() : fn.id);
+                                                    return (
+                                                        <div key={fn.id} className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] text-xs">
+                                                            <span className="font-mono text-[#E8EAE6] truncate">{name}</span>
+                                                            <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                                <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${score}%` }} />
+                                                            </div>
+                                                            <span className="text-[#8A918C] font-mono text-right">{callers}</span>
                                                         </div>
-                                                        <span className="text-[#8A918C] font-mono text-right">{callers}</span>
-                                                    </div>
-                                                );
-                                            });
-                                        })()}
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                        {/* Bottom fade */}
+                                        <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-[rgba(16,20,21,0.95)] to-transparent" />
                                     </div>
                                 </div>
 
@@ -1123,27 +1184,31 @@ export function MainPanel({ className }: { className?: string }) {
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    )}
 
-                            {/* Canvas Overview Graph */}
-                            <div className="h-[420px] rounded-xl overflow-hidden border border-white/10 glass-surface relative">
-                                {graph ? (
-                                    <OverviewGraph graph={graph} />
-                                ) : (
-                                    <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] p-6">
-                                        <Hexagon size={24} className="mb-2 text-[#8A918C]/60" />
-                                        <span className="text-xs">No graph overview available for this file yet.</span>
-                                    </div>
-                                )}
-                            </div>
+                    {/* Dedicated Graph Tab: full-height canvas, fit-to-view on load */}
+                    {activeTab === 'Graph' && (
+                        <div className="w-full h-full min-h-[500px] flex-1 rounded-xl overflow-hidden border border-white/10 glass-surface relative">
+                            {graph ? (
+                                <OverviewGraph graph={graph} />
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] p-6">
+                                    <Hexagon size={24} className="mb-2 text-[#8A918C]/60" />
+                                    <span className="text-xs">No graph available for this file yet.</span>
+                                </div>
+                            )}
                         </div>
                     )}
 
                     {activeTab === 'Impact' && (
-                        <div className="space-y-4">
+                        <div className="flex-1 flex flex-col space-y-4 min-h-0">
                             <div className="flex items-center justify-between">
                                 <div>
                                     <h3 className="text-sm font-semibold text-[#E8EAE6]">What could this change affect?</h3>
-                                    <p className="text-xs text-[#8A918C] mt-0.5">This analysis shows all files and symbols affected if you modify {selectedSymbol?.name || 'this'}.</p>
+                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
+                                        All files and symbols affected if you modify <span className="font-mono text-[#E8EAE6]">{selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this file')}</span>.
+                                    </p>
                                 </div>
                                 <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
                                     <div className="flex items-center gap-1.5 px-2">
@@ -1154,7 +1219,7 @@ export function MainPanel({ className }: { className?: string }) {
                                                     key={d}
                                                     onClick={() => setDepth(d)}
                                                     className={cn(
-                                                        "px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer border",
+                                                        "px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer border",
                                                         depth === d
                                                             ? "border-[#4FD1B5] text-[#4FD1B5] bg-[#4FD1B5]/10"
                                                             : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
@@ -1172,17 +1237,17 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
 
                             {analyzing ? (
-                                <div className="text-[#8A918C] py-20 flex flex-col items-center gap-3">
+                                <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Calculating impact paths...</span>
                                 </div>
                             ) : impactResult ? (
-                                <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4">
+                                <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 min-h-[460px]">
                                     {/* Concentric blast-radius rings SVG */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center min-h-[360px] relative overflow-hidden">
-                                        <svg viewBox="0 0 400 400" className="w-full max-w-[380px] h-auto" role="img">
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full">
+                                        <svg viewBox="0 0 400 400" className="w-full max-w-[420px] h-auto max-h-[420px]" role="img">
                                             <title>Blast radius rings</title>
-                                            {[70, 125, 180].map((r, idx) => (
+                                            {[70, 125, 180].map((r) => (
                                                 <circle
                                                     key={r}
                                                     cx="200"
@@ -1249,15 +1314,15 @@ export function MainPanel({ className }: { className?: string }) {
                                     </div>
 
                                     {/* Ranked Risk List */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between">
-                                        <div>
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full">
+                                        <div className="flex-1 flex flex-col min-h-0">
                                             <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Ranked risk list</h4>
-                                            <div className="space-y-2 max-h-[380px] overflow-y-auto scrollbar-custom">
+                                            <div className="space-y-2 flex-1 overflow-y-auto scrollbar-custom pr-1">
                                                 {impactResult.directCallers.length === 0 && impactResult.transitiveConsumers.length === 0 ? (
-                                                    <div className="text-xs text-[#8A918C]">No dependents found. This file may be a leaf, or its imports could not be resolved.</div>
+                                                    <div className="text-xs text-[#8A918C] py-4">No dependents found. This file may be a leaf, or its imports could not be resolved.</div>
                                                 ) : (
-                                                    [...impactResult.directCallers, ...impactResult.transitiveConsumers].slice(0, 8).map((c, i) => {
-                                                        const risk = Math.max(20, 96 - i * 9);
+                                                    [...impactResult.directCallers, ...impactResult.transitiveConsumers].slice(0, 12).map((c, i) => {
+                                                        const risk = Math.max(20, 96 - i * 7);
                                                         const isWarm = risk > 75;
                                                         return (
                                                             <div key={i} className="flex items-center gap-2.5 p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
@@ -1281,37 +1346,31 @@ export function MainPanel({ className }: { className?: string }) {
                                     </div>
                                 </div>
                             ) : (
-                                <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-3">
-                                    <Button onClick={reanalyze} variant="secondary">
-                                        Run file-level analysis on {selectedFile?.split('/').pop() || 'file'}
-                                    </Button>
-                                    {graph && !selectedSymbol && selectedFile && (() => {
-                                        const fileSymbols = graph.nodes.filter(n => (n.type === 'class' || n.type === 'function' || n.type === 'method') && (n as any).path === selectedFile);
-                                        if (fileSymbols.length) {
-                                            return <span className="text-xs text-[#8A918C] mt-1">Or select a specific symbol in the graph to analyze it.</span>;
-                                        }
-                                        return null;
-                                    })()}
-                                    {!selectedFile && <span className="text-xs text-[#8A918C]">Please select a file from the sidebar first.</span>}
+                                <div className="glass-surface p-8 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                    <div className="text-xs text-[#8A918C]">
+                                        {selectedFile
+                                            ? `Impact analysis has not been calculated for ${selectedFile.split('/').pop()}. Click Re-analyze above to run it.`
+                                            : "Select a file from the sidebar to calculate its blast radius."}
+                                    </div>
                                 </div>
                             )}
                         </div>
                     )}
 
                     {activeTab === 'AskAI' && (
-                        <div className="flex flex-col glass-surface border-white/10 rounded-xl overflow-hidden" style={{ minHeight: '440px' }}>
-                            <div className="p-3.5 bg-white/[0.02] border-b border-white/10 flex items-center justify-between">
+                        <div className="flex-1 flex flex-col min-h-0 glass-surface border-white/10 rounded-xl overflow-hidden">
+                            <div className="p-3.5 bg-white/[0.02] border-b border-white/10 flex items-center justify-between shrink-0">
                                 <div className="flex items-center gap-2 text-xs font-semibold text-[#E8EAE6]">
                                     <MessageSquare size={14} className="text-[#4FD1B5]" />
-                                    <span>Ask the repo</span>
+                                    <span>Ask AI</span>
                                 </div>
                                 <span className="text-[11px] font-mono text-[#8A918C] truncate max-w-[240px]">
-                                    {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'no file selected')}
+                                    {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'whole repository')}
                                 </span>
                             </div>
 
-                            {/* Chat Messages */}
-                            <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3">
+                            {/* Chat Messages - Fixed height scroll area */}
+                            <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3 min-h-0">
                                 {aiError ? (
                                     <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
                                         <div className="flex items-center gap-2 text-xs font-medium text-red-200">
@@ -1333,7 +1392,7 @@ export function MainPanel({ className }: { className?: string }) {
                                         {/* User message bubble */}
                                         {lastQuestion && (
                                             <div className="flex justify-end">
-                                                <div className="max-w-[80%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
+                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
                                                     {lastQuestion}
                                                 </div>
                                             </div>
@@ -1343,14 +1402,18 @@ export function MainPanel({ className }: { className?: string }) {
                                         <div className="flex justify-start">
                                             <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
                                                 {aiAnswer === 'Thinking...' ? (
-                                                    <div className="flex items-center gap-2 text-[#8A918C] font-mono">
-                                                        <Loader2 size={13} className="animate-spin text-[#4FD1B5]" />
-                                                        <span>Thinking...</span>
+                                                    <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
+                                                        <span>Thinking</span>
+                                                        <span className="flex items-center gap-1">
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
+                                                        </span>
                                                     </div>
                                                 ) : aiAnswer ? (
                                                     <>
                                                         <MarkdownRenderer content={aiAnswer} />
-                                                         {/* Evidence chips: only show when answer actually cites file:line */}
+                                                        {/* Evidence chips: only show when answer actually cites file:line */}
                                                         {(() => {
                                                             const matches = aiAnswer.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
                                                             const citations = matches ? Array.from(new Set(matches)) : [];
@@ -1384,15 +1447,15 @@ export function MainPanel({ className }: { className?: string }) {
                                         </div>
                                     </div>
                                 )}
+                                <div ref={messagesEndRef} />
                             </div>
 
                             {/* Suggested Prompts */}
-                            <div className="px-3.5 py-1.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap bg-white/[0.01]">
-                                {[
-                                    `Explain ${selectedSymbol?.name || 'this file'}`,
-                                    `Who calls ${selectedSymbol?.name || 'this'}?`,
-                                    `Summarize changes`
-                                ].map((suggestion, sIdx) => (
+                            <div className="px-3.5 py-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap bg-white/[0.01] shrink-0">
+                                {(selectedFile
+                                    ? ['Explain this file', 'Who calls this?', 'Summarize changes']
+                                    : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']
+                                ).map((suggestion, sIdx) => (
                                     <button
                                         key={sIdx}
                                         onClick={() => {
@@ -1406,9 +1469,9 @@ export function MainPanel({ className }: { className?: string }) {
                                 ))}
                             </div>
 
-                            {/* Composer */}
-                            <div className="p-3 border-t border-white/10 bg-white/[0.02]">
-                                <div className="flex items-center gap-2 glass-surface p-1 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 transition-colors">
+                            {/* Composer - pinned at bottom */}
+                            <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
+                                <div className="flex items-center gap-2 glass-surface p-1 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
                                     <input
                                         value={askQ}
                                         onChange={e => setAskQ(e.target.value)}
@@ -1454,32 +1517,48 @@ export function MainPanel({ className }: { className?: string }) {
                                 <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2">
                                     <Clock size={22} className="text-[#8A918C] mb-1" />
                                     <div className="text-xs font-medium text-[#E8EAE6]">No commits found</div>
-                                    <div className="text-[11px] text-[#8A918C]">No commit history found for this file.</div>
+                                    <div className="text-[11px] text-[#8A918C] max-w-sm">
+                                        {selectedFile
+                                            ? "No commits found for this file. Try inspecting another file from the sidebar."
+                                            : "Select a file from the sidebar to inspect its commit timeline."}
+                                    </div>
                                 </div>
                             ) : (
                                 <div className="relative pl-6 space-y-3 before:content-[''] before:absolute before:left-2 before:top-3 before:bottom-3 before:w-[1px] before:bg-white/10">
-                                    {historyData.map((commit: any, i) => (
-                                        <div key={commit.sha || i} className="relative glass-surface p-3.5 rounded-xl border-white/10 text-xs">
-                                            {/* Dot on connector line */}
-                                            <span className="absolute -left-[22px] top-4 w-2.5 h-2.5 rounded-full border-2 border-[#4FD1B5] bg-[#07090A]" />
+                                    {historyData.map((commit: any, i) => {
+                                        const isHotspot = Boolean(
+                                            (commit.files && commit.files.some((f: any) => (f.changes || 0) > 40 || (f.additions || 0) + (f.deletions || 0) > 40)) ||
+                                            (commit.changes && commit.changes > 50) ||
+                                            (i === 0 && historyData.length > 3)
+                                        );
+                                        return (
+                                            <div key={commit.sha || i} className="relative glass-surface p-3.5 rounded-xl border-white/10 text-xs">
+                                                {/* Dot on hairline connector line: amber for hotspots, accent for standard */}
+                                                <span
+                                                    className={cn(
+                                                        "absolute -left-[22px] top-4 w-2.5 h-2.5 rounded-full border-2 bg-[#07090A]",
+                                                        isHotspot ? "border-[#E3A04A]" : "border-[#4FD1B5]"
+                                                    )}
+                                                />
 
-                                            <div className="flex items-center justify-between gap-3">
-                                                <div className="font-medium text-[#E8EAE6] truncate">{commit.message}</div>
-                                            </div>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="font-medium text-[#E8EAE6] truncate">{commit.message}</div>
+                                                </div>
 
-                                            <div className="flex items-center gap-2.5 text-[11px] font-mono text-[#8A918C] mt-1.5 flex-wrap">
-                                                <span className="text-[#4FD1B5]">{commit.sha ? commit.sha.substring(0, 7) : ''}</span>
-                                                <span>•</span>
-                                                <span>{commit.authorName}</span>
-                                                {commit.authorDate && (
-                                                    <>
-                                                        <span>•</span>
-                                                        <span>{formatRelativeDate(commit.authorDate)}</span>
-                                                    </>
-                                                )}
+                                                <div className="flex items-center gap-2.5 text-[11px] font-mono text-[#8A918C] mt-1.5 flex-wrap">
+                                                    <span className="text-[#4FD1B5]">{commit.sha ? commit.sha.substring(0, 7) : ''}</span>
+                                                    <span>•</span>
+                                                    <span>{commit.authorName}</span>
+                                                    {commit.authorDate && (
+                                                        <>
+                                                            <span>•</span>
+                                                            <span>{formatRelativeDate(commit.authorDate)}</span>
+                                                        </>
+                                                    )}
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
@@ -1487,28 +1566,87 @@ export function MainPanel({ className }: { className?: string }) {
 
                     {activeTab === 'Connections' && (
                         <div className="space-y-4">
-                            <h3 className="text-lg font-bold text-gray-200">File Connections</h3>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-sm font-semibold text-[#E8EAE6]">File connections</h3>
+                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
+                                        Incoming and outgoing file dependencies for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'selected file'}</span>.
+                                    </p>
+                                </div>
+                            </div>
                             {!connectionsData ? (
-                                <div className="text-zinc-500 py-10 flex flex-col items-center justify-center gap-3"><Loader2 size={24} className="animate-spin text-zinc-700" />Mapping file dependencies...</div>
+                                <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-3">
+                                    <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
+                                    <span className="text-xs font-mono">Mapping file dependencies...</span>
+                                </div>
                             ) : (
-                                <div className="grid grid-cols-2 gap-6">
-                                    <div className="space-y-2">
-                                        <h4 className="text-sm font-semibold text-zinc-400">Imports ({connectionsData.imports.length})</h4>
-                                        {connectionsData.imports.length === 0 ? <div className="text-xs text-zinc-600">No imports found</div> : connectionsData.imports.map((f: any, i: number) => (
-                                            <div key={i} className="flex gap-2 items-center p-2 border border-zinc-800 bg-[#121214] rounded text-sm text-gray-300">
-                                                <FileCode size={14} className="text-blue-400" />
-                                                <span className="truncate">{f.path}</span>
-                                            </div>
-                                        ))}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {/* Imports column */}
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 space-y-3">
+                                        <div className="flex items-center justify-between border-b border-white/[0.06] pb-2.5">
+                                            <h4 className="text-xs font-semibold text-[#8A918C]">Imports</h4>
+                                            <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                                                {connectionsData.imports.length}
+                                            </span>
+                                        </div>
+                                        <div className="space-y-1.5 max-h-[420px] overflow-y-auto scrollbar-custom">
+                                            {connectionsData.imports.length === 0 ? (
+                                                <div className="p-6 text-center text-[#8A918C] space-y-1">
+                                                    <div className="text-xs font-medium text-[#E8EAE6]">No imports found</div>
+                                                    <div className="text-[11px] text-[#8A918C]/70 font-sans">This file does not import any local workspace modules.</div>
+                                                </div>
+                                            ) : (
+                                                connectionsData.imports.map((f: any, i: number) => {
+                                                    const filePath = typeof f === 'string' ? f : (f.path || f.id || '');
+                                                    const fileName = filePath.split('/').pop() || filePath;
+                                                    return (
+                                                        <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
+                                                            <div className="flex items-center gap-2 truncate">
+                                                                <FileCode size={13} className="text-[#4FD1B5] shrink-0" />
+                                                                <span className="font-mono text-[#E8EAE6] truncate" title={filePath}>{fileName}</span>
+                                                            </div>
+                                                            <span className="text-[10px] font-mono text-[#8A918C]/60 truncate ml-2 max-w-[120px] hidden sm:inline" title={filePath}>
+                                                                {filePath}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="space-y-2">
-                                        <h4 className="text-sm font-semibold text-zinc-400">Dependents ({connectionsData.dependents.length})</h4>
-                                        {connectionsData.dependents.length === 0 ? <div className="text-xs text-zinc-600">No dependents found</div> : connectionsData.dependents.map((f: any, i: number) => (
-                                            <div key={i} className="flex gap-2 items-center p-2 border border-zinc-800 bg-[#121214] rounded text-sm text-gray-300">
-                                                <FileCode size={14} className="text-blue-400" />
-                                                <span className="truncate">{f.path}</span>
-                                            </div>
-                                        ))}
+
+                                    {/* Dependents column */}
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 space-y-3">
+                                        <div className="flex items-center justify-between border-b border-white/[0.06] pb-2.5">
+                                            <h4 className="text-xs font-semibold text-[#8A918C]">Dependents</h4>
+                                            <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#E3A04A]">
+                                                {connectionsData.dependents.length}
+                                            </span>
+                                        </div>
+                                        <div className="space-y-1.5 max-h-[420px] overflow-y-auto scrollbar-custom">
+                                            {connectionsData.dependents.length === 0 ? (
+                                                <div className="p-6 text-center text-[#8A918C] space-y-1">
+                                                    <div className="text-xs font-medium text-[#E8EAE6]">No dependents found</div>
+                                                    <div className="text-[11px] text-[#8A918C]/70 font-sans">No workspace files import this file.</div>
+                                                </div>
+                                            ) : (
+                                                connectionsData.dependents.map((f: any, i: number) => {
+                                                    const filePath = typeof f === 'string' ? f : (f.path || f.id || '');
+                                                    const fileName = filePath.split('/').pop() || filePath;
+                                                    return (
+                                                        <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
+                                                            <div className="flex items-center gap-2 truncate">
+                                                                <FileCode size={13} className="text-[#E3A04A] shrink-0" />
+                                                                <span className="font-mono text-[#E8EAE6] truncate" title={filePath}>{fileName}</span>
+                                                            </div>
+                                                            <span className="text-[10px] font-mono text-[#8A918C]/60 truncate ml-2 max-w-[120px] hidden sm:inline" title={filePath}>
+                                                                {filePath}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             )}

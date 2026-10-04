@@ -143,11 +143,6 @@ export function TopBar() {
             </div>
 
             <div className="flex items-center gap-3 text-xs">
-                {useAppStore.getState().selectedFile && (
-                    <span className="font-mono text-[11px] text-[#8A918C] hidden sm:inline truncate max-w-[220px]">
-                        {useAppStore.getState().selectedFile}
-                    </span>
-                )}
                 <button
                     onClick={handleHomeClick}
                     className="text-[#8A918C] hover:text-[#E8EAE6] text-xs transition-colors cursor-pointer px-2 py-1 rounded hover:bg-white/[0.04]"
