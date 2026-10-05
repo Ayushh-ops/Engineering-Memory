@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useAppStore } from '../store';
 import { Badge, cn, Button } from '../ui';
-import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check } from 'lucide-react';
+import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp } from 'lucide-react';
 
 export function RightPanel({ className }: { className?: string }) {
-    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha } = useAppStore();
+    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph } = useAppStore();
+    const [showReasons, setShowReasons] = useState(true);
 
     // Designed empty state
     const renderEmptyState = (message = "Select a node to see what depends on it") => (
@@ -69,7 +70,7 @@ export function RightPanel({ className }: { className?: string }) {
         );
     }
 
-    // 2. Ask AI Tab: evidence list
+    // 2. Ask AI Tab: evidence list (no blast block)
     if (activeTab === 'AskAI') {
         const evidence = impactResult?.callSiteEvidence || [];
         return (
@@ -113,11 +114,68 @@ export function RightPanel({ className }: { className?: string }) {
         );
     }
 
-    // 3. Impact Tab: blast summary
+    // 3. Connections Tab: counts only
+    if (activeTab === 'Connections') {
+        if (!selectedFile) {
+            return renderEmptyState("Select a file to inspect its connections counts");
+        }
+        let incomingCount = 0;
+        let outgoingCount = 0;
+        if (graph) {
+            const idToPath = new Map<string, string>();
+            graph.nodes.forEach((n: any) => {
+                if (n.type === 'file' && n.path) idToPath.set(n.id, n.path);
+            });
+            graph.edges.forEach((e: any) => {
+                if (e.type === 'imports') {
+                    const fromPath = idToPath.get(e.from) || e.from;
+                    const toPath = idToPath.get(e.to) || e.to;
+                    if (toPath === selectedFile) incomingCount++;
+                    if (fromPath === selectedFile) outgoingCount++;
+                }
+            });
+        }
+        return (
+            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+                <div className="p-3.5 border-b border-white/10">
+                    <div className="flex items-center justify-between">
+                        <h3 className="font-mono text-xs font-semibold truncate text-[#E8EAE6]" title={nodeName}>
+                            {nodeName}
+                        </h3>
+                        <Badge variant="default">file</Badge>
+                    </div>
+                    <div className="text-[11px] text-[#8A918C] truncate mt-1 font-mono">
+                        Connections summary
+                    </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
+                    <div className="space-y-2">
+                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                            <span className="text-xs text-[#8A918C]">Incoming dependents</span>
+                            <b className="font-mono text-sm text-[#4FD1B5]">{incomingCount}</b>
+                        </div>
+                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                            <span className="text-xs text-[#8A918C]">Outgoing imports</span>
+                            <b className="font-mono text-sm text-[#E3A04A]">{outgoingCount}</b>
+                        </div>
+                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                            <span className="text-xs text-[#8A918C]">Total connections</span>
+                            <b className="font-mono text-sm text-[#E8EAE6]">{incomingCount + outgoingCount}</b>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // 4. Impact Tab: blast summary with real numbers
     if (activeTab === 'Impact') {
         if (!selectedSymbol && !selectedFile) {
             return renderEmptyState("Select a file or symbol to view its blast radius summary");
         }
+        const hasImpactData = Boolean(impactResult && (impactResult.directCallers.length > 0 || impactResult.transitiveConsumers.length > 0 || (impactResult.paths && impactResult.paths.length > 0)));
+
         return (
             <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
                 <div className="p-3.5 border-b border-white/10">
@@ -135,7 +193,7 @@ export function RightPanel({ className }: { className?: string }) {
                 </div>
 
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                    {impactResult ? (
+                    {hasImpactData && impactResult ? (
                         <>
                             <div>
                                 <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Blast radius</div>
@@ -167,6 +225,29 @@ export function RightPanel({ className }: { className?: string }) {
                                 </div>
                             </div>
 
+                            {/* Why this score collapsible */}
+                            {impactResult.reasons && impactResult.reasons.length > 0 && (
+                                <div className="pt-2 border-t border-white/[0.08]">
+                                    <button
+                                        onClick={() => setShowReasons(!showReasons)}
+                                        className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
+                                    >
+                                        <span className="font-medium">Why this score</span>
+                                        {showReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                    </button>
+                                    {showReasons && (
+                                        <div className="space-y-1.5 mt-2">
+                                            {impactResult.reasons.map((r, i) => (
+                                                <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
+                                                    <span className="text-[#8A918C] text-[11px]">{r.label}</span>
+                                                    <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
                             {impactResult.directCallers.length > 0 && (
                                 <div className="pt-2">
                                     <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Direct callers ({impactResult.directCallers.length})</div>
@@ -185,7 +266,7 @@ export function RightPanel({ className }: { className?: string }) {
                         <div className="space-y-3">
                             <div className="text-[11px] text-[#8A918C] font-normal">Impact analysis</div>
                             <div className="text-[#8A918C] text-xs leading-relaxed">
-                                Impact analysis has not been calculated for this file yet.
+                                No impact data found for this selection.
                             </div>
                         </div>
                     )}
@@ -194,7 +275,7 @@ export function RightPanel({ className }: { className?: string }) {
         );
     }
 
-    // 4. Default for Overview and Graph tabs: Node Details
+    // 5. Default for Overview and Graph tabs: Node Details
     if (!selectedSymbol && !selectedFile) {
         return renderEmptyState();
     }
@@ -216,62 +297,31 @@ export function RightPanel({ className }: { className?: string }) {
             </div>
 
             <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                {impactResult ? (
-                    <>
-                        <div>
-                            <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Blast radius</div>
-                            <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
-                                <div className="flex items-center gap-2.5">
-                                    <div className="w-6 h-6 rounded-full bg-[#E3A04A]/10 border border-[#E3A04A]/20 flex items-center justify-center text-[#E3A04A]">
-                                        <Activity size={12} />
-                                    </div>
-                                    <span className="text-xs text-[#E8EAE6]">Affected consumers</span>
-                                </div>
-                                <span className="font-mono text-sm font-semibold text-[#4FD1B5]">
-                                    {impactResult.directCallers.length + impactResult.transitiveConsumers.length}
-                                </span>
-                            </div>
+                <div className="space-y-3">
+                    <div className="text-[11px] text-[#8A918C] font-normal">Node details</div>
+                    <div className="space-y-1.5">
+                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                            <span>Type</span>
+                            <b className="text-[#E8EAE6] font-mono">{nodeType}</b>
                         </div>
-
-                        <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                            <span>Name</span>
+                            <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]">{nodeName}</b>
+                        </div>
+                        {selectedFile && (
                             <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                <span>Direct callers</span>
-                                <b className="text-[#E8EAE6] font-mono">{impactResult.directCallers.length}</b>
+                                <span>File</span>
+                                <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
                             </div>
-                            <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                <span>Transitive consumers</span>
-                                <b className="text-[#E8EAE6] font-mono">{impactResult.transitiveConsumers.length}</b>
-                            </div>
+                        )}
+                        {selectedFile && (
                             <div className="flex justify-between py-1 text-[#8A918C]">
-                                <span>Paths mapped</span>
-                                <b className="text-[#E8EAE6] font-mono">{impactResult.paths?.length || 0}</b>
+                                <span>Full path</span>
+                                <b className="text-[#8A918C] font-mono text-[11px] truncate max-w-[160px]" title={selectedFile}>{selectedFile}</b>
                             </div>
-                        </div>
-
-                        <div className="pt-2">
-                            <Button
-                                onClick={() => setActiveTab('Impact')}
-                                variant="secondary"
-                                className="w-full text-xs py-2 justify-center"
-                            >
-                                See blast radius
-                            </Button>
-                        </div>
-                    </>
-                ) : (
-                    <div className="space-y-3">
-                        <div className="text-[11px] text-[#8A918C] font-normal">Analysis</div>
-                        <div className="text-[#8A918C] text-xs leading-relaxed">
-                            Impact analysis has not been run for this selection yet.
-                        </div>
-                        <Button
-                            onClick={() => setActiveTab('Impact')}
-                            className="w-full text-xs py-2 justify-center"
-                        >
-                            Analyze impact
-                        </Button>
+                        )}
                     </div>
-                )}
+                </div>
             </div>
         </div>
     );

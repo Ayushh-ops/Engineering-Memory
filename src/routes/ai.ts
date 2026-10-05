@@ -57,7 +57,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { repository, target, question, graph, limits } = req.body as Record<string, unknown>;
+        const { repository, target, question, graph, limits, lang } = req.body as Record<string, unknown>;
 
         if (typeof repository !== "string" || repository.trim().length === 0) {
             return res.status(400).json({ error: "Repository is required." });
@@ -83,6 +83,8 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
+        const selectedLang = lang === "hinglish" ? "hinglish" : "en";
+
         try {
             const result = await service.answer({
                 repository: repository.trim(),
@@ -90,7 +92,8 @@ export function createAiRouter(
                 question: question.trim(),
                 graph: graph as Parameters<typeof service.answer>[0]["graph"],
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
-                allowInsufficientContext: true
+                allowInsufficientContext: true,
+                lang: selectedLang
             });
 
             return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
@@ -129,7 +132,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { url, sha, paths, target, question, limits } = req.body as Record<string, unknown>;
+        const { url, sha, paths, target, question, limits, lang } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
@@ -164,6 +167,8 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
+        const selectedLang = lang === "hinglish" ? "hinglish" : "en";
+
         try {
             const result = await repositoryService.answer({
                 owner: parsedRepository.owner,
@@ -173,7 +178,8 @@ export function createAiRouter(
                 target: target as RepositoryContextTarget,
                 question: question.trim(),
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
-                allowInsufficientContext: true
+                allowInsufficientContext: true,
+                lang: selectedLang
             });
 
             return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({

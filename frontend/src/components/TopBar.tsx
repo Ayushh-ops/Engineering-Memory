@@ -142,7 +142,17 @@ export function TopBar() {
                 </div>
             </div>
 
-            <div className="flex items-center gap-3 text-xs">
+            <div className="flex items-center gap-2 text-xs">
+                <button
+                    onClick={() => useAppStore.getState().setCommandPaletteOpen(true)}
+                    className="flex items-center gap-2 px-2.5 py-1 rounded bg-white/[0.03] border border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer"
+                    title="Search files (Ctrl+K)"
+                >
+                    <span>Search files</span>
+                    <kbd className="font-mono text-[10px] text-[#8A918C] bg-white/[0.06] px-1.5 py-0.5 rounded border border-white/10">
+                        Ctrl K
+                    </kbd>
+                </button>
                 <button
                     onClick={handleHomeClick}
                     className="text-[#8A918C] hover:text-[#E8EAE6] text-xs transition-colors cursor-pointer px-2 py-1 rounded hover:bg-white/[0.04]"

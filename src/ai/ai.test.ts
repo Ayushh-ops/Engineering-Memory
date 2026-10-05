@@ -704,6 +704,69 @@ async function main(): Promise<void> {
         globalThis.fetch = originalFetch;
     }
 
+    // Test large file context building and outline/truncation behavior
+    const largeFileLines: string[] = [];
+    largeFileLines.push("import { something } from './somewhere';");
+    for (let i = 2; i <= 300; i++) {
+        largeFileLines.push(`export function func${i}() { return ${i}; }`);
+    }
+    const largeContent = largeFileLines.join("\n");
+    const largeContext = buildAiContext(contextResult.context, "example/repository", [], undefined, largeContent);
+    assert.ok(largeContext.fileContent, "Expected fileContent to be built");
+    assert.ok(largeContext.fileContent.length <= 8000, `Expected <= 8000 chars, got ${largeContext.fileContent.length}`);
+    assert.ok(largeContext.fileContent.includes("Outline:"), "Expected outline in fileContent");
+    assert.ok(largeContext.fileContent.includes("L1: import { something } from './somewhere';"), "Expected line number in outline");
+    assert.ok(largeContext.fileContent.includes("First 150 lines:"), "Expected snippet section");
+    assert.equal(largeContext.fileTruncated, true, "Expected fileTruncated flag");
+
+    const largeProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "Here is an explanation of func.",
+        citations: [],
+        confidence: "medium"
+    });
+    const largeAnswerResult = await new AiAnswerService(largeProvider).answer({
+        repository: "example/repository",
+        target: {
+            type: "file",
+            path: "src/auth.ts"
+        },
+        question: "Explain this file",
+        graph,
+        fileContent: largeContent,
+        allowInsufficientContext: true
+    });
+    assert.equal(largeAnswerResult.status, "ok", "Expected ok response, not refused for size");
+    assert.ok(
+        largeAnswerResult.answer.includes("Based on the outline and first 150 lines."),
+        `Expected truncation notice in answer, got: ${largeAnswerResult.answer}`
+    );
+
+    // Test Hinglish instruction addition
+    const hinglishProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "Auth file user authentication handle karta hai.",
+        citations: [],
+        confidence: "medium"
+    });
+    const hinglishResult = await new AiAnswerService(hinglishProvider).answer({
+        repository: "example/repository",
+        target: {
+            type: "file",
+            path: "src/auth.ts"
+        },
+        question: "Explain this file",
+        graph,
+        lang: "hinglish",
+        allowInsufficientContext: true
+    });
+    assert.equal(hinglishResult.status, "ok");
+    const lastInstructions = hinglishProvider.calls[0]?.instructions;
+    assert.ok(
+        lastInstructions?.some((inst) => inst.includes("Reply in simple Hinglish")),
+        "Expected Hinglish instruction in provider call"
+    );
+
     console.log("AI fixtures passed");
 }
 

@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type { RepositoryGraph, RepositoryMetadata, CommitMetadata, ImpactTarget } from './api';
+import { api } from './api';
+import { getPathsToAnalyze, isFileInGraph, isCodeFile } from './analyze-helpers';
 
 export interface AppState {
     // Repository Input state
@@ -30,12 +32,20 @@ export interface AppState {
     selectedSymbol: { name: string, type: "class" | "function" | "method", path: string } | null;
     setSelectedSymbol: (symbol: { name: string, type: "class" | "function" | "method", path: string } | null) => void;
 
-    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'History' | 'AskAI';
-    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'History' | 'AskAI') => void;
+    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'AskAI';
+    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'AskAI') => void;
+
+    codeHighlightLine: number | null;
+    setCodeHighlightLine: (line: number | null) => void;
 
     // Output from impact analysis
     impactResult: import('./api').ChangeImpactAnalysisResult | null;
     setImpactResult: (r: import('./api').ChangeImpactAnalysisResult | null) => void;
+
+    // Command palette state
+    commandPaletteOpen: boolean;
+    setCommandPaletteOpen: (open: boolean) => void;
+    selectFile: (path: string) => Promise<void>;
 
     // Cache to prevent redundant fetching
     repoCache: Record<string, { meta?: RepositoryMetadata, commits?: CommitMetadata[], trees?: Record<string, string[]>, graphs?: Record<string, RepositoryGraph> }>;
@@ -79,8 +89,37 @@ export const useAppStore = create<AppState>((set, get) => ({
     activeTab: 'Impact',
     setActiveTab: (tab) => set({ activeTab: tab }),
 
+    codeHighlightLine: null,
+    setCodeHighlightLine: (line) => set({ codeHighlightLine: line }),
+
     impactResult: null,
     setImpactResult: (r) => set({ impactResult: r }),
+
+    commandPaletteOpen: false,
+    setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+
+    selectFile: async (path: string) => {
+        const { repoUrl, selectedSha, treeFiles, graph } = get();
+        if (!repoUrl || !selectedSha) return;
+
+        set({
+            selectedFile: path,
+            selectedSymbol: null,
+            impactResult: null,
+        });
+
+        const isCode = isCodeFile(path);
+        if (!isCode) return;
+        if (graph && isFileInGraph(graph, path)) return;
+
+        try {
+            const paths = getPathsToAnalyze(treeFiles, path);
+            const data = await api.repositories.analyze(repoUrl, selectedSha, paths);
+            set({ graph: data.graph });
+        } catch (e) {
+            console.error("Analysis failed", e);
+        }
+    },
 
     repoCache: {},
 

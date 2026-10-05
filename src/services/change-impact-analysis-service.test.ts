@@ -43,6 +43,9 @@ assert.deepEqual(result.tests.map((item) => ({
 assert.equal(result.reviewCandidates[0]?.reason, "should-be-reviewed");
 assert.equal(result.reviewCandidates[1]?.reason, "validation-candidate");
 assert.equal(result.reviewCandidates[1]?.evidence, "path-convention");
+assert.ok(Array.isArray(result.reasons));
+assert.ok(result.reasons.some((r) => r.label === "Dependents" && r.value.includes("files depend on it")));
+assert.ok(result.reasons.some((r) => r.label === "Test coverage" && r.value.includes("test file")));
 
 const bounded = service.analyze(graph, target, { maxDepth: 2, maxResults: 10 });
 assert.deepEqual(bounded.transitiveConsumers.map((item) => item.symbol.name), ["middle"]);
@@ -107,6 +110,10 @@ assert.deepEqual(fileResult.relatedDependencies.map((dependency) => ({
     { path: "src/consumer.ts", relationship: "reverse-import", evidence: "imports-edge" }
 ]);
 assert.deepEqual(fileResult.reviewCandidates.map((candidate) => candidate.relationship), ["direct-import", "reverse-import"]);
+assert.equal(fileResult.directCallers.length, 1);
+assert.equal(fileResult.directCallers[0].symbol.path, "src/consumer.ts");
+assert.equal(fileResult.paths.length, 1);
+assert.equal(fileResult.paths[0].classification, "direct-caller");
 
 const evidenceResult = service.analyze(graph, target, undefined, [
     { path: "src/target.ts", content: "export function target() { return 1; }" },

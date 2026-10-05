@@ -430,6 +430,67 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
     }
 });
 
+router.get("/file", async (req: Request, res: Response) => {
+    const rawUrl = typeof req.query.url === "string" ? req.query.url : "";
+    const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+    const rawSha = typeof req.query.sha === "string" ? req.query.sha : "";
+
+    const parsedRepository = parseGitHubRepositoryUrl(rawUrl);
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    if (!rawPath.trim()) {
+        return res.status(400).json({ error: "A non-empty file path is required." });
+    }
+
+    // Path traversal check
+    const normalized = rawPath.replace(/\\/g, "/");
+    if (normalized.startsWith("/") || normalized.includes("..") || normalized.split("/").includes("..")) {
+        return res.status(400).json({ error: "Invalid file path (path traversal detected)." });
+    }
+
+    if (!rawSha.trim()) {
+        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+    }
+
+    const { owner, repository } = parsedRepository;
+    try {
+        const result = await retrieveHistoricalFileContent(owner, repository, normalized, rawSha.trim());
+        if (result.status === "not-found") {
+            return res.status(404).json({ error: "GitHub repository or file not found." });
+        }
+        if (result.status === "rate-limit") {
+            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
+        }
+        if (result.status === "api-failure") {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+        if (result.status === "not-file") {
+            return res.status(400).json({ error: "The requested path must refer to a file." });
+        }
+
+        // Cap content at 200 KB (200 * 1024 bytes)
+        const MAX_BYTES = 200 * 1024;
+        let content = result.content;
+        let truncated = false;
+        if (Buffer.byteLength(content, "utf8") > MAX_BYTES) {
+            content = Buffer.from(content, "utf8").subarray(0, MAX_BYTES).toString("utf8");
+            truncated = true;
+        }
+
+        return res.status(200).json({
+            repository: `${owner}/${repository}`,
+            path: normalized,
+            sha: rawSha.trim(),
+            content,
+            truncated
+        });
+    } catch {
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
 router.post("/repositories/analyze-file", async (req: Request, res: Response) => {
     const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
     const path = req.body?.path;

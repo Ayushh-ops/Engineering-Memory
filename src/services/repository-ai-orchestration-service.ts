@@ -17,6 +17,7 @@ export interface RepositoryAiOrchestrationRequest {
     question: string;
     limits?: Partial<RepositoryContextLimits>;
     allowInsufficientContext?: boolean;
+    lang?: "en" | "hinglish";
 }
 
 export class RepositoryAiOrchestrationService {
@@ -129,7 +130,7 @@ export class RepositoryAiOrchestrationService {
         const evidence = impact && impact.sourceEvidence.length > 0
             ? undefined
             : this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles);
-        const fileContent = targetFile?.content ? targetFile.content.slice(0, 12000) : undefined;
+        const fileContent = targetFile?.content ?? undefined;
         const aiRequest: AiAnswerRequest = {
             repository: `${request.owner}/${request.repository}`,
             target: request.target,
@@ -139,7 +140,8 @@ export class RepositoryAiOrchestrationService {
             allowInsufficientContext: request.allowInsufficientContext,
             evidence,
             impact,
-            fileContent
+            fileContent,
+            lang: request.lang
         };
 
         return this.aiService.answer(aiRequest);

@@ -14,6 +14,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     evidence?: RepositorySourceEvidence[];
     impact?: ChangeImpactAnalysisResult;
     fileContent?: string;
+    lang?: "en" | "hinglish";
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -117,30 +118,20 @@ export class AiAnswerService {
             };
         }
 
-        const aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
-        const serializedContext = JSON.stringify(aiContext);
+        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
+        let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
-            if (request.allowInsufficientContext) {
-                return {
-                    status: "insufficient_context",
-                    answer: "The assembled repository context is too large for the AI provider, so it was not sent.",
-                    citations: [],
-                    confidence: "low",
-                    missingData: ["context_too_large"]
+            // Trim fileContent or evidence to fit within MAX_AI_CONTEXT_BYTES instead of refusing
+            if (aiContext.fileContent && aiContext.fileContent.length > 2000) {
+                const trimBudget = Math.max(1000, 2000);
+                aiContext = {
+                    ...aiContext,
+                    fileContent: aiContext.fileContent.slice(0, trimBudget),
+                    fileTruncated: true,
+                    fileTruncatedLines: aiContext.fileTruncatedLines ?? 150
                 };
+                serializedContext = JSON.stringify(aiContext);
             }
-
-            return {
-                status: "error",
-                answer: "",
-                citations: [],
-                confidence: "low",
-                error: {
-                    code: "oversized_context",
-                    message: "The repository context is too large for the AI provider."
-                },
-                missingData: ["context_too_large"]
-            };
         }
 
         if (request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
@@ -153,15 +144,22 @@ export class AiAnswerService {
             };
         }
 
+        const instructions = [
+            "Answer only from the supplied repository facts.",
+            "If the context is insufficient, say so explicitly."
+        ];
+        if (request.lang === "hinglish") {
+            instructions.push(
+                "Reply in simple Hinglish (Hindi in Roman script mixed with English). Keep file names, function names, variable names and technical terms in English. Short sentences, short bullets."
+            );
+        }
+
         const providerRequest: LlmRequest = {
             repository: request.repository,
             target: aiContext.target,
             question: request.question,
             facts: aiContext,
-            instructions: [
-                "Answer only from the supplied repository facts.",
-                "If the context is insufficient, say so explicitly."
-            ]
+            instructions
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
@@ -188,9 +186,20 @@ export class AiAnswerService {
             };
         }
 
+        let finalAnswer = providerResponse.answer;
+        if (aiContext.fileTruncated) {
+            const linesCount = aiContext.fileTruncatedLines ?? 150;
+            const truncationNotice = `Based on the outline and first ${linesCount} lines.`;
+            if (finalAnswer) {
+                finalAnswer = `${finalAnswer}\n\n${truncationNotice}`;
+            } else {
+                finalAnswer = truncationNotice;
+            }
+        }
+
         return {
             status: "ok",
-            answer: providerResponse.answer,
+            answer: finalAnswer,
             citations: providerResponse.citations,
             confidence: providerResponse.confidence,
             missingData: providerResponse.missingData

@@ -32,6 +32,7 @@ function TreeFolder({ node, onSelect, selectedFile, depth = 0 }: any) {
             <div
                 onClick={() => onSelect(node.path)}
                 style={{ paddingLeft: `${depth * 12 + 6}px` }}
+                title={!isCode ? "Not analyzed" : undefined}
                 className={cn(
                     "flex items-center gap-1.5 py-1 text-xs cursor-pointer rounded-md mr-1 font-mono transition-colors",
                     isSelected
@@ -98,50 +99,31 @@ export function Sidebar({ className }: { className?: string }) {
     };
 
     const handleFileSelect = async (path: string) => {
-        if (!repoUrl || !selectedSha) return;
-        setSelectedFile(path);
-
-        const isCode = isCodeFile(path);
-        setSelectedSymbol(null);
-        setImpactResult(null);
-
-        // Only code files trigger graph analysis
-        if (!isCode) {
-            return;
-        }
-
-        // Cache hit?
-        if (graph && isFileInGraph(graph, path)) {
-            return;
-        }
-
         setAnalyzingFile(true);
         try {
-            const paths = getPathsToAnalyze(treeFiles, path);
-            const data = await api.repositories.analyze(repoUrl, selectedSha, paths);
-            setGraph(data.graph);
-        } catch (e) {
-            console.error("Analysis failed", e);
+            await useAppStore.getState().selectFile(path);
         } finally {
             setAnalyzingFile(false);
         }
     };
 
     const stats = useMemo(() => {
-        if (!graph) return { files: '-', functions: '-', classes: '-', links: '-' };
-        let f = 0, fn = 0, c = 0;
-        for (const n of graph.nodes) {
-            if (n.type === 'file') f++;
-            if (n.type === 'function' || n.type === 'method') fn++;
-            if (n.type === 'class') c++;
+        const fileCount = treeFiles && treeFiles.length > 0 ? treeFiles.length : (graph ? graph.nodes.filter(n => n.type === 'file').length : 0);
+        if (!graph && fileCount === 0) return { files: '-', functions: '-', classes: '-', links: '-' };
+        let fn = 0, c = 0;
+        if (graph) {
+            for (const n of graph.nodes) {
+                if (n.type === 'function' || n.type === 'method') fn++;
+                if (n.type === 'class') c++;
+            }
         }
         return {
-            files: f.toString(),
+            files: fileCount.toString(),
             functions: fn.toString(),
             classes: c.toString(),
-            links: graph.edges.length.toString()
+            links: (graph ? graph.edges.length : 0).toString()
         };
-    }, [graph]);
+    }, [graph, treeFiles]);
 
     const filteredTree = useMemo(() => {
         if (!search) return treeFiles;
@@ -217,7 +199,7 @@ export function Sidebar({ className }: { className?: string }) {
                         className="w-full bg-white/[0.03] border border-white/10 rounded-md py-1 pl-7 pr-2 text-xs font-mono text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 transition-colors"
                     />
                 </div>
-                <div className="flex-1 overflow-y-auto scrollbar-custom pb-4">
+                <div className="flex-1 overflow-y-auto scrollbar-custom pt-1 pb-4">
                     {loadingTree ? (
                         <div className="text-xs p-4 text-[#8A918C] flex items-center justify-center gap-2">
                             <Loader2 size={14} className="animate-spin text-[#4FD1B5]" />

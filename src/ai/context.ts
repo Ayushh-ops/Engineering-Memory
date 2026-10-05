@@ -50,6 +50,8 @@ export interface AiRepositoryContext {
     evidence?: RepositorySourceEvidence[];
     impact?: AiImpactContext;
     fileContent?: string;
+    fileTruncated?: boolean;
+    fileTruncatedLines?: number;
 }
 
 /**
@@ -135,21 +137,93 @@ export function buildAiContext(
     }));
 
     let cappedContent: string | undefined = undefined;
+    let fileTruncated: boolean | undefined = undefined;
+    let fileTruncatedLines: number | undefined = undefined;
+
     if (fileContent) {
-        const rawCapped = fileContent.slice(0, 12000);
-        const baseEstimate = JSON.stringify({
-            repository,
-            target: toTarget(context.target.request),
-            files,
-            symbols,
-            callers,
-            commits,
-            symbolChanges,
-            ...(evidence.length > 0 ? { evidence } : {})
-        }).length;
-        const availableBudget = Math.max(0, MAX_AI_CONTEXT_BYTES - baseEstimate - AI_CONTEXT_IMPACT_WRAPPER_CHARS - 64);
-        const maxLen = Math.min(12000, availableBudget);
-        cappedContent = rawCapped.slice(0, maxLen);
+        const lines = fileContent.split("\n");
+        const totalLines = lines.length;
+        const snippetLineCount = Math.min(150, totalLines);
+        const snippet = lines.slice(0, snippetLineCount).join("\n");
+        const isTruncated = totalLines > 150;
+        if (isTruncated) {
+            fileTruncated = true;
+            fileTruncatedLines = snippetLineCount;
+        }
+
+        // Outline: imports, exported symbols and function signatures with line numbers
+        const outlineEntries: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const lineNum = i + 1;
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) {
+                continue;
+            }
+            if (
+                trimmed.startsWith("import ") ||
+                trimmed.startsWith("export ") ||
+                trimmed.startsWith("function ") ||
+                trimmed.startsWith("async function ") ||
+                trimmed.startsWith("class ") ||
+                trimmed.startsWith("interface ") ||
+                trimmed.startsWith("type ") ||
+                /^(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/.test(trimmed) ||
+                /^(?:public|private|protected|static|async)?\s*(?:function\s+)?\w+\s*\([^)]*\)\s*(?::\s*[^;{]+)?\s*[{;]/.test(trimmed)
+            ) {
+                // Shorten line if too long
+                const truncatedLine = trimmed.length > 120 ? trimmed.slice(0, 117) + "..." : trimmed;
+                outlineEntries.push(`L${lineNum}: ${truncatedLine}`);
+            }
+        }
+
+        // Up to 5 direct imports/dependents as file names only
+        const targetPath = context.target.request.type === "file"
+            ? context.target.request.path
+            : context.target.request.type === "symbol"
+                ? context.target.request.symbol.path
+                : undefined;
+
+        const directImportPaths = targetPath
+            ? context.imports
+                .filter((edge) => (decodeGraphFileId(edge.from) ?? edge.from) === targetPath)
+                .map((edge) => (decodeGraphFileId(edge.to) ?? edge.to).split("/").pop() ?? (decodeGraphFileId(edge.to) ?? edge.to))
+                .filter((p, idx, arr) => arr.indexOf(p) === idx)
+                .slice(0, 5)
+            : [];
+
+        const directDependentPaths = targetPath
+            ? context.imports
+                .filter((edge) => (decodeGraphFileId(edge.to) ?? edge.to) === targetPath)
+                .map((edge) => (decodeGraphFileId(edge.from) ?? edge.from).split("/").pop() ?? (decodeGraphFileId(edge.from) ?? edge.from))
+                .filter((p, idx, arr) => arr.indexOf(p) === idx)
+                .slice(0, 5)
+            : [];
+
+        // Outline section: cap outline entries so snippet also fits
+        const outlineText = outlineEntries.length > 0 ? `Outline:\n${outlineEntries.join("\n")}` : "";
+        const importsText = directImportPaths.length > 0 ? `Direct imports: ${directImportPaths.join(", ")}` : "";
+        const dependentsText = directDependentPaths.length > 0 ? `Direct dependents: ${directDependentPaths.join(", ")}` : "";
+        const snippetText = `First ${snippetLineCount} lines:\n${snippet}`;
+
+        const otherSections = [importsText, dependentsText, snippetText].filter(Boolean).join("\n\n");
+        // Remaining budget for outline from 8000 chars
+        const outlineBudget = Math.max(0, 8000 - otherSections.length - 4);
+        const cappedOutline = outlineText.length > outlineBudget ? outlineText.slice(0, outlineBudget) : outlineText;
+
+        const sections: string[] = [];
+        if (cappedOutline) sections.push(cappedOutline);
+        if (importsText) sections.push(importsText);
+        if (dependentsText) sections.push(dependentsText);
+        sections.push(snippetText);
+
+        let assembled = sections.join("\n\n");
+        if (assembled.length > 8000) {
+            assembled = assembled.slice(0, 8000);
+            fileTruncated = true;
+            fileTruncatedLines = fileTruncatedLines ?? snippetLineCount;
+        }
+        cappedContent = assembled;
     }
 
     const base: AiRepositoryContext = {
@@ -167,7 +241,9 @@ export function buildAiContext(
         commits,
         symbolChanges,
         ...(evidence.length > 0 ? { evidence } : {}),
-        ...(cappedContent ? { fileContent: cappedContent } : {})
+        ...(cappedContent !== undefined ? { fileContent: cappedContent } : {}),
+        ...(fileTruncated !== undefined ? { fileTruncated } : {}),
+        ...(fileTruncatedLines !== undefined ? { fileTruncatedLines } : {})
     };
 
     if (!impact) return base;

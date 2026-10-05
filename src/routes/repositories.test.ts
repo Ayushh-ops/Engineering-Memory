@@ -237,6 +237,33 @@ async function main(): Promise<void> {
         assert.equal(commitsList[0].message, "Update app.ts");
         assert.equal(commitsList[0].authorName, "Dev User");
 
+        // Test: GET /api/file path traversal rejection
+        const traversalRes = await fetch(`http://127.0.0.1:${port}/api/file?url=https://github.com/owner/repo&sha=abcdef123&path=../secret.txt`);
+        assert.equal(traversalRes.status, 400);
+        const traversalBody = await traversalRes.json() as Record<string, unknown>;
+        assert.match(String(traversalBody.error), /path traversal/);
+
+        // Test: GET /api/file successful retrieval
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("/contents/src/app.ts")) {
+                return {
+                    status: 200,
+                    ok: true,
+                    headers: new Headers(),
+                    json: async () => ({
+                        type: "file",
+                        content: Buffer.from("console.log('hello world');").toString("base64")
+                    })
+                } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+        const getFileRes = await fetch(`http://127.0.0.1:${port}/api/file?url=https://github.com/owner/repo&sha=abcdef123&path=src/app.ts`);
+        assert.equal(getFileRes.status, 200);
+        const getFileBody = await getFileRes.json() as Record<string, unknown>;
+        assert.equal(getFileBody.path, "src/app.ts");
+        assert.equal(getFileBody.content, "console.log('hello world');");
+
         console.log("repositories route fixtures passed");
     } finally {
         globalThis.fetch = originalFetch;

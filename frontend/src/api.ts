@@ -53,7 +53,19 @@ export function post<T>(url: string, body: any): Promise<T> {
     return fetchJson<T>(url, { method: 'POST', body: JSON.stringify(body) });
 }
 
+export function get<T>(url: string): Promise<T> {
+    return fetchJson<T>(url, { method: 'GET' });
+}
+
 // ------ DOMAIN TYPES ------ //
+export interface FileContentResponse {
+    repository: string;
+    path: string;
+    sha: string;
+    content: string;
+    truncated?: boolean;
+}
+
 export interface RepositoryMetadata {
     name: string; fullName: string; owner: string; description: string;
     language: string; stars: number; forks: number; htmlUrl: string;
@@ -109,6 +121,7 @@ export interface ChangeImpactAnalysisResult {
     limitations: string[];
     relatedDependencies?: string[];
     reviewCandidates?: string[];
+    reasons?: Array<{ label: string; value: string }>;
 }
 
 export interface AiAnswerResult { status: string; answer: string; citations: any[]; confidence?: string; missingData?: string[]; error?: any; }
@@ -119,6 +132,10 @@ export const api = {
         getMeta(url: string) { return post<RepositoryMetadata>('/api/repositories', { url }); },
         getCommits(url: string, sha?: string | null, path?: string) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url, sha: sha || undefined, path }); },
         getTree(url: string, sha: string) { return post<RepositoryTreeResponse>('/api/repositories/tree', { url, sha }); },
+        getFile(url: string, sha: string, path: string) {
+            const query = new URLSearchParams({ url, sha, path }).toString();
+            return get<FileContentResponse>(`/api/file?${query}`);
+        },
         analyze(url: string, sha: string, paths: string[]) { return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }); },
         analyzeHistory(url: string, sha: string, paths: string[]) { return post<any>('/api/repositories/analyze-history', { url, sha, paths }); },
     },
@@ -131,8 +148,8 @@ export const api = {
         }
     },
     ai: {
-        ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string) {
-            return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question });
+        ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string, lang?: "en" | "hinglish") {
+            return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
         }
     }
 };

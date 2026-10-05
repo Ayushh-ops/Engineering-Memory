@@ -102,6 +102,7 @@ export interface ChangeImpactAnalysisResult {
     callSiteEvidence: ChangeImpactCallSiteEvidence[];
     impactNodes: ChangeImpactNode[];
     limitations: string[];
+    reasons?: Array<{ label: string; value: string }>;
 }
 
 export type ChangeImpactTarget =
@@ -135,6 +136,64 @@ function isTestPath(path: string): boolean {
     const normalized = path.toLowerCase().replace(/\\/g, "/");
     return normalized.includes("test") || normalized.includes("__tests__") ||
         /\.(test|spec)\.tsx?$/.test(normalized);
+}
+
+function buildImpactReasons(
+    targetPath: string,
+    directCount: number,
+    transitiveCount: number,
+    graph: RepositoryGraph
+): Array<{ label: string; value: string }> {
+    const totalDeps = directCount + transitiveCount;
+    const reasons: Array<{ label: string; value: string }> = [];
+
+    // 1. Dependents count
+    if (totalDeps === 1) {
+        reasons.push({ label: "Dependents", value: "1 file depends on it" });
+    } else {
+        reasons.push({ label: "Dependents", value: `${totalDeps} files depend on it` });
+    }
+
+    // 2. Direct vs transitive
+    if (totalDeps > 0) {
+        reasons.push({
+            label: "Call breakdown",
+            value: `${directCount} direct, ${transitiveCount} transitive`
+        });
+    }
+
+    // 3. Commit churn if available in graph
+    const fileNode = graph.nodes.find((n) => n.type === "file" && n.path === targetPath);
+    let commitCount = 0;
+    if (fileNode) {
+        for (const edge of graph.edges) {
+            if (edge.type === "changed" && edge.to === fileNode.id) {
+                commitCount++;
+            }
+        }
+    }
+    if (commitCount > 0) {
+        reasons.push({
+            label: "Commit churn",
+            value: `Changed ${commitCount} time${commitCount === 1 ? "" : "s"} recently`
+        });
+    }
+
+    // 4. Has related test file yes/no
+    const baseName = targetPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+    const hasTestFile = graph.nodes.some((n) => {
+        if (n.type !== "file") return false;
+        if (!isTestPath(n.path)) return false;
+        const testBase = n.path.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
+        return testBase === baseName || n.path.includes(baseName);
+    });
+
+    reasons.push({
+        label: "Test coverage",
+        value: hasTestFile ? "Related test file found" : "No test file found"
+    });
+
+    return reasons;
 }
 
 function emptyResults(): Pick<ChangeImpactAnalysisResult, "directCallers" | "transitiveConsumers"> {
@@ -202,6 +261,7 @@ export class ChangeImpactAnalysisService {
             paths: [] as ChangeImpactPath[],
             callSiteEvidence: [] as ChangeImpactCallSiteEvidence[],
             impactNodes: [] as ChangeImpactNode[],
+            reasons: undefined as Array<{ label: string; value: string }> | undefined,
             limitations: [
                 "Results describe statically observed calls in the supplied graph.",
                 "A result is a potential impact or review candidate, not a claim that a change will break it.",
@@ -217,6 +277,7 @@ export class ChangeImpactAnalysisService {
         if (targets.length > 1) return { ...base, status: "ambiguous" };
 
         if (target.type === "file") {
+            const targetNode = targets[0];
             const directImports = queryRepositoryGraph(graph, { type: "file-imports", path: target.path }).files;
             const reverseImports = queryRepositoryGraph(graph, { type: "file-dependents", path: target.path }).files;
             const relatedFiles = queryRepositoryGraph(graph, { type: "related-files", path: target.path }).files;
@@ -243,6 +304,48 @@ export class ChangeImpactAnalysisService {
             ];
             if (dependencies.length > limits.maxResults) base.bounds.truncated = true;
             base.relatedDependencies.push(...dependencies.slice(0, limits.maxResults));
+
+            // Traverse reverse imports (dependents) to populate directCallers, transitiveConsumers, and paths
+            const visited = new Set<string>([targetNode.id]);
+            const queue: Array<{ id: string; path: string; depth: number }> = [{ id: targetNode.id, path: target.path, depth: 0 }];
+            const filesByPath = new Map(graph.nodes.filter((n) => n.type === "file").map((n) => [n.path, n]));
+
+            while (queue.length > 0) {
+                const current = queue.shift()!;
+                if (current.depth >= limits.maxDepth) continue;
+                const dependents = queryRepositoryGraph(graph, { type: "file-dependents", path: current.path }).files;
+                for (const dep of dependents) {
+                    if (visited.has(dep.id)) continue;
+                    visited.add(dep.id);
+                    const depth = current.depth + 1;
+                    const callerResult: ChangeImpactSymbolResult = {
+                        symbol: {
+                            id: dep.id,
+                            type: "function" as any,
+                            name: dep.path.split("/").pop() || dep.path,
+                            path: dep.path
+                        },
+                        depth,
+                        relationship: depth === 1 ? ("direct-caller" as const) : ("transitive-consumer" as const),
+                        evidence: "calls-edge" as const
+                    };
+                    if (depth === 1) {
+                        base.directCallers.push(callerResult);
+                    } else {
+                        base.transitiveConsumers.push(callerResult);
+                    }
+                    base.paths.push({
+                        id: pathId(targetNode.id, dep.id),
+                        target: targetNode.id,
+                        nodes: [dep.id, targetNode.id],
+                        relationships: [],
+                        depth,
+                        classification: depth === 1 ? "direct-caller" : "transitive-consumer"
+                    });
+                    queue.push({ id: dep.id, path: dep.path, depth });
+                }
+            }
+
             base.reviewCandidates.push(...base.relatedDependencies.map((dependency) => ({
                 path: dependency.path,
                 relationship: dependency.relationship,
@@ -253,6 +356,7 @@ export class ChangeImpactAnalysisService {
                 ? this.sourceEvidenceService.select(target, graph, files)
                 : [];
             if (files.length === 0) base.limitations.push("Source evidence was not requested because no fetched files were supplied.");
+            base.reasons = buildImpactReasons(target.path, base.directCallers.length, base.transitiveConsumers.length, graph);
             return { ...base, status: "ok" };
         }
 
@@ -407,6 +511,7 @@ export class ChangeImpactAnalysisService {
         if (files.length === 0) {
             result.limitations.push("Source evidence was not requested because no fetched files were supplied.");
         }
+        result.reasons = buildImpactReasons(target.symbol.path, result.directCallers.length, result.transitiveConsumers.length, graph);
         return result;
     }
 }

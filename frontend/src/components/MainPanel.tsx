@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile } from '../analyze-helpers';
+import { CodeViewer } from './CodeViewer';
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
     // Transform to react-flow shape
@@ -875,7 +876,7 @@ function formatRelativeDate(dateStr: string): string {
 }
 
 export function MainPanel({ className }: { className?: string }) {
-    const { activeTab, setActiveTab, selectedFile, selectedSymbol, impactResult, setImpactResult, graph, repoUrl, selectedSha } = useAppStore();
+    const { activeTab, setActiveTab, selectedFile, setSelectedFile, selectedSymbol, impactResult, setImpactResult, graph, repoUrl, selectedSha, setCodeHighlightLine } = useAppStore();
     const [depth, setDepth] = useState(3);
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
@@ -886,6 +887,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [connectionsData, setConnectionsData] = useState<any>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [showImpactReasons, setShowImpactReasons] = useState(true);
 
     // Auto-scroll to bottom of chat on new messages or thinking state
     useEffect(() => {
@@ -1054,6 +1056,7 @@ export function MainPanel({ className }: { className?: string }) {
                         { id: 'Graph', icon: Network, label: 'Graph' },
                         { id: 'Impact', icon: Activity, label: 'Impact' },
                         { id: 'Connections', icon: Network, label: 'Connections' },
+                        { id: 'Code', icon: Code2, label: 'Code' },
                         { id: 'History', icon: Clock, label: 'History' },
                         { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' }
                     ].map(t => {
@@ -1078,7 +1081,7 @@ export function MainPanel({ className }: { className?: string }) {
             </div>
 
             {/* Content */}
-            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6]", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI') && "flex flex-col min-h-0")}>
+            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6]", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code') && "flex flex-col min-h-0")}>
                 <>
                     {/* Overview Tab: stat tiles, hotspots list (with bottom fade), composition bar */}
                     {activeTab === 'Overview' && (
@@ -1340,6 +1343,27 @@ export function MainPanel({ className }: { className?: string }) {
                                                 )}
                                             </div>
                                         </div>
+                                        {impactResult.reasons && impactResult.reasons.length > 0 && (
+                                            <div className="pt-3 border-t border-white/[0.08] mt-3">
+                                                <button
+                                                    onClick={() => setShowImpactReasons(!showImpactReasons)}
+                                                    className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
+                                                >
+                                                    <span className="font-medium">Why this score</span>
+                                                    {showImpactReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                                </button>
+                                                {showImpactReasons && (
+                                                    <div className="space-y-1.5 mt-2">
+                                                        {impactResult.reasons.map((r, i) => (
+                                                            <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
+                                                                <span className="text-[#8A918C] text-[11px]">{r.label}</span>
+                                                                <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                         <div className="text-[11px] text-[#8A918C] pt-3 border-t border-white/[0.08] mt-3">
                                             Risk score is ranked out of 100 based on call distance and churn.
                                         </div>
@@ -1422,9 +1446,23 @@ export function MainPanel({ className }: { className?: string }) {
                                                                 <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
                                                                     <span className="text-[10px] text-[#8A918C]">Evidence:</span>
                                                                     {citations.map((c, cIdx) => (
-                                                                        <span key={cIdx} className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                                                                        <button
+                                                                            key={cIdx}
+                                                                            onClick={() => {
+                                                                                const lastColon = c.lastIndexOf(':');
+                                                                                if (lastColon !== -1) {
+                                                                                    const filePath = c.substring(0, lastColon);
+                                                                                    const lineNum = parseInt(c.substring(lastColon + 1), 10);
+                                                                                    if (filePath) setSelectedFile(filePath);
+                                                                                    if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
+                                                                                    setActiveTab('Code');
+                                                                                }
+                                                                            }}
+                                                                            className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
+                                                                            title={"Open " + c + " in Code viewer"}
+                                                                        >
                                                                             {c}
-                                                                        </span>
+                                                                        </button>
                                                                     ))}
                                                                 </div>
                                                             );
@@ -1653,7 +1691,11 @@ export function MainPanel({ className }: { className?: string }) {
                         </div>
                     )}
 
-                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Connections' && (
+                    {activeTab === 'Code' && (
+                        <CodeViewer />
+                    )}
+
+                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Connections' && activeTab !== 'Code' && (
                         <div className="text-[#8A918C] text-center py-20 text-xs font-mono">
                             Feature not yet implemented.
                         </div>

@@ -3,6 +3,7 @@ import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { MainPanel } from './components/MainPanel';
 import { RightPanel } from './components/RightPanel';
+import { CommandPalette } from './components/CommandPalette';
 import { useEffect } from 'react';
 import { api } from './api';
 import { LandingPage } from './components/LandingPage';
@@ -14,6 +15,7 @@ export default function App() {
     return (
         <>
             <RouteSync />
+            <CommandPalette />
             {!repoUrl ? (
                 <LandingPage />
             ) : (
