@@ -264,6 +264,45 @@ async function main(): Promise<void> {
         assert.equal(getFileBody.path, "src/app.ts");
         assert.equal(getFileBody.content, "console.log('hello world');");
 
+        // Test: POST /api/repositories/analyze SSE progress events
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("/contents/src/app.ts")) {
+                return {
+                    status: 200,
+                    ok: true,
+                    headers: new Headers(),
+                    json: async () => ({
+                        type: "file",
+                        content: Buffer.from("export function run(): void {}").toString("base64")
+                    })
+                } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+        const sseRes = await fetch(`http://127.0.0.1:${port}/api/repositories/analyze`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream"
+            },
+            body: JSON.stringify({
+                url: "https://github.com/owner/repo",
+                sha: "abcdef123",
+                paths: ["src/app.ts"]
+            })
+        });
+        assert.equal(sseRes.status, 200);
+        assert.equal(sseRes.headers.get("content-type"), "text/event-stream");
+        const sseText = await sseRes.text();
+        assert.ok(sseText.includes('"stage":"Cloning repository"'));
+        assert.ok(sseText.includes('"percent":25'));
+        assert.ok(sseText.includes('"stage":"Parsing symbols"'));
+        assert.ok(sseText.includes('"percent":50'));
+        assert.ok(sseText.includes('"stage":"Linking calls and imports"'));
+        assert.ok(sseText.includes('"percent":75'));
+        assert.ok(sseText.includes('"stage":"Building the graph"'));
+        assert.ok(sseText.includes('"percent":100'));
+
         console.log("repositories route fixtures passed");
     } finally {
         globalThis.fetch = originalFetch;

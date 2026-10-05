@@ -568,26 +568,59 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
     }
 
     const { owner, repository } = parsedRepository;
+    const isSse = req.headers.accept?.includes("text/event-stream") || req.query.stream === "true";
+
+    if (isSse) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        if (typeof res.flushHeaders === "function") {
+            res.flushHeaders();
+        }
+    }
+
+    const sendProgress = (stage: string, percent: number) => {
+        if (isSse) {
+            res.write(`data: ${JSON.stringify({ stage, percent })}\n\n`);
+        }
+    };
 
     try {
+        sendProgress("Cloning repository", 25);
         const results = await Promise.all(
             paths.map((path) => retrieveHistoricalFileContent(owner, repository, path, sha))
         );
 
         for (const result of results) {
             if (result.status === "not-found") {
+                if (isSse) {
+                    res.write(`data: ${JSON.stringify({ error: "GitHub repository or file not found." })}\n\n`);
+                    return res.end();
+                }
                 return res.status(404).json({ error: "GitHub repository or file not found." });
             }
 
             if (result.status === "rate-limit") {
+                if (isSse) {
+                    res.write(`data: ${JSON.stringify({ error: "GitHub API rate limit exceeded." })}\n\n`);
+                    return res.end();
+                }
                 return res.status(429).json({ error: "GitHub API rate limit exceeded." });
             }
 
             if (result.status === "api-failure") {
+                if (isSse) {
+                    res.write(`data: ${JSON.stringify({ error: "GitHub API request failed." })}\n\n`);
+                    return res.end();
+                }
                 return res.status(502).json({ error: "GitHub API request failed." });
             }
 
             if (result.status === "not-file") {
+                if (isSse) {
+                    res.write(`data: ${JSON.stringify({ error: "The requested path must refer to a file." })}\n\n`);
+                    return res.end();
+                }
                 return res.status(400).json({ error: "The requested path must refer to a file." });
             }
         }
@@ -603,14 +636,27 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
             };
         });
 
-        return res.status(200).json(
-            repositoryAnalysisService.analyzeFiles(
-                { owner, repository },
-                sha,
-                repositoryFiles
-            )
+        sendProgress("Parsing symbols", 50);
+        sendProgress("Linking calls and imports", 75);
+        const analyzeResult = repositoryAnalysisService.analyzeFiles(
+            { owner, repository },
+            sha,
+            repositoryFiles
         );
+
+        sendProgress("Building the graph", 100);
+
+        if (isSse) {
+            res.write(`data: ${JSON.stringify({ stage: "Building the graph", percent: 100, result: analyzeResult })}\n\n`);
+            return res.end();
+        }
+
+        return res.status(200).json(analyzeResult);
     } catch {
+        if (isSse) {
+            res.write(`data: ${JSON.stringify({ error: "Unable to reach the GitHub API." })}\n\n`);
+            return res.end();
+        }
         return res.status(502).json({ error: "Unable to reach the GitHub API." });
     }
 });

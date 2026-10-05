@@ -249,16 +249,31 @@ export function LandingPage() {
         }
     };
 
+    const [loadingPercent, setLoadingPercent] = useState<number | null>(null);
+
     const handleAnalyze = async (repoUrlToAnalyze: string) => {
         if (!repoUrlToAnalyze) return;
         setAnalyzingTarget(repoUrlToAnalyze.replace('https://github.com/', ''));
         setLoading(true);
         setLoadingStep(0);
+        setLoadingPercent(null);
 
-        // Step progression timer for UX feedback
+        let receivedProgress = false;
+        // Step progression timer for fallback UX feedback if backend gives no progress
         const stepInterval = setInterval(() => {
-            setLoadingStep(prev => (prev < 3 ? prev + 1 : prev));
+            if (!receivedProgress) {
+                setLoadingStep(prev => (prev < 3 ? prev + 1 : prev));
+            }
         }, 600);
+
+        const onProgress = (stage: string, percent: number) => {
+            receivedProgress = true;
+            setLoadingPercent(percent);
+            const stepIdx = LOADING_STEPS.indexOf(stage);
+            if (stepIdx !== -1) {
+                setLoadingStep(stepIdx);
+            }
+        };
 
         try {
             const state = useAppStore.getState();
@@ -291,6 +306,29 @@ export function LandingPage() {
                     };
                 }
                 treeFilesResult = cachedTree;
+
+                // Pre-analyze root / top code files using real SSE progress
+                const firstCodeFile = treeFilesResult.find((f: string) => {
+                    const lower = f.toLowerCase();
+                    return ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.cpp'].some(ext => lower.endsWith(ext));
+                });
+                if (firstCodeFile) {
+                    const { getPathsToAnalyze } = await import('../analyze-helpers');
+                    const paths = getPathsToAnalyze(treeFilesResult, firstCodeFile);
+                    const cacheKey = paths.slice().sort().join('|');
+                    let cachedGraph = state.repoCache[repoUrlToAnalyze]?.graphs?.[cacheKey];
+                    if (!cachedGraph) {
+                        const data = await api.repositories.analyzeStream(repoUrlToAnalyze, headSha, paths, onProgress);
+                        cachedGraph = data.graph;
+                        state.repoCache[repoUrlToAnalyze] = {
+                            ...(state.repoCache[repoUrlToAnalyze] || {}),
+                            graphs: { ...(state.repoCache[repoUrlToAnalyze]?.graphs || {}), [cacheKey]: cachedGraph }
+                        };
+                    }
+                    if (cachedGraph) {
+                        useAppStore.getState().setGraph(cachedGraph);
+                    }
+                }
             }
 
             // Sync synchronously to state
@@ -302,6 +340,7 @@ export function LandingPage() {
 
             clearInterval(stepInterval);
             setLoadingStep(3);
+            setLoadingPercent(100);
 
             setTimeout(() => {
                 setRepoUrl(repoUrlToAnalyze);
@@ -369,10 +408,14 @@ export function LandingPage() {
                                 );
                             })}
                         </div>
+                        <div className="flex items-center justify-between mono text-[10px] text-[#8A918C] mb-1.5">
+                            <span>Progress</span>
+                            <span>{loadingPercent !== null ? `${loadingPercent}%` : `${(loadingStep + 1) * 25}%`}</span>
+                        </div>
                         <div className="h-[3px] bg-[rgba(255,255,255,0.08)] rounded-full overflow-hidden">
                             <div
                                 className="h-full bg-[#4FD1B5] transition-all duration-500 rounded-full"
-                                style={{ width: `${(loadingStep + 1) * 25}%` }}
+                                style={{ width: `${loadingPercent !== null ? loadingPercent : (loadingStep + 1) * 25}%` }}
                             />
                         </div>
                     </div>

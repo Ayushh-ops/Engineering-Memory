@@ -137,6 +137,65 @@ export const api = {
             return get<FileContentResponse>(`/api/file?${query}`);
         },
         analyze(url: string, sha: string, paths: string[]) { return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }); },
+        async analyzeStream(url: string, sha: string, paths: string[], onProgress?: (stage: string, percent: number) => void): Promise<AnalyzeResponse> {
+            try {
+                const response = await fetch('/api/repositories/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify({ url, sha, paths })
+                });
+
+                if (!response.ok) {
+                    const errJson = await response.json().catch(() => ({}));
+                    throw new Error(errJson.error || `Request failed with status ${response.status}`);
+                }
+
+                if (!response.body) {
+                    return response.json();
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let finalResult: AnalyzeResponse | null = null;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed.startsWith('data:')) continue;
+                        const jsonStr = trimmed.slice(5).trim();
+                        if (!jsonStr) continue;
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            if (data.error) throw new Error(data.error);
+                            if (data.stage && typeof data.percent === 'number') {
+                                onProgress?.(data.stage, data.percent);
+                            }
+                            if (data.result) {
+                                finalResult = data.result;
+                            }
+                        } catch (err: any) {
+                            if (err.message && !err.message.includes('JSON')) throw err;
+                        }
+                    }
+                }
+
+                if (finalResult) return finalResult;
+                throw new Error('Analysis completed without result');
+            } catch (err) {
+                // Fallback to standard analyze endpoint if streaming fails
+                return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths });
+            }
+        },
         analyzeHistory(url: string, sha: string, paths: string[]) { return post<any>('/api/repositories/analyze-history', { url, sha, paths }); },
     },
     graph: {
