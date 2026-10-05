@@ -32,7 +32,7 @@ assert.equal(result.bounds.truncated, false);
 assert.equal(result.directCallers[0]?.relationship, "direct-caller");
 assert.equal(result.transitiveConsumers[0]?.relationship, "transitive-consumer");
 assert.deepEqual(result.tests.map((item) => ({
-    path: item.symbol.path,
+    path: item.path ?? item.symbol?.path,
     relationship: item.relationship,
     classification: item.classification
 })), [{
@@ -114,6 +114,23 @@ assert.equal(fileResult.directCallers.length, 1);
 assert.equal(fileResult.directCallers[0].symbol.path, "src/consumer.ts");
 assert.equal(fileResult.paths.length, 1);
 assert.equal(fileResult.paths[0].classification, "direct-caller");
+
+const testMappingGraph: RepositoryGraph = {
+    nodes: [
+        { id: "file:src%2Fservice.ts", type: "file", name: "src/service.ts", path: "src/service.ts" },
+        { id: "file:tests%2Fservice.test.ts", type: "file", name: "tests/service.test.ts", path: "tests/service.test.ts" },
+        { id: "file:tests%2Fintegration.spec.ts", type: "file", name: "tests/integration.spec.ts", path: "tests/integration.spec.ts" },
+        { id: "file:src%2Funrelated.ts", type: "file", name: "src/unrelated.ts", path: "src/unrelated.ts" }
+    ],
+    edges: [
+        { from: "file:tests%2Fintegration.spec.ts", to: "file:src%2Fservice.ts", type: "imports" }
+    ]
+};
+const testMappingResult = service.analyze(testMappingGraph, { type: "file", path: "src/service.ts" });
+assert.deepEqual(testMappingResult.tests.map((t) => t.path).sort(), [
+    "tests/integration.spec.ts",
+    "tests/service.test.ts"
+]);
 
 const evidenceResult = service.analyze(graph, target, undefined, [
     { path: "src/target.ts", content: "export function target() { return 1; }" },

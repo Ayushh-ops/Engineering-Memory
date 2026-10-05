@@ -101,7 +101,11 @@ function consumerEntries(impact: ChangeImpactAnalysisResult): ConsumerEntry[] {
         pathsByTerminal.set(terminal, path);
     }
 
-    const testIds = new Set(impact.tests.map((test) => test.symbol.id));
+    const testIds = new Set(
+        impact.tests
+            .map((test) => test.symbol?.id)
+            .filter((id): id is string => typeof id === "string")
+    );
     const callers = [...impact.directCallers, ...impact.transitiveConsumers];
 
     return callers.map((caller) => ({

@@ -62,7 +62,8 @@ export interface ChangeImpactSymbolResult {
 }
 
 export interface ChangeImpactTestResult {
-    symbol: GraphSymbolNode;
+    symbol?: GraphSymbolNode;
+    path?: string;
     depth?: number;
     relationship: "test-consumer";
     classification: "path-convention";
@@ -132,10 +133,17 @@ function normalizeLimits(limits: Partial<ChangeImpactAnalysisLimits> | undefined
     return result;
 }
 
+function isTestFile(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/");
+    const parts = normalized.split("/");
+    const fileName = parts[parts.length - 1];
+    const hasTestDir = parts.slice(0, -1).some((p) => p === "test" || p === "tests" || p === "__tests__");
+    const matchesPattern = /\.(test|spec)\.[^.]+$/.test(fileName);
+    return hasTestDir || matchesPattern;
+}
+
 function isTestPath(path: string): boolean {
-    const normalized = path.toLowerCase().replace(/\\/g, "/");
-    return normalized.includes("test") || normalized.includes("__tests__") ||
-        /\.(test|spec)\.tsx?$/.test(normalized);
+    return isTestFile(path);
 }
 
 function buildImpactReasons(
@@ -356,6 +364,37 @@ export class ChangeImpactAnalysisService {
                 ? this.sourceEvidenceService.select(target, graph, files)
                 : [];
             if (files.length === 0) base.limitations.push("Source evidence was not requested because no fetched files were supplied.");
+            // Populate tests: test files that import it (direct) or share its base name
+            const targetBase = target.path.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+            const testFilePaths = new Set<string>();
+
+            // 1. Direct imports by test files
+            for (const dep of reverseImports) {
+                if (isTestFile(dep.path)) {
+                    testFilePaths.add(dep.path);
+                }
+            }
+
+            // 2. Test files sharing its base name
+            for (const node of graph.nodes) {
+                if (node.type === "file" && isTestFile(node.path)) {
+                    const testBase = node.path.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
+                    if (testBase === targetBase) {
+                        testFilePaths.add(node.path);
+                    }
+                }
+            }
+
+            base.tests = [...testFilePaths].sort().map((testPath) => ({
+                path: testPath,
+                relationship: "test-consumer" as const,
+                classification: "path-convention" as const
+            }));
+
+            if (base.tests.length > 0) {
+                base.limitations.push("Test consumers are classified heuristically from their paths and may not exercise the target.");
+            }
+
             base.reasons = buildImpactReasons(target.path, base.directCallers.length, base.transitiveConsumers.length, graph);
             return { ...base, status: "ok" };
         }
@@ -485,6 +524,7 @@ export class ChangeImpactAnalysisService {
             .filter((caller) => isTestPath(caller.symbol.path))
             .map((caller) => ({
                 symbol: caller.symbol,
+                path: caller.symbol.path,
                 ...(caller.depth === undefined ? {} : { depth: caller.depth }),
                 relationship: "test-consumer" as const,
                 classification: "path-convention" as const

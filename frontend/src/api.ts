@@ -121,6 +121,7 @@ export interface ChangeImpactAnalysisResult {
     limitations: string[];
     relatedDependencies?: string[];
     reviewCandidates?: string[];
+    tests?: Array<{ path?: string; symbol?: { path: string; name: string } } | string>;
     reasons?: Array<{ label: string; value: string }>;
 }
 

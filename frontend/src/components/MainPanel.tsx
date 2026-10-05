@@ -876,7 +876,7 @@ function formatRelativeDate(dateStr: string): string {
 }
 
 export function MainPanel({ className }: { className?: string }) {
-    const { activeTab, setActiveTab, selectedFile, setSelectedFile, selectedSymbol, impactResult, setImpactResult, graph, repoUrl, selectedSha, setCodeHighlightLine } = useAppStore();
+    const { activeTab, setActiveTab, selectedFile, setSelectedFile, selectedSymbol, impactResult, setImpactResult, graph, repoUrl, selectedSha, setCodeHighlightLine, selectFile } = useAppStore();
     const [depth, setDepth] = useState(3);
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
@@ -1364,6 +1364,38 @@ export function MainPanel({ className }: { className?: string }) {
                                                 )}
                                             </div>
                                         )}
+                                        {/* Tests to run */}
+                                        <div className="pt-3 border-t border-white/[0.08] mt-3">
+                                            <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
+                                            {(() => {
+                                                const tests = (impactResult.tests || [])
+                                                    .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
+                                                    .filter(Boolean) as string[];
+                                                if (tests.length === 0) {
+                                                    return (
+                                                        <div className="flex items-center gap-2 text-xs text-[#8A918C] py-1">
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 inline-block" />
+                                                            <span>No test found for this file</span>
+                                                        </div>
+                                                    );
+                                                }
+                                                return (
+                                                    <div className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-custom">
+                                                        {tests.map((testPath, i) => (
+                                                            <button
+                                                                key={i}
+                                                                onClick={() => selectFile(testPath)}
+                                                                className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block"
+                                                                title={testPath}
+                                                            >
+                                                                {testPath.split('/').pop()}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+
                                         <div className="text-[11px] text-[#8A918C] pt-3 border-t border-white/[0.08] mt-3">
                                             Risk score is ranked out of 100 based on call distance and churn.
                                         </div>
