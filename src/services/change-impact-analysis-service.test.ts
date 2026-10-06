@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { RepositorySourceEvidenceService } from "./repository-source-evidence-service";
 import { ChangeImpactAnalysisService } from "./change-impact-analysis-service";
+import { computeGraphHealth } from "../routes/health";
 
 const graph: RepositoryGraph = {
     nodes: [
@@ -154,5 +155,43 @@ const boundedEvidenceResult = new ChangeImpactAnalysisService(new RepositorySour
 ]);
 assert.ok(boundedEvidenceResult.sourceEvidence.length <= 2);
 assert.ok(boundedEvidenceResult.sourceEvidence.every((evidence) => Buffer.byteLength(evidence.code, "utf8") <= 20));
+
+// Health summary tests
+const healthTestGraph: RepositoryGraph = {
+    nodes: [
+        { id: "file:src%2Fa.ts", type: "file", name: "src/a.ts", path: "src/a.ts" },
+        { id: "file:src%2Fb.ts", type: "file", name: "src/b.ts", path: "src/b.ts" },
+        { id: "file:src%2Fc.ts", type: "file", name: "src/c.ts", path: "src/c.ts" },
+        { id: "file:src%2Funused.ts", type: "file", name: "src/unused.ts", path: "src/unused.ts" },
+        { id: "file:src%2Findex.ts", type: "file", name: "src/index.ts", path: "src/index.ts" },
+        { id: "file:src%2Fgod.ts", type: "file", name: "src/god.ts", path: "src/god.ts" },
+        ...Array.from({ length: 16 }, (_, i) => ({
+            id: `file:src%2Fsub${i}.ts`,
+            type: "file" as const,
+            name: `src/sub${i}.ts`,
+            path: `src/sub${i}.ts`
+        }))
+    ],
+    edges: [
+        // a <-> b circular
+        { from: "file:src%2Fa.ts", to: "file:src%2Fb.ts", type: "imports" },
+        { from: "file:src%2Fb.ts", to: "file:src%2Fa.ts", type: "imports" },
+        // god.ts imports 16 files
+        ...Array.from({ length: 16 }, (_, i) => ({
+            from: "file:src%2Fgod.ts",
+            to: `file:src%2Fsub${i}.ts`,
+            type: "imports" as const
+        }))
+    ]
+};
+
+const health = computeGraphHealth(healthTestGraph);
+assert.equal(health.circularImports.length, 1);
+assert.deepEqual(health.circularImports[0], ["src/a.ts", "src/b.ts"]);
+assert.ok(health.unusedFiles.includes("src/unused.ts"));
+assert.ok(!health.unusedFiles.includes("src/index.ts"));
+assert.equal(health.godFiles.length, 1);
+assert.equal(health.godFiles[0].path, "src/god.ts");
+assert.equal(health.godFiles[0].importCount, 16);
 
 console.log("change impact analysis fixtures passed");

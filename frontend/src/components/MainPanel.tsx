@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -886,6 +886,9 @@ export function MainPanel({ className }: { className?: string }) {
     const [lastQuestion, setLastQuestion] = useState<string>('');
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [connectionsData, setConnectionsData] = useState<any>(null);
+    const [healthData, setHealthData] = useState<import('../api').HealthSummaryResult | null>(null);
+    const [healthLoading, setHealthLoading] = useState(false);
+    const [openHealthSections, setOpenHealthSections] = useState({ circular: true, unused: true, god: true });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
 
@@ -1004,6 +1007,24 @@ export function MainPanel({ className }: { className?: string }) {
         if (activeTab === 'Connections') fetchConnections();
     }, [activeTab, fetchConnections]);
 
+    const fetchHealth = useCallback(async () => {
+        if (!graph) return;
+        setHealthLoading(true);
+        try {
+            const res = await api.graph.health(graph);
+            setHealthData(res);
+        } catch (e) {
+            console.error(e);
+            setHealthData({ circularImports: [], unusedFiles: [], godFiles: [] });
+        } finally {
+            setHealthLoading(false);
+        }
+    }, [graph]);
+
+    useEffect(() => {
+        if (activeTab === 'Health') fetchHealth();
+    }, [activeTab, fetchHealth]);
+
     const isCode = selectedFile ? isCodeFile(selectedFile) : false;
 
     // We will render the frame of MainPanel even if no file is selected so tabs work
@@ -1058,6 +1079,7 @@ export function MainPanel({ className }: { className?: string }) {
                         { id: 'Connections', icon: Network, label: 'Connections' },
                         { id: 'Code', icon: Code2, label: 'Code' },
                         { id: 'History', icon: Clock, label: 'History' },
+                        { id: 'Health', icon: HeartPulse, label: 'Health' },
                         { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' }
                     ].map(t => {
                         const Icon = t.icon;
@@ -1634,6 +1656,180 @@ export function MainPanel({ className }: { className?: string }) {
                         </div>
                     )}
 
+                    {activeTab === 'Health' && (
+                        <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-xs font-semibold text-[#E8EAE6]">Repository health</h3>
+                                    <p className="text-[11px] text-[#8A918C] mt-0.5">
+                                        Architectural smells and dependency diagnostics computed from the repository graph.
+                                    </p>
+                                </div>
+                                <Button onClick={fetchHealth} className="px-3 py-1 text-xs" disabled={healthLoading || !graph}>
+                                    {healthLoading ? <Loader2 size={12} className="animate-spin" /> : 'Re-check'}
+                                </Button>
+                            </div>
+
+                            {healthLoading && !healthData ? (
+                                <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
+                                    <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
+                                    <span className="text-xs font-mono">Analyzing repository health...</span>
+                                </div>
+                            ) : !healthData ? (
+                                <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2">
+                                    <HeartPulse size={22} className="text-[#8A918C] mb-1" />
+                                    <div className="text-xs font-medium text-[#E8EAE6]">No graph loaded</div>
+                                    <div className="text-[11px] text-[#8A918C] max-w-sm">
+                                        Analyze a repository first to inspect its health summary.
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {/* 1. Circular Imports */}
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 space-y-3">
+                                        <button
+                                            onClick={() => setOpenHealthSections(s => ({ ...s, circular: !s.circular }))}
+                                            className="flex items-center justify-between w-full text-left cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <h4 className="text-xs font-semibold text-[#E8EAE6]">Circular imports</h4>
+                                                <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                                                    {healthData.circularImports.length}
+                                                </span>
+                                            </div>
+                                            {openHealthSections.circular ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
+                                        </button>
+
+                                        {openHealthSections.circular && (
+                                            <div className="pt-2 border-t border-white/[0.06] space-y-2">
+                                                {healthData.circularImports.length === 0 ? (
+                                                    <div className="text-xs text-[#8A918C] py-1">None found</div>
+                                                ) : (
+                                                    <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-custom pr-1">
+                                                        {healthData.circularImports.map((cycle, i) => (
+                                                            <div key={i} className="p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs space-y-1.5">
+                                                                <div className="text-[10px] text-[#8A918C] font-mono">Cycle #{i + 1} ({cycle.length} files)</div>
+                                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                                    {cycle.map((filePath, fIdx) => (
+                                                                        <div key={fIdx} className="inline-flex items-center gap-1.5">
+                                                                            <button
+                                                                                onClick={() => selectFile(filePath)}
+                                                                                className="font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer underline-offset-2 hover:underline"
+                                                                                title={filePath}
+                                                                            >
+                                                                                {filePath.split('/').pop()}
+                                                                            </button>
+                                                                            {fIdx < cycle.length - 1 && (
+                                                                                <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
+                                                                            )}
+                                                                        </div>
+                                                                    ))}
+                                                                    <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
+                                                                    <button
+                                                                        onClick={() => selectFile(cycle[0])}
+                                                                        className="font-mono text-xs text-[#8A918C] hover:text-[#4FD1B5] transition-colors cursor-pointer"
+                                                                        title={cycle[0]}
+                                                                    >
+                                                                        {cycle[0].split('/').pop()}
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* 2. Unused Files */}
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 space-y-3">
+                                        <button
+                                            onClick={() => setOpenHealthSections(s => ({ ...s, unused: !s.unused }))}
+                                            className="flex items-center justify-between w-full text-left cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <h4 className="text-xs font-semibold text-[#E8EAE6]">Unused files</h4>
+                                                <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                                                    {healthData.unusedFiles.length}
+                                                </span>
+                                            </div>
+                                            {openHealthSections.unused ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
+                                        </button>
+
+                                        {openHealthSections.unused && (
+                                            <div className="pt-2 border-t border-white/[0.06] space-y-2">
+                                                {healthData.unusedFiles.length === 0 ? (
+                                                    <div className="text-xs text-[#8A918C] py-1">None found</div>
+                                                ) : (
+                                                    <div className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-custom pr-1">
+                                                        {healthData.unusedFiles.map((filePath, i) => (
+                                                            <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
+                                                                <button
+                                                                    onClick={() => selectFile(filePath)}
+                                                                    className="font-mono text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer truncate text-left"
+                                                                    title={filePath}
+                                                                >
+                                                                    {filePath.split('/').pop()}
+                                                                </button>
+                                                                <span className="text-[10px] font-mono text-[#8A918C]/60 truncate ml-2 max-w-[180px] hidden sm:inline" title={filePath}>
+                                                                    {filePath}
+                                                                </span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* 3. God Files */}
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 space-y-3">
+                                        <button
+                                            onClick={() => setOpenHealthSections(s => ({ ...s, god: !s.god }))}
+                                            className="flex items-center justify-between w-full text-left cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <h4 className="text-xs font-semibold text-[#E8EAE6]">God files</h4>
+                                                <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                                                    {healthData.godFiles.length}
+                                                </span>
+                                            </div>
+                                            {openHealthSections.god ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
+                                        </button>
+
+                                        {openHealthSections.god && (
+                                            <div className="pt-2 border-t border-white/[0.06] space-y-2">
+                                                {healthData.godFiles.length === 0 ? (
+                                                    <div className="text-xs text-[#8A918C] py-1">None found</div>
+                                                ) : (
+                                                    <div className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-custom pr-1">
+                                                        {healthData.godFiles.map((gf, i) => (
+                                                            <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
+                                                                <button
+                                                                    onClick={() => selectFile(gf.path)}
+                                                                    className="font-mono text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer truncate text-left"
+                                                                    title={gf.path}
+                                                                >
+                                                                    {gf.path.split('/').pop()}
+                                                                </button>
+                                                                <div className="flex items-center gap-2">
+                                                                    <span className="text-[10px] font-mono text-[#8A918C]/60 truncate max-w-[140px] hidden sm:inline" title={gf.path}>
+                                                                        {gf.path}
+                                                                    </span>
+                                                                    <Badge variant="amber">{gf.importCount} imports</Badge>
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {activeTab === 'Connections' && (
                         <div className="space-y-4">
                             <div className="flex items-center justify-between">
@@ -1727,7 +1923,7 @@ export function MainPanel({ className }: { className?: string }) {
                         <CodeViewer />
                     )}
 
-                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Connections' && activeTab !== 'Code' && (
+                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Health' && activeTab !== 'Connections' && activeTab !== 'Code' && (
                         <div className="text-[#8A918C] text-center py-20 text-xs font-mono">
                             Feature not yet implemented.
                         </div>

@@ -125,6 +125,12 @@ export interface ChangeImpactAnalysisResult {
     reasons?: Array<{ label: string; value: string }>;
 }
 
+export interface HealthSummaryResult {
+    circularImports: string[][];
+    unusedFiles: string[];
+    godFiles: Array<{ path: string; importCount: number }>;
+}
+
 export interface AiAnswerResult { status: string; answer: string; citations: any[]; confidence?: string; missingData?: string[]; error?: any; }
 
 // ------ API ENDPOINTS ------ //
@@ -205,6 +211,9 @@ export const api = {
         },
         query(graph: RepositoryGraph, query: any) {
             return post<any>('/api/repositories/graph/query', { graph, query });
+        },
+        health(graph: RepositoryGraph) {
+            return post<HealthSummaryResult>('/api/repositories/graph/health', { graph });
         }
     },
     ai: {

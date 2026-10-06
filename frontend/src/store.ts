@@ -32,8 +32,8 @@ export interface AppState {
     selectedSymbol: { name: string, type: "class" | "function" | "method", path: string } | null;
     setSelectedSymbol: (symbol: { name: string, type: "class" | "function" | "method", path: string } | null) => void;
 
-    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'AskAI';
-    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'AskAI') => void;
+    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI';
+    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI') => void;
 
     codeHighlightLine: number | null;
     setCodeHighlightLine: (line: number | null) => void;
