@@ -766,6 +766,10 @@ async function main(): Promise<void> {
         lastInstructions?.some((inst) => inst.includes("Reply in simple Hinglish")),
         "Expected Hinglish instruction in provider call"
     );
+    assert.ok(
+        lastInstructions?.some((inst) => inst.includes("End with a line FOLLOWUPS:")),
+        "Expected FOLLOWUPS instruction in provider call"
+    );
 
     console.log("AI fixtures passed");
 }

@@ -146,7 +146,8 @@ export class AiAnswerService {
 
         const instructions = [
             "Answer only from the supplied repository facts.",
-            "If the context is insufficient, say so explicitly."
+            "If the context is insufficient, say so explicitly.",
+            "End with a line FOLLOWUPS: q1 | q2 | q3 (short questions)"
         ];
         if (request.lang === "hinglish") {
             instructions.push(

@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -881,9 +881,8 @@ export function MainPanel({ className }: { className?: string }) {
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
     const [askQ, setAskQ] = useState('');
-    const [aiAnswer, setAiAnswer] = useState<string | null>(null);
     const [aiError, setAiError] = useState<{ message: string; rawCode?: string } | null>(null);
-    const [lastQuestion, setLastQuestion] = useState<string>('');
+    const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>>([]);
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [connectionsData, setConnectionsData] = useState<any>(null);
     const [healthData, setHealthData] = useState<import('../api').HealthSummaryResult | null>(null);
@@ -892,6 +891,54 @@ export function MainPanel({ className }: { className?: string }) {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
     const [copiedReport, setCopiedReport] = useState(false);
+
+    // Save chat per repo+commit in localStorage (last 30 messages)
+    const chatStorageKey = (repoUrl && selectedSha) ? `ask-chat:${repoUrl}:${selectedSha}` : null;
+
+    useEffect(() => {
+        if (!chatStorageKey) {
+            setChatMessages([]);
+            return;
+        }
+        try {
+            const raw = localStorage.getItem(chatStorageKey);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    setChatMessages(parsed.slice(-30));
+                    return;
+                }
+            }
+        } catch {
+            // ignore
+        }
+        setChatMessages([]);
+    }, [chatStorageKey]);
+
+    const saveChatMessages = useCallback((msgs: Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>) => {
+        const toSave = msgs.filter(m => !m.isThinking).slice(-30);
+        setChatMessages(msgs);
+        if (chatStorageKey) {
+            try {
+                localStorage.setItem(chatStorageKey, JSON.stringify(toSave));
+            } catch {
+                // ignore
+            }
+        }
+    }, [chatStorageKey]);
+
+    const handleNewChat = useCallback(() => {
+        setChatMessages([]);
+        setAiError(null);
+        setAskQ('');
+        if (chatStorageKey) {
+            try {
+                localStorage.removeItem(chatStorageKey);
+            } catch {
+                // ignore
+            }
+        }
+    }, [chatStorageKey]);
 
     const buildMarkdownReport = useCallback(async (): Promise<string> => {
         const fileName = selectedFile ? selectedFile.split('/').pop() : (selectedSymbol?.name || 'unknown');
@@ -1014,14 +1061,11 @@ export function MainPanel({ className }: { className?: string }) {
         if (activeTab === 'AskAI') {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [aiAnswer, lastQuestion, aiError, activeTab]);
+    }, [chatMessages, aiError, activeTab]);
 
-    // Reset Ask AI input, response, and error whenever selected file changes
+    // Reset Ask AI input on selected file change
     useEffect(() => {
         setAskQ('');
-        setAiAnswer(null);
-        setAiError(null);
-        setLastQuestion('');
     }, [selectedFile]);
 
     const formatAiError = (err: any): { message: string; rawCode?: string } => {
@@ -1047,14 +1091,43 @@ export function MainPanel({ className }: { className?: string }) {
         return { message: rawMsg };
     };
 
+    const parseAnswerFollowups = (rawAnswer: string): { cleanAnswer: string; followups: string[] } => {
+        const lines = rawAnswer.split('\n');
+        let followups: string[] = [];
+        const cleanLines: string[] = [];
+
+        for (const line of lines) {
+            const match = line.match(/^FOLLOWUPS:\s*(.+)$/i);
+            if (match) {
+                const parts = match[1].split('|').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+                if (parts.length > 0) {
+                    followups = parts.slice(0, 3);
+                }
+            } else {
+                cleanLines.push(line);
+            }
+        }
+
+        return {
+            cleanAnswer: cleanLines.join('\n').trim(),
+            followups
+        };
+    };
+
     const askAI = async (questionToAsk?: string) => {
         const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
         if (!q || !repoUrl || !selectedSha || !graph || !selectedFile) return;
 
         setAskQ('');
-        setLastQuestion(q);
         setAiError(null);
-        setAiAnswer("Thinking...");
+
+        const newMessages: Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }> = [
+            ...chatMessages.filter(m => !m.isThinking),
+            { role: 'user', content: q },
+            { role: 'assistant', content: '', isThinking: true }
+        ];
+        setChatMessages(newMessages);
+
         const target = selectedSymbol
             ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
             : { type: 'file', path: selectedFile };
@@ -1062,13 +1135,18 @@ export function MainPanel({ className }: { className?: string }) {
         try {
             const res = await api.ai.ask(repoUrl, selectedSha, [selectedFile], target as any, q);
             if (res.status === 'error' && res.error) {
-                setAiAnswer(null);
+                setChatMessages(prev => prev.filter(m => !m.isThinking));
                 setAiError(formatAiError(res.error.code || res.error.message || res.error));
             } else {
-                setAiAnswer(res.answer);
+                const { cleanAnswer, followups } = parseAnswerFollowups(res.answer || '');
+                const updated = [
+                    ...newMessages.filter(m => !m.isThinking),
+                    { role: 'assistant' as const, content: cleanAnswer, followups }
+                ];
+                saveChatMessages(updated);
             }
         } catch (e: any) {
-            setAiAnswer(null);
+            setChatMessages(prev => prev.filter(m => !m.isThinking));
             setAiError(formatAiError(e));
         }
     };
@@ -1579,91 +1657,33 @@ export function MainPanel({ className }: { className?: string }) {
                                     <MessageSquare size={14} className="text-[#4FD1B5]" />
                                     <span>Ask AI</span>
                                 </div>
-                                <span className="text-[11px] font-mono text-[#8A918C] truncate max-w-[240px]">
-                                    {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'whole repository')}
-                                </span>
+                                <div className="flex items-center gap-3">
+                                    <span className="text-[11px] font-mono text-[#8A918C] truncate max-w-[200px]">
+                                        {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'whole repository')}
+                                    </span>
+                                    <button
+                                        onClick={handleNewChat}
+                                        className="px-2 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
+                                        title="Clear conversation"
+                                    >
+                                        <Plus size={12} />
+                                        <span>New chat</span>
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Chat Messages - Fixed height scroll area */}
                             <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3 min-h-0">
-                                {aiError ? (
+                                {aiError && (
                                     <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
                                         <div className="flex items-center gap-2 text-xs font-medium text-red-200">
                                             <ShieldAlert size={14} className="text-red-400 shrink-0" />
                                             <span>{aiError.message}</span>
                                         </div>
-                                        {lastQuestion && (
-                                            <Button
-                                                onClick={() => askAI(lastQuestion)}
-                                                variant="secondary"
-                                                className="px-3 py-1 text-xs text-red-200 border border-red-500/30 hover:bg-red-500/20"
-                                            >
-                                                Retry
-                                            </Button>
-                                        )}
                                     </div>
-                                ) : (lastQuestion || aiAnswer) ? (
-                                    <>
-                                        {/* User message bubble */}
-                                        {lastQuestion && (
-                                            <div className="flex justify-end">
-                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
-                                                    {lastQuestion}
-                                                </div>
-                                            </div>
-                                        )}
+                                )}
 
-                                        {/* Assistant message bubble */}
-                                        <div className="flex justify-start">
-                                            <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
-                                                {aiAnswer === 'Thinking...' ? (
-                                                    <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
-                                                        <span>Thinking</span>
-                                                        <span className="flex items-center gap-1">
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
-                                                        </span>
-                                                    </div>
-                                                ) : aiAnswer ? (
-                                                    <>
-                                                        <MarkdownRenderer content={aiAnswer} />
-                                                        {/* Evidence chips: only show when answer actually cites file:line */}
-                                                        {(() => {
-                                                            const matches = aiAnswer.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
-                                                            const citations = matches ? Array.from(new Set(matches)) : [];
-                                                            if (citations.length === 0) return null;
-                                                            return (
-                                                                <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                    <span className="text-[10px] text-[#8A918C]">Evidence:</span>
-                                                                    {citations.map((c, cIdx) => (
-                                                                        <button
-                                                                            key={cIdx}
-                                                                            onClick={() => {
-                                                                                const lastColon = c.lastIndexOf(':');
-                                                                                if (lastColon !== -1) {
-                                                                                    const filePath = c.substring(0, lastColon);
-                                                                                    const lineNum = parseInt(c.substring(lastColon + 1), 10);
-                                                                                    if (filePath) setSelectedFile(filePath);
-                                                                                    if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
-                                                                                    setActiveTab('Code');
-                                                                                }
-                                                                            }}
-                                                                            className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
-                                                                            title={"Open " + c + " in Code viewer"}
-                                                                        >
-                                                                            {c}
-                                                                        </button>
-                                                                    ))}
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                    </>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    </>
-                                ) : (
+                                {chatMessages.length === 0 && !aiError ? (
                                     <div className="h-full flex flex-col items-center justify-center text-center py-16 px-4">
                                         <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#8A918C]">
                                             <MessageSquare size={18} />
@@ -1675,6 +1695,79 @@ export function MainPanel({ className }: { className?: string }) {
                                             Questions are answered with the symbols and files that prove them. Type a prompt below or pick a suggestion.
                                         </div>
                                     </div>
+                                ) : (
+                                    chatMessages.map((msg, idx) => (
+                                        <div key={idx} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
+                                            {msg.role === 'user' ? (
+                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
+                                                    {msg.content}
+                                                </div>
+                                            ) : (
+                                                <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                    {msg.isThinking ? (
+                                                        <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
+                                                            <span>Thinking</span>
+                                                            <span className="flex items-center gap-1">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
+                                                            </span>
+                                                        </div>
+                                                    ) : (
+                                                        <>
+                                                            <MarkdownRenderer content={msg.content} />
+
+                                                            {/* Evidence chips: only show when answer actually cites file:line */}
+                                                            {(() => {
+                                                                const matches = msg.content.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
+                                                                const citations = matches ? Array.from(new Set(matches)) : [];
+                                                                if (citations.length === 0) return null;
+                                                                return (
+                                                                    <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                        <span className="text-[10px] text-[#8A918C]">Evidence:</span>
+                                                                        {citations.map((c, cIdx) => (
+                                                                            <button
+                                                                                key={cIdx}
+                                                                                onClick={() => {
+                                                                                    const lastColon = c.lastIndexOf(':');
+                                                                                    if (lastColon !== -1) {
+                                                                                        const filePath = c.substring(0, lastColon);
+                                                                                        const lineNum = parseInt(c.substring(lastColon + 1), 10);
+                                                                                        if (filePath) setSelectedFile(filePath);
+                                                                                        if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
+                                                                                        setActiveTab('Code');
+                                                                                    }
+                                                                                }}
+                                                                                className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
+                                                                                title={"Open " + c + " in Code viewer"}
+                                                                            >
+                                                                                {c}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                );
+                                                            })()}
+
+                                                            {/* Follow-up chips */}
+                                                            {msg.followups && msg.followups.length > 0 && (
+                                                                <div className="pt-2.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                    {msg.followups.map((followup, fIdx) => (
+                                                                        <button
+                                                                            key={fIdx}
+                                                                            onClick={() => askAI(followup)}
+                                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
+                                                                        >
+                                                                            {followup}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))
                                 )}
                                 <div ref={messagesEndRef} />
                             </div>
