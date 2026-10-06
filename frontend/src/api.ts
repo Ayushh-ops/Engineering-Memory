@@ -133,11 +133,26 @@ export interface HealthSummaryResult {
 
 export interface AiAnswerResult { status: string; answer: string; citations: any[]; confidence?: string; missingData?: string[]; error?: any; }
 
+export interface FileOwner {
+    name: string;
+    count: number;
+    share: number;
+}
+
+export interface FileOwnersResponse {
+    repository: string;
+    path: string;
+    totalCommits: number;
+    owners: FileOwner[];
+    busFactorRisk: boolean;
+}
+
 // ------ API ENDPOINTS ------ //
 export const api = {
     repositories: {
         getMeta(url: string) { return post<RepositoryMetadata>('/api/repositories', { url }); },
         getCommits(url: string, sha?: string | null, path?: string) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url, sha: sha || undefined, path }); },
+        getOwners(url: string, path: string, sha?: string | null) { return post<FileOwnersResponse>('/api/repositories/owners', { url, path, sha: sha || undefined }); },
         getTree(url: string, sha: string) { return post<RepositoryTreeResponse>('/api/repositories/tree', { url, sha }); },
         getFile(url: string, sha: string, path: string) {
             const query = new URLSearchParams({ url, sha, path }).toString();

@@ -329,6 +329,103 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
     }
 });
 
+interface FileOwner {
+    name: string;
+    count: number;
+    share: number;
+}
+
+interface FileOwnersResponse {
+    repository: string;
+    path: string;
+    totalCommits: number;
+    owners: FileOwner[];
+    busFactorRisk: boolean;
+}
+
+const fileOwnersCache = new Map<string, { timestamp: number; data: FileOwnersResponse }>();
+const FILE_OWNERS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+router.post("/repositories/owners", async (req: Request, res: Response) => {
+    const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
+
+    if (!parsedRepository || !parsedRepository.repository) {
+        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+    }
+
+    const { owner, repository } = parsedRepository;
+    const path = typeof req.body?.path === "string" && req.body.path.trim().length > 0 ? req.body.path.trim() : undefined;
+    const sha = typeof req.body?.sha === "string" && req.body.sha.trim().length > 0 ? req.body.sha.trim() : undefined;
+
+    if (!path) {
+        return res.status(400).json({ error: "A file path is required." });
+    }
+
+    const cacheKey = `${owner}/${repository}:${path}:${sha || "default"}`;
+    const cached = fileOwnersCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < FILE_OWNERS_CACHE_TTL_MS) {
+        return res.status(200).json(cached.data);
+    }
+
+    try {
+        let commitsUrl = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/commits?per_page=50&path=${encodeURIComponent(path)}`;
+        if (sha) {
+            commitsUrl += `&sha=${encodeURIComponent(sha)}`;
+        }
+
+        const githubResponse = await fetch(commitsUrl, getGitHubRequestOptions());
+
+        if (githubResponse.status === 404) {
+            return res.status(404).json({ error: "GitHub repository or path not found." });
+        }
+
+        const rateLimitError = getGitHubRateLimitError(githubResponse);
+        if (rateLimitError) {
+            return res.status(429).json({ error: rateLimitError });
+        }
+
+        if (!githubResponse.ok) {
+            return res.status(502).json({ error: "GitHub API request failed." });
+        }
+
+        const githubCommits = (await githubResponse.json()) as GitHubCommit[];
+
+        const authorCounts = new Map<string, number>();
+        let totalCommits = 0;
+
+        for (const commit of githubCommits) {
+            const authorName = commit.commit?.author?.name || "Unknown";
+            authorCounts.set(authorName, (authorCounts.get(authorName) || 0) + 1);
+            totalCommits++;
+        }
+
+        const sortedAuthors = Array.from(authorCounts.entries())
+            .map(([name, count]) => ({
+                name,
+                count,
+                share: totalCommits > 0 ? Math.round((count / totalCommits) * 100) : 0
+            }))
+            .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+        const owners = sortedAuthors.slice(0, 3);
+        const busFactorRisk = owners.length > 0 && owners[0].share >= 80;
+
+        const result: FileOwnersResponse = {
+            repository: `${owner}/${repository}`,
+            path,
+            totalCommits,
+            owners,
+            busFactorRisk
+        };
+
+        fileOwnersCache.set(cacheKey, { timestamp: Date.now(), data: result });
+
+        return res.status(200).json(result);
+    } catch {
+        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    }
+});
+
 router.post("/repositories/tree", async (req: Request, res: Response) => {
     const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
     const sha = req.body?.sha;

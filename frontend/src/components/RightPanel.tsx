@@ -1,11 +1,51 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAppStore } from '../store';
 import { Badge, cn, Button } from '../ui';
-import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp, Users, AlertTriangle } from 'lucide-react';
+import { api, FileOwnersResponse } from '../api';
 
 export function RightPanel({ className }: { className?: string }) {
-    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile } = useAppStore();
+    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl } = useAppStore();
     const [showReasons, setShowReasons] = useState(true);
+    const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
+    const [ownersLoading, setOwnersLoading] = useState(false);
+    const [rateLimited, setRateLimited] = useState(false);
+
+    useEffect(() => {
+        let isMounted = true;
+        if (!repoUrl || !selectedFile) {
+            setOwnersData(null);
+            setRateLimited(false);
+            return;
+        }
+
+        setOwnersLoading(true);
+        setRateLimited(false);
+        api.repositories.getOwners(repoUrl, selectedFile, selectedSha)
+            .then((data) => {
+                if (isMounted) {
+                    setOwnersData(data);
+                    setRateLimited(false);
+                }
+            })
+            .catch((err: any) => {
+                if (isMounted) {
+                    if (err?.status === 429 || (err?.message && err.message.toLowerCase().includes('rate limit'))) {
+                        setRateLimited(true);
+                    }
+                    setOwnersData(null);
+                }
+            })
+            .finally(() => {
+                if (isMounted) {
+                    setOwnersLoading(false);
+                }
+            });
+
+        return () => {
+            isMounted = false;
+        };
+    }, [repoUrl, selectedFile, selectedSha]);
 
     // Designed empty state
     const renderEmptyState = (message = "Select a node to see what depends on it") => (
@@ -354,6 +394,67 @@ export function RightPanel({ className }: { className?: string }) {
                         )}
                     </div>
                 </div>
+
+                {/* Owners block */}
+                {selectedFile && (
+                    <div className="space-y-3 pt-3 border-t border-white/[0.08]">
+                        <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-[#8A918C] font-normal flex items-center gap-1.5">
+                                <Users size={12} className="text-[#4FD1B5]" />
+                                <span>Owners</span>
+                            </span>
+                            {ownersData && ownersData.totalCommits > 0 && (
+                                <span className="text-[10px] text-[#8A918C] font-mono">
+                                    {ownersData.totalCommits} commits
+                                </span>
+                            )}
+                        </div>
+
+                        {rateLimited ? (
+                            <div className="text-[11px] text-amber-400/90 leading-relaxed">
+                                Rate limited by GitHub API.
+                            </div>
+                        ) : ownersLoading ? (
+                            <div className="text-[11px] text-[#8A918C] animate-pulse">
+                                Loading owners...
+                            </div>
+                        ) : ownersData && ownersData.owners.length > 0 ? (
+                            <div className="space-y-2.5">
+                                <div className="space-y-2">
+                                    {ownersData.owners.map((owner, idx) => (
+                                        <div key={idx} className="space-y-1">
+                                            <div className="flex items-center justify-between text-xs">
+                                                <span className="font-mono text-[#E8EAE6] truncate max-w-[150px]" title={owner.name}>
+                                                    {owner.name}
+                                                </span>
+                                                <span className="text-[11px] font-mono text-[#8A918C]">
+                                                    {owner.share}% <span className="text-[10px] text-white/30">({owner.count})</span>
+                                                </span>
+                                            </div>
+                                            <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                                                <div
+                                                    className="h-full bg-[#4FD1B5] rounded-full transition-all duration-300"
+                                                    style={{ width: `${Math.min(100, Math.max(0, owner.share))}%` }}
+                                                />
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {ownersData.busFactorRisk && (
+                                    <div className="glass-surface p-2 rounded-lg border-amber-500/20 bg-amber-500/[0.05] flex items-center gap-2 text-xs text-amber-300">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 inline-block" />
+                                        <span className="text-[11px] leading-tight">Mostly one person knows this file</span>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="text-[11px] text-[#8A918C]">
+                                No ownership data available.
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -303,6 +303,43 @@ async function main(): Promise<void> {
         assert.ok(sseText.includes('"stage":"Building the graph"'));
         assert.ok(sseText.includes('"percent":100'));
 
+        // Test: owners endpoint
+        globalThis.fetch = async (url, options) => {
+            if (url.toString().includes("github.com") && url.toString().includes("/commits?per_page=50&path=src%2Fapp.ts")) {
+                return {
+                    status: 200,
+                    ok: true,
+                    headers: new Headers(),
+                    json: async () => [
+                        { sha: "c1", commit: { message: "msg1", author: { name: "Alice", date: "2026-01-01" } } },
+                        { sha: "c2", commit: { message: "msg2", author: { name: "Alice", date: "2026-01-02" } } },
+                        { sha: "c3", commit: { message: "msg3", author: { name: "Alice", date: "2026-01-03" } } },
+                        { sha: "c4", commit: { message: "msg4", author: { name: "Alice", date: "2026-01-04" } } },
+                        { sha: "c5", commit: { message: "msg5", author: { name: "Bob", date: "2026-01-05" } } }
+                    ]
+                } as unknown as Response;
+            }
+            return originalFetch(url, options);
+        };
+
+        const ownersRes = await request(port, "/api/repositories/owners", {
+            url: "https://github.com/owner/repo",
+            path: "src/app.ts"
+        });
+        assert.equal(ownersRes.status, 200);
+        assert.equal(ownersRes.body.repository, "owner/repo");
+        assert.equal(ownersRes.body.path, "src/app.ts");
+        assert.equal(ownersRes.body.totalCommits, 5);
+        assert.equal(ownersRes.body.busFactorRisk, true); // Alice has 4/5 = 80%
+        const ownersList = ownersRes.body.owners as Array<{ name: string; count: number; share: number }>;
+        assert.equal(ownersList.length, 2);
+        assert.equal(ownersList[0].name, "Alice");
+        assert.equal(ownersList[0].count, 4);
+        assert.equal(ownersList[0].share, 80);
+        assert.equal(ownersList[1].name, "Bob");
+        assert.equal(ownersList[1].count, 1);
+        assert.equal(ownersList[1].share, 20);
+
         console.log("repositories route fixtures passed");
     } finally {
         globalThis.fetch = originalFetch;
