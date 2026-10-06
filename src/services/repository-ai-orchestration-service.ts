@@ -24,14 +24,14 @@ export class RepositoryAiOrchestrationService {
     constructor(
         private readonly fileClient: Pick<GitHubRepositoryFileClient, "loadFiles">,
         private readonly analysisService: Pick<RepositoryAnalysisService, "analyzeFiles">,
-        private readonly aiService: Pick<AiAnswerService, "answer">,
+        private readonly aiService: Pick<AiAnswerService, "answer"> & { streamAnswer?: AiAnswerService["streamAnswer"] },
         private readonly expansionService: Pick<RepositoryContextExpansionService, "maxAdditionalFiles" | "selectRelatedFiles" | "selectImportCandidates"> = new RepositoryContextExpansionService(),
         private readonly sourceEvidenceService: Pick<RepositorySourceEvidenceService, "select"> = new RepositorySourceEvidenceService(),
         private readonly questionContextPlanner: Pick<QuestionContextPlanner, "plan"> = new QuestionContextPlanner(),
         private readonly changeImpactAnalysisService: Pick<ChangeImpactAnalysisService, "analyze"> = new ChangeImpactAnalysisService()
     ) {}
 
-    async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
+    private async prepareAiRequest(request: RepositoryAiOrchestrationRequest): Promise<{ aiRequest: AiAnswerRequest } | { earlyResult: AiAnswerResult }> {
         const files = await this.fileClient.loadFiles(
             request.owner,
             request.repository,
@@ -110,13 +110,15 @@ export class RepositoryAiOrchestrationService {
 
         if (request.target.type === "file" && (!targetFile || typeof targetFile.content !== "string")) {
             return {
-                status: "error",
-                answer: "",
-                citations: [],
-                confidence: "low",
-                error: {
-                    code: "bad_request",
-                    message: `Could not load file content for ${request.target.path}.`
+                earlyResult: {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    error: {
+                        code: "bad_request",
+                        message: `Could not load file content for ${request.target.path}.`
+                    }
                 }
             };
         }
@@ -144,6 +146,28 @@ export class RepositoryAiOrchestrationService {
             lang: request.lang
         };
 
-        return this.aiService.answer(aiRequest);
+        return { aiRequest };
+    }
+
+    async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
+        const prepared = await this.prepareAiRequest(request);
+        if ("earlyResult" in prepared) {
+            return prepared.earlyResult;
+        }
+        return this.aiService.answer(prepared.aiRequest);
+    }
+
+    async streamAnswer(
+        request: RepositoryAiOrchestrationRequest,
+        onToken: (token: string) => void
+    ): Promise<AiAnswerResult> {
+        const prepared = await this.prepareAiRequest(request);
+        if ("earlyResult" in prepared) {
+            return prepared.earlyResult;
+        }
+        if (typeof this.aiService.streamAnswer === "function") {
+            return this.aiService.streamAnswer(prepared.aiRequest, onToken);
+        }
+        return this.aiService.answer(prepared.aiRequest);
     }
 }

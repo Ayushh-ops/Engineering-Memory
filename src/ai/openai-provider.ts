@@ -12,7 +12,7 @@ export interface OpenAIMessage {
 }
 
 export interface OpenAIChatCompletionResponse {
-    choices?: Array<{ message?: { content?: string; reasoning?: string } }>;
+    choices?: Array<{ message?: { content?: string; reasoning?: string }; delta?: { content?: string; reasoning?: string } }>;
     error?: {
         message?: string;
         code?: string;
@@ -40,7 +40,8 @@ export class OpenAIProvider implements LlmProvider {
     private async fetchCompletion(
         config: OpenAIConfig,
         messages: OpenAIMessage[],
-        request: LlmRequest
+        request: LlmRequest,
+        stream = false
     ): Promise<Response> {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
@@ -53,6 +54,10 @@ export class OpenAIProvider implements LlmProvider {
             model: config.model,
             messages
         };
+
+        if (stream) {
+            bodyPayload.stream = true;
+        }
 
         if (isReasoning) {
             bodyPayload.max_completion_tokens = tokenLimit;
@@ -79,58 +84,142 @@ export class OpenAIProvider implements LlmProvider {
         }
     }
 
+    private buildMessages(request: LlmRequest): OpenAIMessage[] {
+        // Truncate large facts content (evidence, fileContent) to ~12000 chars
+        let factsPayload: unknown = request.facts;
+        const factsObj = request.facts && typeof request.facts === "object" ? (request.facts as Record<string, unknown>) : null;
+        if (factsObj) {
+            const evidenceList = Array.isArray(factsObj.evidence) ? factsObj.evidence : [];
+            const cappedEvidence = evidenceList.map((item: any) => {
+                if (item && typeof item.code === "string" && item.code.length > 12000) {
+                    return { ...item, code: item.code.slice(0, 12000) + "\n...[truncated]" };
+                }
+                return item;
+            });
+            let cappedFileContent = factsObj.fileContent;
+            if (typeof cappedFileContent === "string" && cappedFileContent.length > 12000) {
+                cappedFileContent = cappedFileContent.slice(0, 12000) + "\n...[truncated]";
+            }
+            factsPayload = {
+                ...factsObj,
+                ...(cappedFileContent !== undefined ? { fileContent: cappedFileContent } : {}),
+                ...(evidenceList.length > 0 ? { evidence: cappedEvidence } : {})
+            };
+        }
+
+        return [
+            {
+                role: "system",
+                content: [
+                    "You are a repository Q&A assistant.",
+                    "Answer only from the supplied repository facts.",
+                    "Do not invent repository facts.",
+                    "Do not claim information not present in the context.",
+                    "If context is insufficient, say so explicitly.",
+                    "Cite relevant file paths, symbol names, or commit SHAs when possible.",
+                    "Answer in short bullets.",
+                    "Do not use markdown tables.",
+                    "Mention file:line when possible.",
+                    ...(request.instructions ?? [])
+                ].join(" ")
+            },
+            {
+                role: "user",
+                content: JSON.stringify({
+                    repository: request.repository,
+                    target: request.target,
+                    question: request.question,
+                    facts: factsPayload
+                }, null, 2)
+            }
+        ];
+    }
+
+    private handleHttpError(response: Response, responseText: string, config: OpenAIConfig): LlmResponse {
+        const requestUrl = this.buildUrl(config.baseUrl);
+        console.error(`[OpenAIProvider] Request failed: URL=${requestUrl}, model=${config.model}, status=${response.status}, body=${responseText}`);
+
+        if (response.status === 400) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "bad_request",
+                    message: `The AI provider rejected the request (400): ${responseText}`
+                }
+            };
+        }
+
+        if (response.status === 401) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "invalid_api_key",
+                    message: "The configured API key is invalid."
+                }
+            };
+        }
+
+        if (response.status === 429) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "rate_limited",
+                    message: "The API rate limit was reached."
+                }
+            };
+        }
+
+        if (response.status === 404) {
+            const mentionsModel = responseText.toLowerCase().includes("model");
+            if (mentionsModel) {
+                return {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    error: {
+                        code: "model_not_found",
+                        message: "The requested model could not be found."
+                    }
+                };
+            }
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "provider_unavailable",
+                    message: `The AI provider endpoint was not found (404): ${responseText}`
+                }
+            };
+        }
+
+        return {
+            status: "error",
+            answer: "",
+            citations: [],
+            confidence: "low",
+            error: {
+                code: "provider_unavailable",
+                message: `The AI provider request failed with status ${response.status}: ${responseText}`
+            }
+        };
+    }
+
     async answer(request: LlmRequest): Promise<LlmResponse> {
         try {
             const config = this.resolveConfig();
-
-            // Truncate large facts content (evidence, fileContent) to ~12000 chars
-            let factsPayload: unknown = request.facts;
-            const factsObj = request.facts && typeof request.facts === "object" ? (request.facts as Record<string, unknown>) : null;
-            if (factsObj) {
-                const evidenceList = Array.isArray(factsObj.evidence) ? factsObj.evidence : [];
-                const cappedEvidence = evidenceList.map((item: any) => {
-                    if (item && typeof item.code === "string" && item.code.length > 12000) {
-                        return { ...item, code: item.code.slice(0, 12000) + "\n...[truncated]" };
-                    }
-                    return item;
-                });
-                let cappedFileContent = factsObj.fileContent;
-                if (typeof cappedFileContent === "string" && cappedFileContent.length > 12000) {
-                    cappedFileContent = cappedFileContent.slice(0, 12000) + "\n...[truncated]";
-                }
-                factsPayload = {
-                    ...factsObj,
-                    ...(cappedFileContent !== undefined ? { fileContent: cappedFileContent } : {}),
-                    ...(evidenceList.length > 0 ? { evidence: cappedEvidence } : {})
-                };
-            }
-
-            const messages: OpenAIMessage[] = [
-                {
-                    role: "system",
-                    content: [
-                        "You are a repository Q&A assistant.",
-                        "Answer only from the supplied repository facts.",
-                        "Do not invent repository facts.",
-                        "Do not claim information not present in the context.",
-                        "If context is insufficient, say so explicitly.",
-                        "Cite relevant file paths, symbol names, or commit SHAs when possible.",
-                        "Answer in short bullets.",
-                        "Do not use markdown tables.",
-                        "Mention file:line when possible.",
-                        ...(request.instructions ?? [])
-                    ].join(" ")
-                },
-                {
-                    role: "user",
-                    content: JSON.stringify({
-                        repository: request.repository,
-                        target: request.target,
-                        question: request.question,
-                        facts: factsPayload
-                    }, null, 2)
-                }
-            ];
+            const messages = this.buildMessages(request);
 
             // 1 retry on transient network errors (not timeout/auth/rate-limit)
             let response: Response;
@@ -146,84 +235,7 @@ export class OpenAIProvider implements LlmProvider {
 
             if (!response.ok) {
                 const responseText = await response.text().catch(() => "");
-                const requestUrl = this.buildUrl(config.baseUrl);
-                console.error(`[OpenAIProvider] Request failed: URL=${requestUrl}, model=${config.model}, status=${response.status}, body=${responseText}`);
-
-                if (response.status === 400) {
-                    return {
-                        status: "error",
-                        answer: "",
-                        citations: [],
-                        confidence: "low",
-                        error: {
-                            code: "bad_request",
-                            message: `The AI provider rejected the request (400): ${responseText}`
-                        }
-                    };
-                }
-
-                if (response.status === 401) {
-                    return {
-                        status: "error",
-                        answer: "",
-                        citations: [],
-                        confidence: "low",
-                        error: {
-                            code: "invalid_api_key",
-                            message: "The configured API key is invalid."
-                        }
-                    };
-                }
-
-                if (response.status === 429) {
-                    return {
-                        status: "error",
-                        answer: "",
-                        citations: [],
-                        confidence: "low",
-                        error: {
-                            code: "rate_limited",
-                            message: "The API rate limit was reached."
-                        }
-                    };
-                }
-
-                if (response.status === 404) {
-                    const mentionsModel = responseText.toLowerCase().includes("model");
-                    if (mentionsModel) {
-                        return {
-                            status: "error",
-                            answer: "",
-                            citations: [],
-                            confidence: "low",
-                            error: {
-                                code: "model_not_found",
-                                message: "The requested model could not be found."
-                            }
-                        };
-                    }
-                    return {
-                        status: "error",
-                        answer: "",
-                        citations: [],
-                        confidence: "low",
-                        error: {
-                            code: "provider_unavailable",
-                            message: `The AI provider endpoint was not found (404): ${responseText}`
-                        }
-                    };
-                }
-
-                return {
-                    status: "error",
-                    answer: "",
-                    citations: [],
-                    confidence: "low",
-                    error: {
-                        code: "provider_unavailable",
-                        message: `The AI provider request failed with status ${response.status}: ${responseText}`
-                    }
-                };
+                return this.handleHttpError(response, responseText, config);
             }
 
             const data = (await response.json()) as OpenAIChatCompletionResponse;
@@ -271,5 +283,100 @@ export class OpenAIProvider implements LlmProvider {
                 }
             };
         }
+    }
+
+    async streamAnswer(
+        request: LlmRequest,
+        onToken: (token: string) => void
+    ): Promise<LlmResponse> {
+        const config = this.resolveConfig();
+        const messages = this.buildMessages(request);
+
+        const response = await this.fetchCompletion(config, messages, request, true);
+
+        if (!response.ok) {
+            const responseText = await response.text().catch(() => "");
+            return this.handleHttpError(response, responseText, config);
+        }
+
+        if (!response.body) {
+            throw new Error("No response body received for streaming.");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let accumulatedContent = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith("data:")) continue;
+                const dataStr = trimmed.slice(5).trim();
+                if (dataStr === "[DONE]") continue;
+
+                try {
+                    const parsed = JSON.parse(dataStr) as OpenAIChatCompletionResponse;
+                    if (parsed.error) {
+                        return {
+                            status: "error",
+                            answer: accumulatedContent,
+                            citations: [],
+                            confidence: "low",
+                            error: {
+                                code: "provider_unavailable",
+                                message: parsed.error.message || "Streaming error from provider."
+                            }
+                        };
+                    }
+
+                    // Explicit requirement: Only forward content deltas, never reasoning
+                    const delta = parsed.choices?.[0]?.delta;
+                    const contentDelta = delta?.content;
+                    if (typeof contentDelta === "string" && contentDelta.length > 0) {
+                        accumulatedContent += contentDelta;
+                        onToken(contentDelta);
+                    }
+                } catch {
+                    // Ignore JSON parse errors for non-JSON lines or partial chunks
+                }
+            }
+        }
+
+        const trimmedContent = accumulatedContent.trim();
+        if (!trimmedContent) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "malformed_response",
+                    message: "The AI provider returned an empty response."
+                }
+            };
+        }
+
+        const citationMatches = trimmedContent.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
+        const citations: LlmCitation[] = citationMatches
+            ? Array.from(new Set(citationMatches)).map((c) => ({
+                type: "file" as const,
+                path: c
+            }))
+            : [];
+
+        return {
+            status: "ok",
+            answer: trimmedContent,
+            citations,
+            confidence: "medium"
+        };
     }
 }

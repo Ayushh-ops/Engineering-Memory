@@ -44,4 +44,5 @@ export interface LlmRequest {
 
 export interface LlmProvider {
     answer(request: LlmRequest): Promise<LlmResponse>;
+    streamAnswer?(request: LlmRequest, onToken: (token: string) => void): Promise<LlmResponse>;
 }

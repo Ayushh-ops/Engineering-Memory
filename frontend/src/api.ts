@@ -234,6 +234,87 @@ export const api = {
     ai: {
         ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string, lang?: "en" | "hinglish") {
             return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+        },
+        async askStream(
+            url: string,
+            sha: string,
+            paths: string[],
+            target: ImpactTarget,
+            question: string,
+            lang: "en" | "hinglish" | undefined,
+            onToken: (token: string) => void,
+            signal?: AbortSignal
+        ): Promise<AiAnswerResult> {
+            try {
+                const response = await fetch('/api/ai/ask-repository', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify({ url, sha, paths, target, question, lang: lang || "en" }),
+                    signal
+                });
+
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ error: 'Request failed' }));
+                    throw new Error(error.error || `HTTP ${response.status}`);
+                }
+
+                if (!response.body) {
+                    return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let finalResult: AiAnswerResult | null = null;
+                let currentEvent = 'message';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (trimmed.startsWith('event:')) {
+                            currentEvent = trimmed.slice(6).trim();
+                            continue;
+                        }
+                        if (!trimmed.startsWith('data:')) continue;
+                        const jsonStr = trimmed.slice(5).trim();
+                        if (!jsonStr) continue;
+
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            if (currentEvent === 'token') {
+                                if (typeof data.token === 'string') {
+                                    onToken(data.token);
+                                }
+                            } else if (currentEvent === 'done') {
+                                finalResult = data as AiAnswerResult;
+                            } else if (currentEvent === 'error') {
+                                throw new Error(data.message || data.code || 'AI service error');
+                            }
+                        } catch (err: any) {
+                            if (err.message && !err.message.includes('JSON')) throw err;
+                        }
+                    }
+                }
+
+                if (finalResult) return finalResult;
+                throw new Error('Stream finished without final result');
+            } catch (err: any) {
+                if (signal?.aborted) {
+                    throw err;
+                }
+                // Fall back to non-streaming endpoint if streaming fails
+                return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+            }
         }
     }
 };

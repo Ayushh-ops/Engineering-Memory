@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -891,6 +891,8 @@ export function MainPanel({ className }: { className?: string }) {
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
     const [copiedReport, setCopiedReport] = useState(false);
+    const [isStreaming, setIsStreaming] = useState(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
 
     // Save chat per repo+commit in localStorage (last 30 messages)
     const chatStorageKey = (repoUrl && selectedSha) ? `ask-chat:${repoUrl}:${selectedSha}` : null;
@@ -1114,9 +1116,24 @@ export function MainPanel({ className }: { className?: string }) {
         };
     };
 
+    const handleStopAi = useCallback(() => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        setIsStreaming(false);
+        setChatMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'assistant' && last.isThinking) {
+                return prev.slice(0, -1);
+            }
+            return prev;
+        });
+    }, []);
+
     const askAI = async (questionToAsk?: string) => {
         const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
-        if (!q || !repoUrl || !selectedSha || !graph || !selectedFile) return;
+        if (!q || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
         setAskQ('');
         setAiError(null);
@@ -1132,22 +1149,70 @@ export function MainPanel({ className }: { className?: string }) {
             ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
             : { type: 'file', path: selectedFile };
 
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        setIsStreaming(true);
+
+        let accumulatedStreamedText = '';
+
         try {
-            const res = await api.ai.ask(repoUrl, selectedSha, [selectedFile], target as any, q);
+            const res = await api.ai.askStream(
+                repoUrl,
+                selectedSha,
+                [selectedFile],
+                target as any,
+                q,
+                undefined,
+                (token: string) => {
+                    accumulatedStreamedText += token;
+                    setChatMessages(prev => {
+                        const copy = [...prev];
+                        const lastIdx = copy.length - 1;
+                        if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
+                            const { cleanAnswer } = parseAnswerFollowups(accumulatedStreamedText);
+                            copy[lastIdx] = {
+                                role: 'assistant',
+                                content: cleanAnswer,
+                                isThinking: false
+                            };
+                        }
+                        return copy;
+                    });
+                },
+                controller.signal
+            );
+
             if (res.status === 'error' && res.error) {
-                setChatMessages(prev => prev.filter(m => !m.isThinking));
+                setChatMessages(prev => prev.filter(m => !m.isThinking && m.content.length > 0));
                 setAiError(formatAiError(res.error.code || res.error.message || res.error));
             } else {
-                const { cleanAnswer, followups } = parseAnswerFollowups(res.answer || '');
+                const { cleanAnswer, followups } = parseAnswerFollowups(res.answer || accumulatedStreamedText);
                 const updated = [
-                    ...newMessages.filter(m => !m.isThinking),
+                    ...newMessages.slice(0, -1),
                     { role: 'assistant' as const, content: cleanAnswer, followups }
                 ];
                 saveChatMessages(updated);
             }
         } catch (e: any) {
-            setChatMessages(prev => prev.filter(m => !m.isThinking));
-            setAiError(formatAiError(e));
+            if (controller.signal.aborted) {
+                // Stopped by user: preserve accumulated text if any
+                if (accumulatedStreamedText) {
+                    const { cleanAnswer, followups } = parseAnswerFollowups(accumulatedStreamedText);
+                    const updated = [
+                        ...newMessages.slice(0, -1),
+                        { role: 'assistant' as const, content: cleanAnswer, followups }
+                    ];
+                    saveChatMessages(updated);
+                } else {
+                    setChatMessages(prev => prev.filter(m => !m.isThinking));
+                }
+            } else {
+                setChatMessages(prev => prev.filter(m => !m.isThinking && m.content.length > 0));
+                setAiError(formatAiError(e));
+            }
+        } finally {
+            setIsStreaming(false);
+            abortControllerRef.current = null;
         }
     };
 
@@ -1797,17 +1862,29 @@ export function MainPanel({ className }: { className?: string }) {
                                     <input
                                         value={askQ}
                                         onChange={e => setAskQ(e.target.value)}
-                                        onKeyDown={e => e.key === 'Enter' && askAI()}
+                                        onKeyDown={e => e.key === 'Enter' && !isStreaming && askAI()}
                                         placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
                                         className="flex-1 bg-transparent px-3 py-1.5 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans"
                                     />
-                                    <Button
-                                        onClick={() => askAI()}
-                                        className="px-3 py-1 text-xs shrink-0"
-                                        disabled={!askQ.trim()}
-                                    >
-                                        Send
-                                    </Button>
+                                    {isStreaming ? (
+                                        <button
+                                            type="button"
+                                            onClick={handleStopAi}
+                                            className="px-3 py-1 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors"
+                                            title="Stop generating"
+                                        >
+                                            <Square size={12} className="fill-current" />
+                                            <span>Stop</span>
+                                        </button>
+                                    ) : (
+                                        <Button
+                                            onClick={() => askAI()}
+                                            className="px-3 py-1 text-xs shrink-0"
+                                            disabled={!askQ.trim() || isStreaming}
+                                        >
+                                            Send
+                                        </Button>
+                                    )}
                                 </div>
                                 <div className="text-center text-[10px] text-[#8A918C]/70 mt-2 font-mono flex items-center justify-center gap-1">
                                     <ShieldAlert size={11} /> AI-generated · verify critical paths against code and tests

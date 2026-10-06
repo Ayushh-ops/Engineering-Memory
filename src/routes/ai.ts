@@ -44,7 +44,7 @@ function isValidRepositoryTarget(value: unknown): value is RepositoryContextTarg
 
 export function createAiRouter(
     service: AiAnswerService,
-    repositoryService: Pick<RepositoryAiOrchestrationService, "answer"> = new RepositoryAiOrchestrationService(
+    repositoryService: Pick<RepositoryAiOrchestrationService, "answer"> & { streamAnswer?: RepositoryAiOrchestrationService["streamAnswer"] } = new RepositoryAiOrchestrationService(
         new GitHubRepositoryFileClient(),
         new RepositoryAnalysisService(),
         service
@@ -168,6 +168,80 @@ export function createAiRouter(
         }
 
         const selectedLang = lang === "hinglish" ? "hinglish" : "en";
+        const isSse = req.headers.accept?.includes("text/event-stream");
+
+        if (isSse) {
+            res.setHeader("Content-Type", "text/event-stream");
+            res.setHeader("Cache-Control", "no-cache");
+            res.setHeader("Connection", "keep-alive");
+
+            const sendEvent = (event: string, data: any) => {
+                res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            };
+
+            try {
+                let streamResult;
+                if (typeof repositoryService.streamAnswer === "function") {
+                    streamResult = await repositoryService.streamAnswer(
+                        {
+                            owner: parsedRepository.owner,
+                            repository: parsedRepository.repository,
+                            sha: sha.trim(),
+                            paths: (paths as string[]).map((path) => path.trim()),
+                            target: target as RepositoryContextTarget,
+                            question: question.trim(),
+                            limits: limits as Parameters<typeof service.answer>[0]["limits"],
+                            allowInsufficientContext: true,
+                            lang: selectedLang
+                        },
+                        (token: string) => {
+                            sendEvent("token", { token });
+                        }
+                    );
+                } else {
+                    streamResult = await repositoryService.answer({
+                        owner: parsedRepository.owner,
+                        repository: parsedRepository.repository,
+                        sha: sha.trim(),
+                        paths: (paths as string[]).map((path) => path.trim()),
+                        target: target as RepositoryContextTarget,
+                        question: question.trim(),
+                        limits: limits as Parameters<typeof service.answer>[0]["limits"],
+                        allowInsufficientContext: true,
+                        lang: selectedLang
+                    });
+                }
+
+                if (streamResult.status === "error" && streamResult.error) {
+                    sendEvent("error", {
+                        code: streamResult.error.code,
+                        message: streamResult.error.message
+                    });
+                } else {
+                    sendEvent("done", {
+                        status: streamResult.status,
+                        answer: streamResult.answer,
+                        citations: streamResult.citations,
+                        confidence: streamResult.confidence,
+                        missingData: streamResult.missingData ?? [],
+                        error: streamResult.error ?? null
+                    });
+                }
+                res.end();
+                return;
+            } catch (error) {
+                const errCode = error instanceof GitHubRepositoryFileError
+                    ? (error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "provider_unavailable")
+                    : "provider_unavailable";
+                const errMsg = error instanceof Error ? error.message : "Unable to load and analyze repository.";
+                sendEvent("error", {
+                    code: errCode,
+                    message: errMsg
+                });
+                res.end();
+                return;
+            }
+        }
 
         try {
             const result = await repositoryService.answer({
