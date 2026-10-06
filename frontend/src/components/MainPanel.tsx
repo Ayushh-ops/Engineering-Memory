@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -891,6 +891,123 @@ export function MainPanel({ className }: { className?: string }) {
     const [openHealthSections, setOpenHealthSections] = useState({ circular: true, unused: true, god: true });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
+    const [copiedReport, setCopiedReport] = useState(false);
+
+    const buildMarkdownReport = useCallback(async (): Promise<string> => {
+        const fileName = selectedFile ? selectedFile.split('/').pop() : (selectedSymbol?.name || 'unknown');
+        const lines: string[] = [];
+
+        lines.push(`# Impact Report: ${fileName}`);
+        lines.push('');
+        lines.push(`- **Repository:** ${repoUrl || 'Unknown'}`);
+        lines.push(`- **Commit:** ${selectedSha ? selectedSha.substring(0, 7) : 'HEAD'}`);
+        lines.push(`- **Selected file:** \`${selectedFile || fileName}\``);
+        if (selectedSymbol) {
+            lines.push(`- **Selected symbol:** \`${selectedSymbol.name}\` (${selectedSymbol.type})`);
+        }
+        lines.push('');
+
+        // Risk score and reasons
+        const callersCount = impactResult ? impactResult.directCallers.length : 0;
+        const consumersCount = impactResult ? impactResult.transitiveConsumers.length : 0;
+        const totalAffected = callersCount + consumersCount;
+        lines.push(`## Risk Score`);
+        lines.push('');
+        lines.push(`- **Affected consumers:** ${totalAffected} (${callersCount} direct, ${consumersCount} transitive)`);
+        if (impactResult?.reasons && impactResult.reasons.length > 0) {
+            lines.push('');
+            lines.push(`### Why this score`);
+            for (const r of impactResult.reasons) {
+                lines.push(`- ${r.label}: **${r.value}**`);
+            }
+        }
+        lines.push('');
+
+        // Dependents list
+        lines.push(`## Dependents`);
+        lines.push('');
+        if (impactResult && (impactResult.directCallers.length > 0 || impactResult.transitiveConsumers.length > 0)) {
+            if (impactResult.directCallers.length > 0) {
+                lines.push(`### Direct Callers (${impactResult.directCallers.length})`);
+                for (const dc of impactResult.directCallers) {
+                    lines.push(`- \`${dc.symbol.name}\` (${dc.symbol.type})`);
+                }
+                lines.push('');
+            }
+            if (impactResult.transitiveConsumers.length > 0) {
+                lines.push(`### Transitive Consumers (${impactResult.transitiveConsumers.length})`);
+                for (const tc of impactResult.transitiveConsumers) {
+                    lines.push(`- \`${tc.symbol.name}\` (${tc.symbol.type})`);
+                }
+                lines.push('');
+            }
+        } else {
+            lines.push(`No dependents found.`);
+            lines.push('');
+        }
+
+        // Tests to run
+        lines.push(`## Tests to Run`);
+        lines.push('');
+        const tests = (impactResult?.tests || [])
+            .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
+            .filter(Boolean) as string[];
+        if (tests.length > 0) {
+            for (const t of tests) {
+                lines.push(`- \`${t}\``);
+            }
+        } else {
+            lines.push(`No test found for this file.`);
+        }
+        lines.push('');
+
+        // Owners (only if present)
+        if (repoUrl && selectedFile) {
+            try {
+                const ownersRes = await api.repositories.getOwners(repoUrl, selectedFile, selectedSha);
+                if (ownersRes && ownersRes.owners && ownersRes.owners.length > 0) {
+                    lines.push(`## Owners`);
+                    lines.push('');
+                    for (const o of ownersRes.owners) {
+                        lines.push(`- **${o.name}**: ${o.share}% (${o.count} commits)`);
+                    }
+                    if (ownersRes.busFactorRisk) {
+                        lines.push('');
+                        lines.push(`> ⚠️ **Bus factor risk:** Mostly one person knows this file`);
+                    }
+                    lines.push('');
+                }
+            } catch {
+                // Ignore owners fetch failures gracefully
+            }
+        }
+
+        return lines.join('\n');
+    }, [repoUrl, selectedSha, selectedFile, selectedSymbol, impactResult]);
+
+    const handleDownloadReport = async () => {
+        const md = await buildMarkdownReport();
+        const baseName = selectedFile ? selectedFile.split('/').pop()?.replace(/\.[^/.]+$/, "") : "file";
+        const filename = `impact-${baseName || "file"}.md`;
+        const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleCopyReport = async () => {
+        const md = await buildMarkdownReport();
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+        setCopiedReport(true);
+        setTimeout(() => setCopiedReport(false), 2000);
+    };
 
     // Auto-scroll to bottom of chat on new messages or thinking state
     useEffect(() => {
@@ -1235,29 +1352,49 @@ export function MainPanel({ className }: { className?: string }) {
                                         All files and symbols affected if you modify <span className="font-mono text-[#E8EAE6]">{selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this file')}</span>.
                                     </p>
                                 </div>
-                                <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
-                                    <div className="flex items-center gap-1.5 px-2">
-                                        <label className="text-[11px] text-[#8A918C]">Depth</label>
-                                        <div className="flex gap-1">
-                                            {[1, 2, 3].map(d => (
-                                                <button
-                                                    key={d}
-                                                    onClick={() => setDepth(d)}
-                                                    className={cn(
-                                                        "px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer border",
-                                                        depth === d
-                                                            ? "border-[#4FD1B5] text-[#4FD1B5] bg-[#4FD1B5]/10"
-                                                            : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
-                                                    )}
-                                                >
-                                                    Depth {d}
-                                                </button>
-                                            ))}
-                                        </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
+                                        <button
+                                            onClick={handleDownloadReport}
+                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#E8EAE6] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1.5"
+                                            title="Download report as Markdown"
+                                        >
+                                            <Download size={13} />
+                                            <span>Download report</span>
+                                        </button>
+                                        <button
+                                            onClick={handleCopyReport}
+                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#E8EAE6] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1.5"
+                                            title="Copy report as PR comment"
+                                        >
+                                            {copiedReport ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} />}
+                                            <span>{copiedReport ? "Copied" : "Copy as PR comment"}</span>
+                                        </button>
                                     </div>
-                                    <Button onClick={reanalyze} className="px-3 py-1 text-xs" disabled={analyzing}>
-                                        {analyzing ? <Loader2 size={12} className="animate-spin" /> : 'Re-analyze'}
-                                    </Button>
+                                    <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
+                                        <div className="flex items-center gap-1.5 px-2">
+                                            <label className="text-[11px] text-[#8A918C]">Depth</label>
+                                            <div className="flex gap-1">
+                                                {[1, 2, 3].map(d => (
+                                                    <button
+                                                        key={d}
+                                                        onClick={() => setDepth(d)}
+                                                        className={cn(
+                                                            "px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer border",
+                                                            depth === d
+                                                                ? "border-[#4FD1B5] text-[#4FD1B5] bg-[#4FD1B5]/10"
+                                                                : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
+                                                        )}
+                                                    >
+                                                        Depth {d}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <Button onClick={reanalyze} className="px-3 py-1 text-xs" disabled={analyzing}>
+                                            {analyzing ? <Loader2 size={12} className="animate-spin" /> : 'Re-analyze'}
+                                        </Button>
+                                    </div>
                                 </div>
                             </div>
 
