@@ -32,8 +32,8 @@ export interface AppState {
     selectedSymbol: { name: string, type: "class" | "function" | "method", path: string } | null;
     setSelectedSymbol: (symbol: { name: string, type: "class" | "function" | "method", path: string } | null) => void;
 
-    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI';
-    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI') => void;
+    activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI' | 'ChangeSet';
+    setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI' | 'ChangeSet') => void;
 
     codeHighlightLine: number | null;
     setCodeHighlightLine: (line: number | null) => void;
@@ -41,6 +41,16 @@ export interface AppState {
     // Output from impact analysis
     impactResult: import('./api').ChangeImpactAnalysisResult | null;
     setImpactResult: (r: import('./api').ChangeImpactAnalysisResult | null) => void;
+
+    // Change Set (in-memory)
+    changeSet: string[];
+    addToChangeSet: (path: string) => void;
+    removeFromChangeSet: (path: string) => void;
+    clearChangeSet: () => void;
+    changeSetResult: import('./api').BatchImpactResult | null;
+    setChangeSetResult: (r: import('./api').BatchImpactResult | null) => void;
+    changeSetLoading: boolean;
+    setChangeSetLoading: (loading: boolean) => void;
 
     // Command palette state
     commandPaletteOpen: boolean;
@@ -94,6 +104,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     impactResult: null,
     setImpactResult: (r) => set({ impactResult: r }),
+
+    changeSet: [],
+    addToChangeSet: (path: string) => set((state) => {
+        if (!path || state.changeSet.includes(path) || state.changeSet.length >= 20) {
+            return state;
+        }
+        return { changeSet: [...state.changeSet, path] };
+    }),
+    removeFromChangeSet: (path: string) => set((state) => ({
+        changeSet: state.changeSet.filter((p) => p !== path)
+    })),
+    clearChangeSet: () => set({ changeSet: [], changeSetResult: null }),
+    changeSetResult: null,
+    setChangeSetResult: (r) => set({ changeSetResult: r }),
+    changeSetLoading: false,
+    setChangeSetLoading: (loading) => set({ changeSetLoading: loading }),
 
     commandPaletteOpen: false,
     setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),

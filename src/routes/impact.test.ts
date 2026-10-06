@@ -322,6 +322,24 @@ async function main(): Promise<void> {
             stubServer.close();
         }
 
+        // 13. POST /impact/batch returns combined risk, affected files, tests, and affectedByInput
+        const batchRes = await fetch(`http://127.0.0.1:${server.port}/api/impact/batch`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                graph: fileGraph,
+                paths: ["src/target.ts", "src/dependency.ts"]
+            })
+        });
+        assert.equal(batchRes.status, 200);
+        const batchJson = await batchRes.json() as any;
+        assert.ok(typeof batchJson.combinedRisk === "number");
+        assert.ok(Array.isArray(batchJson.affectedFiles));
+        assert.ok(Array.isArray(batchJson.tests));
+        assert.ok(typeof batchJson.affectedByInput === "object");
+        assert.ok(batchJson.affectedFiles.includes("src/consumer.ts"));
+        assert.deepEqual(batchJson.affectedByInput["src/target.ts"], ["src/consumer.ts"]);
+
         console.log("impact route fixtures passed");
     } finally {
         server.close();

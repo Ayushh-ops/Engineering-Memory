@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -876,7 +876,13 @@ function formatRelativeDate(dateStr: string): string {
 }
 
 export function MainPanel({ className }: { className?: string }) {
-    const { activeTab, setActiveTab, selectedFile, setSelectedFile, selectedSymbol, impactResult, setImpactResult, graph, repoUrl, selectedSha, setCodeHighlightLine, selectFile } = useAppStore();
+    const {
+        activeTab, setActiveTab, selectedFile, setSelectedFile,
+        selectedSymbol, impactResult, setImpactResult, graph,
+        repoUrl, selectedSha, setCodeHighlightLine, selectFile,
+        changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
+        changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading
+    } = useAppStore();
     const [depth, setDepth] = useState(3);
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
@@ -1329,6 +1335,24 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
                         </div>
                     </div>
+                    {selectedFile && (
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => addToChangeSet(selectedFile)}
+                                disabled={changeSet.includes(selectedFile) || changeSet.length >= 20}
+                                className={cn(
+                                    "px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer border",
+                                    changeSet.includes(selectedFile)
+                                        ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/40 text-[#4FD1B5] cursor-default"
+                                        : "glass-surface border-white/10 text-[#E8EAE6] hover:border-[#4FD1B5]/50 hover:text-[#4FD1B5]"
+                                )}
+                                title={changeSet.includes(selectedFile) ? "Already in change set" : "Add to change set"}
+                            >
+                                <Plus size={13} />
+                                <span>{changeSet.includes(selectedFile) ? "In change set" : "Add to change set"}</span>
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="flex gap-4 mt-4 border-b border-white/[0.06]">
@@ -1336,6 +1360,7 @@ export function MainPanel({ className }: { className?: string }) {
                         { id: 'Overview', icon: Hexagon, label: 'Overview' },
                         { id: 'Graph', icon: Network, label: 'Graph' },
                         { id: 'Impact', icon: Activity, label: 'Impact' },
+                        { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length})` : ''}` },
                         { id: 'Connections', icon: Network, label: 'Connections' },
                         { id: 'Code', icon: Code2, label: 'Code' },
                         { id: 'History', icon: Clock, label: 'History' },
@@ -2230,7 +2255,320 @@ export function MainPanel({ className }: { className?: string }) {
                         <CodeViewer />
                     )}
 
-                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Health' && activeTab !== 'Connections' && activeTab !== 'Code' && (
+                    {activeTab === 'ChangeSet' && (
+                        <div className="flex-1 flex flex-col space-y-4 min-h-0">
+                            {/* Change Set Header */}
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h3 className="text-sm font-semibold text-[#E8EAE6] flex items-center gap-2">
+                                        <span>Change set impact</span>
+                                        <span className="text-xs font-mono font-normal text-[#8A918C]">
+                                            ({changeSet.length} {changeSet.length === 1 ? 'file' : 'files'})
+                                        </span>
+                                    </h3>
+                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
+                                        Combined blast radius and affected files across your selected change set.
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {changeSet.length > 0 && (
+                                        <button
+                                            onClick={clearChangeSet}
+                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                        >
+                                            Clear all
+                                        </button>
+                                    )}
+                                    <Button
+                                        onClick={async () => {
+                                            if (!graph || changeSet.length === 0) return;
+                                            setChangeSetLoading(true);
+                                            try {
+                                                const res = await api.graph.impactBatch(graph, changeSet);
+                                                setChangeSetResult(res);
+                                            } catch (err) {
+                                                console.error("Batch impact failed", err);
+                                            } finally {
+                                                setChangeSetLoading(false);
+                                            }
+                                        }}
+                                        disabled={changeSetLoading || changeSet.length === 0 || !graph}
+                                        className="px-3 py-1 text-xs"
+                                    >
+                                        {changeSetLoading ? (
+                                            <>
+                                                <Loader2 size={12} className="animate-spin mr-1.5" />
+                                                Analyzing...
+                                            </>
+                                        ) : (
+                                            'Analyze change set'
+                                        )}
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {/* Empty or loading states */}
+                            {changeSet.length === 0 ? (
+                                <div className="flex-1 text-center py-20 border border-dashed border-white/10 rounded-xl glass-surface p-8 flex flex-col items-center justify-center gap-2">
+                                    <Layers size={28} className="text-[#8A918C]/60 mb-1" />
+                                    <div className="text-sm font-medium text-[#E8EAE6]">Your change set is empty</div>
+                                    <p className="text-xs text-[#8A918C] max-w-sm">
+                                        Add files by clicking &quot;Add to change set&quot; in the file header or from the file view to analyze their combined blast radius.
+                                    </p>
+                                </div>
+                            ) : changeSetLoading ? (
+                                <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
+                                    <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
+                                    <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} files...</span>
+                                </div>
+                            ) : !changeSetResult ? (
+                                <div className="flex-1 text-center py-16 border border-white/10 rounded-xl glass-surface p-6 flex flex-col items-center justify-center gap-3">
+                                    <div className="text-xs text-[#8A918C]">
+                                        {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'} ready for analysis.
+                                    </div>
+                                    <Button
+                                        onClick={async () => {
+                                            if (!graph || changeSet.length === 0) return;
+                                            setChangeSetLoading(true);
+                                            try {
+                                                const res = await api.graph.impactBatch(graph, changeSet);
+                                                setChangeSetResult(res);
+                                            } catch (err) {
+                                                console.error("Batch impact failed", err);
+                                            } finally {
+                                                setChangeSetLoading(false);
+                                            }
+                                        }}
+                                        disabled={!graph}
+                                        className="px-4 py-1.5 text-xs font-mono"
+                                    >
+                                        Analyze change set now
+                                    </Button>
+                                </div>
+                            ) : (
+                                /* Results view */
+                                <div className="space-y-4">
+                                    {/* Stat cards / Combined Risk */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                        {/* Combined Risk Score */}
+                                        <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col justify-between">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-xs text-[#8A918C]">Combined risk</span>
+                                                <ShieldAlert size={14} className={changeSetResult.combinedRisk > 60 ? "text-red-400" : changeSetResult.combinedRisk > 30 ? "text-[#E3A04A]" : "text-[#4FD1B5]"} />
+                                            </div>
+                                            <div className="my-2">
+                                                <div className="flex items-baseline gap-1.5">
+                                                    <span className="text-2xl font-bold font-mono text-[#E8EAE6]">
+                                                        {changeSetResult.combinedRisk}
+                                                    </span>
+                                                    <span className="text-xs text-[#8A918C] font-mono">/ 100</span>
+                                                </div>
+                                                <div className="w-full bg-white/[0.08] h-1.5 rounded-full overflow-hidden mt-2">
+                                                    <div
+                                                        className={cn(
+                                                            "h-full rounded-full transition-all duration-300",
+                                                            changeSetResult.combinedRisk > 60 ? "bg-red-400" : changeSetResult.combinedRisk > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]"
+                                                        )}
+                                                        style={{ width: `${Math.min(100, Math.max(5, changeSetResult.combinedRisk))}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                            <span className="text-[11px] text-[#8A918C]/80">
+                                                Based on max input risk plus change set size
+                                            </span>
+                                        </div>
+
+                                        {/* Affected Files Count */}
+                                        <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col justify-between">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-xs text-[#8A918C]">Unique affected files</span>
+                                                <FileCode size={14} className="text-[#4FD1B5]" />
+                                            </div>
+                                            <div className="my-2">
+                                                <div className="text-2xl font-bold font-mono text-[#E8EAE6]">
+                                                    {changeSetResult.affectedFiles.length}
+                                                </div>
+                                            </div>
+                                            <span className="text-[11px] text-[#8A918C]/80">
+                                                Unique files reachable from the change set
+                                            </span>
+                                        </div>
+
+                                        {/* Tests To Run Count */}
+                                        <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col justify-between">
+                                            <div className="flex items-center justify-between">
+                                                <span className="text-xs text-[#8A918C]">Tests to run</span>
+                                                <Play size={14} className="text-[#E3A04A]" />
+                                            </div>
+                                            <div className="my-2">
+                                                <div className="text-2xl font-bold font-mono text-[#E8EAE6]">
+                                                    {changeSetResult.tests.length}
+                                                </div>
+                                            </div>
+                                            <span className="text-[11px] text-[#8A918C]/80">
+                                                Merged test suite for affected paths
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    {/* Two-column view: Ranked affected files & Input breakdown */}
+                                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                        {/* Ranked affected files */}
+                                        <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                                                    <Activity size={13} className="text-[#4FD1B5]" />
+                                                    Affected files ({changeSetResult.affectedFiles.length})
+                                                </h4>
+                                                <span className="text-[10px] text-[#8A918C] font-mono">Ranked by risk</span>
+                                            </div>
+                                            <div className="space-y-1.5 max-h-[380px] overflow-y-auto scrollbar-custom pr-1">
+                                                {changeSetResult.affectedFiles.length === 0 ? (
+                                                    <div className="p-4 text-center text-xs text-[#8A918C]">
+                                                        None found
+                                                    </div>
+                                                ) : (
+                                                    changeSetResult.affectedFiles.map((f, i) => {
+                                                        const fileName = f.split('/').pop() || f;
+                                                        // Find which input files affect this file
+                                                        const sources = Object.entries(changeSetResult.affectedByInput)
+                                                            .filter(([_, affected]) => affected.includes(f))
+                                                            .map(([inp]) => inp.split('/').pop() || inp);
+
+                                                        return (
+                                                            <div
+                                                                key={i}
+                                                                onClick={() => selectFile(f)}
+                                                                className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                            >
+                                                                <div className="flex items-center gap-2 truncate min-w-0">
+                                                                    <FileCode size={13} className="text-[#4FD1B5] shrink-0" />
+                                                                    <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={f}>
+                                                                        {fileName}
+                                                                    </span>
+                                                                </div>
+                                                                <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                                                    {sources.length > 0 && (
+                                                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-[#8A918C] border border-white/[0.06]" title={`Affected by: ${sources.join(', ')}`}>
+                                                                            from {sources.length} {sources.length === 1 ? 'file' : 'files'}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Breakdown: which input affects which */}
+                                        <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                                                    <Layers size={13} className="text-[#E3A04A]" />
+                                                    Impact by change set file
+                                                </h4>
+                                                <span className="text-[10px] text-[#8A918C] font-mono">{changeSet.length} inputs</span>
+                                            </div>
+                                            <div className="space-y-2 max-h-[380px] overflow-y-auto scrollbar-custom pr-1">
+                                                {changeSet.map((inputPath) => {
+                                                    const affected = changeSetResult.affectedByInput[inputPath] || [];
+                                                    const inputName = inputPath.split('/').pop() || inputPath;
+                                                    return (
+                                                        <div key={inputPath} className="p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] space-y-1.5">
+                                                            <div className="flex items-center justify-between">
+                                                                <span
+                                                                    onClick={() => selectFile(inputPath)}
+                                                                    className="font-mono text-xs font-semibold text-[#E8EAE6] hover:text-[#4FD1B5] cursor-pointer truncate"
+                                                                    title={inputPath}
+                                                                >
+                                                                    {inputName}
+                                                                </span>
+                                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#4FD1B5]/10 text-[#4FD1B5]">
+                                                                        {affected.length} affected
+                                                                    </span>
+                                                                    <button
+                                                                        onClick={() => removeFromChangeSet(inputPath)}
+                                                                        className="text-[#8A918C] hover:text-red-400 p-0.5 rounded cursor-pointer"
+                                                                        title="Remove from change set"
+                                                                    >
+                                                                        <X size={11} />
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                            {affected.length > 0 ? (
+                                                                <div className="flex flex-wrap gap-1 pt-0.5">
+                                                                    {affected.slice(0, 6).map((aff, idx) => (
+                                                                        <span
+                                                                            key={idx}
+                                                                            onClick={() => selectFile(aff)}
+                                                                            className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-white/[0.03] border border-white/[0.06] text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer truncate max-w-[160px]"
+                                                                            title={aff}
+                                                                        >
+                                                                            {aff.split('/').pop()}
+                                                                        </span>
+                                                                    ))}
+                                                                    {affected.length > 6 && (
+                                                                        <span className="text-[10px] text-[#8A918C]/60 self-center">
+                                                                            +{affected.length - 6} more
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            ) : (
+                                                                <div className="text-[11px] text-[#8A918C]/60 italic font-sans">
+                                                                    No other files affected
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Tests to run */}
+                                    <div className="glass-surface p-4 rounded-xl border border-white/10">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                                                <Play size={13} className="text-[#E3A04A]" />
+                                                Tests to run ({changeSetResult.tests.length})
+                                            </h4>
+                                            <span className="text-[10px] text-[#8A918C] font-mono">Suggested test suite</span>
+                                        </div>
+                                        {changeSetResult.tests.length === 0 ? (
+                                            <div className="flex items-center gap-2 p-3 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs text-[#8A918C]">
+                                                <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" />
+                                                <span>No tests found for the selected change set.</span>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
+                                                {changeSetResult.tests.map((t, idx) => (
+                                                    <div
+                                                        key={idx}
+                                                        onClick={() => selectFile(t)}
+                                                        className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                    >
+                                                        <div className="flex items-center gap-2 truncate">
+                                                            <FileCode size={13} className="text-[#E3A04A] shrink-0" />
+                                                            <span className="font-mono text-[#E8EAE6] group-hover:text-[#E3A04A] truncate" title={t}>
+                                                                {t.split('/').pop()}
+                                                            </span>
+                                                        </div>
+                                                        <span className="text-[10px] font-mono text-[#8A918C]/60 truncate ml-2 max-w-[200px]" title={t}>
+                                                            {t}
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {activeTab !== 'Overview' && activeTab !== 'Impact' && activeTab !== 'AskAI' && activeTab !== 'History' && activeTab !== 'Health' && activeTab !== 'Connections' && activeTab !== 'Code' && activeTab !== 'ChangeSet' && (
                         <div className="text-[#8A918C] text-center py-20 text-xs font-mono">
                             Feature not yet implemented.
                         </div>

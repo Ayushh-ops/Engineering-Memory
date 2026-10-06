@@ -182,6 +182,98 @@ export function createImpactRouter(
         return res.status(200).json(result);
     });
 
+    router.post("/impact/batch", (req: Request, res: Response) => {
+        if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
+            return res.status(400).json({ error: "Malformed request body." });
+        }
+
+        const graph = req.body.graph;
+        const paths = req.body.paths;
+
+        if (!isRepositoryGraph(graph)) {
+            return res.status(400).json({ error: "A valid repository graph is required." });
+        }
+
+        if (!Array.isArray(paths) || paths.length === 0) {
+            return res.status(400).json({ error: "paths must be a non-empty array of strings." });
+        }
+
+        if (paths.length > 20) {
+            return res.status(400).json({ error: "paths array must contain at most 20 files." });
+        }
+
+        const cleanPaths: string[] = [];
+        for (const p of paths) {
+            if (typeof p !== "string" || !p.trim()) {
+                return res.status(400).json({ error: "Every path must be a non-empty string." });
+            }
+            cleanPaths.push(p.trim());
+        }
+
+        const uniqueInputPaths = [...new Set(cleanPaths)];
+
+        // Compute single-file impact for each input file
+        const fileScores: number[] = [];
+        const affectedFilesSet = new Set<string>();
+        const mergedTestsSet = new Set<string>();
+        const affectedByInput: Record<string, string[]> = {};
+
+        for (const inputPath of uniqueInputPaths) {
+            const impact = impactService.analyze(graph, { type: "file", path: inputPath });
+            const direct = impact.directCallers || [];
+            const transitive = impact.transitiveConsumers || [];
+            const allConsumers = [...direct, ...transitive];
+
+            // Calculate single file score:
+            // Dependents count (capped at 70) + commit churn (up to 15) + test coverage penalty (15 if no test)
+            const depCount = allConsumers.length;
+            const depScore = Math.min(70, depCount * 8);
+
+            const fileNode = graph.nodes.find((n) => n.type === "file" && n.path === inputPath);
+            let commitCount = 0;
+            if (fileNode) {
+                for (const edge of graph.edges) {
+                    if (edge.type === "changed" && edge.to === fileNode.id) {
+                        commitCount++;
+                    }
+                }
+            }
+            const churnScore = Math.min(15, commitCount * 3);
+            const hasTests = (impact.tests || []).length > 0;
+            const testScore = hasTests ? 0 : 15;
+            const singleScore = Math.min(100, depScore + churnScore + testScore);
+            fileScores.push(singleScore);
+
+            const theseAffected: string[] = [];
+            for (const c of allConsumers) {
+                const targetPath = c.symbol?.path || (c as any).path;
+                if (targetPath) {
+                    theseAffected.push(targetPath);
+                    affectedFilesSet.add(targetPath);
+                }
+            }
+            affectedByInput[inputPath] = [...new Set(theseAffected)].sort();
+
+            for (const t of (impact.tests || [])) {
+                const testPath = t.path || t.symbol?.path;
+                if (testPath) {
+                    mergedTestsSet.add(testPath);
+                }
+            }
+        }
+
+        const maxScore = fileScores.length > 0 ? Math.max(...fileScores) : 0;
+        const extraFilesCount = Math.max(0, uniqueInputPaths.length - 1);
+        const combinedRisk = Math.min(100, maxScore + extraFilesCount * 5);
+
+        return res.status(200).json({
+            combinedRisk,
+            affectedFiles: [...affectedFilesSet].sort(),
+            tests: [...mergedTestsSet].sort(),
+            affectedByInput
+        });
+    });
+
     return router;
 }
 

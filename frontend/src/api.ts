@@ -131,6 +131,13 @@ export interface HealthSummaryResult {
     godFiles: Array<{ path: string; importCount: number }>;
 }
 
+export interface BatchImpactResult {
+    combinedRisk: number;
+    affectedFiles: string[];
+    tests: string[];
+    affectedByInput: Record<string, string[]>;
+}
+
 export interface AiAnswerResult { status: string; answer: string; citations: any[]; confidence?: string; missingData?: string[]; error?: any; }
 
 export interface FileOwner {
@@ -229,6 +236,9 @@ export const api = {
         },
         health(graph: RepositoryGraph) {
             return post<HealthSummaryResult>('/api/repositories/graph/health', { graph });
+        },
+        impactBatch(graph: RepositoryGraph, paths: string[]) {
+            return post<BatchImpactResult>('/api/impact/batch', { graph, paths });
         }
     },
     ai: {

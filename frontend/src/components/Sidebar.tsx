@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../store';
-import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2 } from 'lucide-react';
+import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers } from 'lucide-react';
 import { api } from '../api';
 import { cn } from '../ui';
 import { getPathsToAnalyze, isFileInGraph, isCodeFile } from '../analyze-helpers';
@@ -79,10 +79,31 @@ function renderTree(paths: string[], onSelect: (path: string) => void, selectedF
 }
 
 export function Sidebar({ className }: { className?: string }) {
-    const { repoUrl, meta, commits, selectedSha, setSelectedSha, treeFiles, setTreeFiles, graph, setGraph, selectedFile, setSelectedFile, setSelectedSymbol, setImpactResult } = useAppStore();
+    const {
+        repoUrl, meta, commits, selectedSha, setSelectedSha,
+        treeFiles, setTreeFiles, graph, setGraph, selectedFile,
+        setSelectedFile, setSelectedSymbol, setImpactResult,
+        changeSet, removeFromChangeSet, clearChangeSet,
+        setChangeSetResult, changeSetLoading, setChangeSetLoading,
+        setActiveTab
+    } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
     const [analyzingFile, setAnalyzingFile] = useState(false);
+
+    const handleAnalyzeChangeSet = async () => {
+        if (!graph || changeSet.length === 0) return;
+        setChangeSetLoading(true);
+        try {
+            const res = await api.graph.impactBatch(graph, changeSet);
+            setChangeSetResult(res);
+            setActiveTab('ChangeSet');
+        } catch (e) {
+            console.error('Change set analysis failed', e);
+        } finally {
+            setChangeSetLoading(false);
+        }
+    };
 
     const handleShaChange = async (newSha: string) => {
         setSelectedSha(newSha);
@@ -209,6 +230,65 @@ export function Sidebar({ className }: { className?: string }) {
                         renderTree(filteredTree, handleFileSelect, selectedFile)
                     )}
                 </div>
+
+                {/* Change Set Tray */}
+                {changeSet.length > 0 && (
+                    <div className="mt-2 pt-2.5 border-t border-white/10 shrink-0 flex flex-col gap-2">
+                        <div className="flex items-center justify-between px-1">
+                            <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
+                                <Layers size={12} className="text-[#4FD1B5]" />
+                                Change set ({changeSet.length})
+                            </span>
+                            <button
+                                onClick={clearChangeSet}
+                                className="text-[10px] text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                                title="Clear change set"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                        <div className="max-h-28 overflow-y-auto scrollbar-custom space-y-1 pr-1">
+                            {changeSet.map((path) => (
+                                <div
+                                    key={path}
+                                    className="flex items-center justify-between px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono group"
+                                >
+                                    <span
+                                        onClick={() => handleFileSelect(path)}
+                                        className="truncate text-[#E8EAE6] hover:text-[#4FD1B5] cursor-pointer flex-1"
+                                        title={path}
+                                    >
+                                        {path.split('/').pop()}
+                                    </span>
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            removeFromChangeSet(path);
+                                        }}
+                                        className="text-[#8A918C] hover:text-red-400 p-0.5 rounded cursor-pointer transition-colors shrink-0 ml-1"
+                                        title="Remove file"
+                                    >
+                                        <X size={11} />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                        <button
+                            onClick={handleAnalyzeChangeSet}
+                            disabled={changeSetLoading || !graph}
+                            className="w-full py-1.5 px-3 rounded-lg text-xs font-medium font-mono bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+                        >
+                            {changeSetLoading ? (
+                                <>
+                                    <Loader2 size={12} className="animate-spin" />
+                                    <span>Analyzing...</span>
+                                </>
+                            ) : (
+                                <span>Analyze change set</span>
+                            )}
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );
