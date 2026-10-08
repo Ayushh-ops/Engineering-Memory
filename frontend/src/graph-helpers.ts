@@ -62,17 +62,28 @@ export function getNeighborInfo(
     const outgoingEdgeIds = new Set<string>();
     const incomingEdgeIds = new Set<string>();
 
+    const nodeMap = new Map<string, any>();
+    for (const rawNode of graph.nodes) {
+        const n = rawNode as any;
+        nodeMap.set(n.id, n);
+    }
+
     for (const e of graph.edges) {
         const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+        const fromNode = nodeMap.get(e.from);
+        const toNode = nodeMap.get(e.to);
+
         // Outgoing: selected node to callee or imported file/symbol
         if (selectedNodeIds.has(e.from) && !selectedNodeIds.has(e.to)) {
             calleeNeighborIds.add(e.to);
             outgoingEdgeIds.add(edgeId);
         }
-        // Incoming: dependent node to selected node
+        // Incoming: dependent node to selected node (ignore repo root node so it does not turn amber)
         if (selectedNodeIds.has(e.to) && !selectedNodeIds.has(e.from)) {
-            dependentNeighborIds.add(e.from);
-            incomingEdgeIds.add(edgeId);
+            if (fromNode?.type !== 'repository') {
+                dependentNeighborIds.add(e.from);
+                incomingEdgeIds.add(edgeId);
+            }
         }
     }
 
@@ -89,12 +100,23 @@ export function getNeighborInfo(
     };
 }
 
+export interface ConnectedSymbol {
+    name: string;
+    type: string;
+    id: string;
+}
+
 export function getConnectedFiles(
     graph: RepositoryGraph | null,
     selectedFile: string | null
-): { imports: string[]; importedBy: string[]; calls: string[] } {
+): {
+    imports: string[];
+    importedBy: string[];
+    calls: string[];
+    contains: ConnectedSymbol[];
+} {
     if (!graph || !selectedFile) {
-        return { imports: [], importedBy: [], calls: [] };
+        return { imports: [], importedBy: [], calls: [], contains: [] };
     }
 
     const currentFileNodeIds = new Set<string>();
@@ -136,10 +158,35 @@ export function getConnectedFiles(
         }
     }
 
+    // Contains: symbols (functions, classes, methods) inside selectedFile
+    const contains: ConnectedSymbol[] = [];
+    const seenSymbols = new Set<string>();
+
+    for (const rawNode of graph.nodes) {
+        const n = rawNode as any;
+        if (n.type === 'function' || n.type === 'class' || n.type === 'method') {
+            const nPath = n.path || (n.type === 'file' ? n.id : undefined);
+            if (nPath === selectedFile) {
+                const key = `${n.type}:${n.name}`;
+                if (!seenSymbols.has(key)) {
+                    seenSymbols.add(key);
+                    contains.push({
+                        name: n.name,
+                        type: n.type,
+                        id: n.id
+                    });
+                }
+            }
+        }
+    }
+
+    contains.sort((a, b) => a.name.localeCompare(b.name));
+
     return {
         imports: Array.from(importsSet).sort(),
         importedBy: Array.from(importedBySet).sort(),
-        calls: Array.from(callsSet).sort()
+        calls: Array.from(callsSet).sort(),
+        contains
     };
 }
 

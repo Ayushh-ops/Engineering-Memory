@@ -90,7 +90,7 @@ export function TopBar() {
     };
 
     return (
-        <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#07090A] select-none">
+        <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#07090A] select-none relative z-50">
             <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2 cursor-pointer hover:opacity-85 transition-opacity" onClick={handleHomeClick}>
                     <span className="w-4 h-4 border border-[#4FD1B5] rotate-45 rounded-[3px] relative flex items-center justify-center">

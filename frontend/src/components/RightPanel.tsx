@@ -377,33 +377,12 @@ export function RightPanel({ className }: { className?: string }) {
                             <span>Type</span>
                             <b className="text-[#E8EAE6] font-mono">{nodeType}</b>
                         </div>
-                        {selectedSymbol ? (
-                            <>
-                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                    <span>Name</span>
-                                    <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]">{nodeName}</b>
-                                </div>
-                                {selectedFile && (
-                                    <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                        <span>File</span>
-                                        <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
-                                    </div>
-                                )}
-                            </>
-                        ) : (
-                            selectedFile && (
-                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                    <span>File</span>
-                                    <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
-                                </div>
-                            )
-                        )}
-                        {selectedFile && (
-                            <div className="flex justify-between py-1 text-[#8A918C]">
-                                <span>Full path</span>
-                                <b className="text-[#8A918C] font-mono text-[11px] truncate max-w-[160px]" title={selectedFile}>{selectedFile}</b>
-                            </div>
-                        )}
+                        <div className="flex justify-between py-1 text-[#8A918C]">
+                            <span>Path</span>
+                            <b className="text-[#E8EAE6] font-mono text-[11px] truncate max-w-[170px]" title={selectedFile || ''}>
+                                {selectedFile || '-'}
+                            </b>
+                        </div>
                     </div>
                 </div>
 

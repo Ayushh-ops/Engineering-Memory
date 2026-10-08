@@ -77,12 +77,12 @@ export function getLanguageBadge(filePath?: string): { label: string; color: str
 }
 
 function FlowFitViewHandler({
-    isFullscreen,
+    isExpanded,
     selectedFile,
     nodes,
     edges
 }: {
-    isFullscreen: boolean;
+    isExpanded: boolean;
     selectedFile: string | null;
     nodes: any[];
     edges: any[];
@@ -91,7 +91,7 @@ function FlowFitViewHandler({
     const hasInitialFitRef = useRef(false);
     const prevFileRef = useRef<string | null>(selectedFile);
 
-    // Initial fit on load with padding
+    // Initial fit on load with padding so nodes fill ~60% of canvas
     useEffect(() => {
         if (!hasInitialFitRef.current && nodes.length > 0) {
             hasInitialFitRef.current = true;
@@ -103,14 +103,14 @@ function FlowFitViewHandler({
         }
     }, [nodes, fitView]);
 
-    // Fit view on resize or fullscreen enter/exit with padding
+    // Fit view on resize or expanded enter/exit with padding
     useEffect(() => {
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
             fitView({ padding: 0.2, duration: prefersReducedMotion ? 0 : 300 });
-        }, 100);
+        }, 120);
         return () => clearTimeout(timer);
-    }, [isFullscreen, fitView]);
+    }, [isExpanded, fitView]);
 
     // Center & zoom on new node with its neighbors when selectedFile changes
     useEffect(() => {
@@ -352,7 +352,7 @@ function OverviewGraph2D({
     selectedSymbol,
     onSelectNode,
     onDoubleClickNode,
-    isFullscreen,
+    isExpanded,
     hoveredGraphNode
 }: {
     graph: import('../api').RepositoryGraph;
@@ -361,7 +361,7 @@ function OverviewGraph2D({
     selectedSymbol: any;
     onSelectNode: (rawNode: any) => void;
     onDoubleClickNode: (rawNode: any) => void;
-    isFullscreen: boolean;
+    isExpanded: boolean;
     hoveredGraphNode: string | null;
 }) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
@@ -370,14 +370,35 @@ function OverviewGraph2D({
     useEffect(() => {
         const layoutNodes: any[] = [];
 
+        // Filter out stray / commit / symbol-change nodes
+        const validNodes = graph.nodes.filter((n: any) => {
+            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method' && n.type !== 'repository') {
+                return false;
+            }
+            return Boolean(n.id);
+        });
+
         const connCount = new Map<string, number>();
         graph.edges.forEach(e => {
             connCount.set(e.from, (connCount.get(e.from) || 0) + 1);
             connCount.set(e.to, (connCount.get(e.to) || 0) + 1);
         });
 
-        const totalNodes = graph.nodes.length;
         const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
+
+        // Hovered direct neighbors
+        const hoveredNeighbors = new Set<string>();
+        if (hoveredGraphNode) {
+            const hNode = validNodes.find((vn: any) => vn.path === hoveredGraphNode || vn.id === hoveredGraphNode);
+            if (hNode) {
+                graph.edges.forEach(e => {
+                    if (e.from === hNode.id) hoveredNeighbors.add(e.to);
+                    if (e.to === hNode.id) hoveredNeighbors.add(e.from);
+                });
+            }
+        }
+
+        const approvedBoxes: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
 
         const createNode = (n: any, pos: { x: number; y: number }) => {
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
@@ -385,29 +406,49 @@ function OverviewGraph2D({
             const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
             const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
             const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
-            const isDimmed = neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
+            const isDirectNeighbor = neighborInfo.directNeighborIds.has(n.id) || hoveredNeighbors.has(n.id);
+            const isRepo = n.type === 'repository';
+            const isDimmed = !isRepo && neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
             // Clean file name only (no [TS] prefix, no full path)
             const displayName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const isCallable = n.type === 'function' || n.type === 'method';
-            const degree = connCount.get(n.id) || 0;
-            const isTopHub = degree > 4;
-            const showLabel = isSelected || isCallee || isDependent || isHovered || isTopHub || totalNodes <= 15;
+
+            // Show label only for selected node, hovered node, and direct neighbors
+            const wantsLabel = isSelected || isHovered || isDirectNeighbor;
+            let showLabel = false;
+            if (wantsLabel) {
+                const labelW = Math.max(70, displayName.length * 8 + 24);
+                const labelH = 24;
+                const box = { x1: pos.x, y1: pos.y + 36, x2: pos.x + labelW, y2: pos.y + 36 + labelH };
+                const overlaps = approvedBoxes.some(b => !(box.x2 < b.x1 || box.x1 > b.x2 || box.y2 < b.y1 || box.y1 > b.y2));
+                if (!overlaps) {
+                    approvedBoxes.push(box);
+                    showLabel = true;
+                }
+            }
 
             let bg = 'rgba(16, 20, 21, 0.9)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)';
             let opacity = 1;
+            let borderRadius = '6px';
 
-            if (n.type === 'file') {
-                border = '1px solid rgba(79, 209, 181, 0.3)';
+            if (isRepo) {
+                // Repo root node = hollow ring in text color (not amber)
+                bg = 'transparent';
+                border = '1.5px solid #E8EAE6';
+                borderRadius = '9999px';
+            } else if (n.type === 'file') {
+                border = '1px solid rgba(79, 209, 181, 0.4)';
+                borderRadius = '8px';
             } else if (n.type === 'class') {
-                border = '1px solid rgba(227, 160, 74, 0.3)';
+                border = '1px solid rgba(227, 160, 74, 0.4)';
             } else if (isCallable) {
-                border = '1px solid rgba(79, 209, 181, 0.2)';
+                border = '1px solid rgba(138, 145, 140, 0.3)';
             }
 
-            if (neighborInfo.hasSelection) {
+            if (!isRepo && neighborInfo.hasSelection) {
                 if (isSelected) {
                     border = '2px solid #4FD1B5';
                     boxShadow = '0 0 16px rgba(79, 209, 181, 0.45)';
@@ -430,8 +471,8 @@ function OverviewGraph2D({
                     opacity = 0.15;
                 }
             } else if (isHovered) {
-                border = '2px solid #4FD1B5';
-                boxShadow = '0 0 14px rgba(79, 209, 181, 0.5)';
+                border = isRepo ? '2px solid #E8EAE6' : '2px solid #4FD1B5';
+                boxShadow = isRepo ? '0 0 14px rgba(232, 234, 230, 0.4)' : '0 0 14px rgba(79, 209, 181, 0.5)';
                 opacity = 1;
             }
 
@@ -440,21 +481,27 @@ function OverviewGraph2D({
                 position: pos,
                 data: {
                     label: (
-                        <div className="flex flex-col gap-0.5 min-w-[90px] max-w-[190px] text-left pointer-events-none select-none">
+                        <div className="flex flex-col gap-1 min-w-[90px] max-w-[200px] text-left pointer-events-none select-none">
                             <div className="flex items-center gap-1.5">
                                 <span
                                     className={cn(
                                         "w-2 h-2 rounded-full inline-block shrink-0",
-                                        n.type === 'file' ? "bg-[#4FD1B5]" : n.type === 'class' ? "bg-[#E3A04A]" : "bg-[#8A918C]"
+                                        isRepo
+                                            ? "border border-[#E8EAE6] bg-transparent"
+                                            : n.type === 'file'
+                                            ? "bg-[#4FD1B5]"
+                                            : n.type === 'class'
+                                            ? "bg-[#E3A04A]"
+                                            : "bg-[#8A918C]"
                                     )}
                                 />
                                 <span className="text-[10px] text-[#8A918C]">
-                                    {n.type}
+                                    {isRepo ? 'repo' : n.type}
                                 </span>
                             </div>
                             {showLabel && (
                                 <div
-                                    className="font-mono text-[12px] text-[#E8EAE6] truncate mt-0.5"
+                                    className="font-mono text-[12px] text-[#E8EAE6] px-2 py-0.5 rounded-full bg-[rgba(16,20,21,0.85)] border border-white/10 shadow-md inline-block whitespace-nowrap truncate max-w-[190px]"
                                     title={displayName}
                                 >
                                     {displayName}{isCallable ? '()' : ''}
@@ -467,7 +514,7 @@ function OverviewGraph2D({
                 style: {
                     background: bg,
                     border,
-                    borderRadius: n.type === 'file' ? '8px' : '6px',
+                    borderRadius,
                     padding: '6px 10px',
                     boxShadow,
                     opacity,
@@ -479,7 +526,7 @@ function OverviewGraph2D({
         };
 
         if (simplify) {
-            const fileNodes = graph.nodes.filter(n => n.type === 'file');
+            const fileNodes = validNodes.filter(n => n.type === 'file');
             const cols = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(fileNodes.length))));
             const colWidth = 260;
             const rowHeight = 110;
@@ -492,9 +539,13 @@ function OverviewGraph2D({
         } else {
             // Group by file path
             const fileMap = new Map<string, { fileNode?: any; children: any[] }>();
-            const orphans: any[] = [];
+            let repoNode: any = null;
 
-            graph.nodes.forEach((n: any) => {
+            validNodes.forEach((n: any) => {
+                if (n.type === 'repository') {
+                    repoNode = n;
+                    return;
+                }
                 const path = n.path || (n.type === 'file' ? n.id : undefined);
                 if (path) {
                     if (!fileMap.has(path)) {
@@ -506,10 +557,12 @@ function OverviewGraph2D({
                     } else {
                         group.children.push(n);
                     }
-                } else {
-                    orphans.push(n);
                 }
             });
+
+            if (repoNode) {
+                layoutNodes.push(createNode(repoNode, { x: 40, y: -45 }));
+            }
 
             let currentX = 40;
             fileMap.forEach((group) => {
@@ -533,12 +586,6 @@ function OverviewGraph2D({
 
                 currentX += clusterWidth + 80;
             });
-
-            if (orphans.length > 0) {
-                orphans.forEach((n, idx) => {
-                    layoutNodes.push(createNode(n, { x: currentX, y: 40 + idx * 75 }));
-                });
-            }
         }
 
         const nodeIds = new Set(layoutNodes.map(n => n.id));
@@ -635,7 +682,7 @@ function OverviewGraph2D({
                     className="!bg-[rgba(16,20,21,0.8)] !backdrop-blur-md !border !border-white/10 !rounded-lg !shadow-xl !overflow-hidden [&>button]:!border-b [&>button]:!border-white/10 last:[&>button]:!border-b-0 [&>button]:!bg-transparent [&>button]:!text-[#8A918C] [&>button:hover]:!bg-white/[0.06] [&>button:hover]:!text-[#4FD1B5] [&>button>svg]:!fill-current [&>button]:!w-7 [&>button]:!h-7"
                 />
                 <FlowFitViewHandler
-                    isFullscreen={isFullscreen}
+                    isExpanded={isExpanded}
                     selectedFile={selectedFile}
                     nodes={nodes}
                     edges={edges}
@@ -665,7 +712,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     });
 
-    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [isExpanded, setIsExpanded] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const fgInstanceRef = useRef<any>(null);
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
@@ -706,7 +753,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setSelectedSymbol(null);
         if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
+            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 30);
         }
     }, [setSelectedFile, setSelectedSymbol, viewMode]);
 
@@ -721,6 +768,18 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return getNeighborInfo(activeGraph, selectedFile, selectedSymbol);
     }, [activeGraph, selectedFile, selectedSymbol]);
 
+    const hoveredNeighbors = useMemo(() => {
+        const ids = new Set<string>();
+        if (!hoveredGraphNode) return ids;
+        const hNode = activeGraph.nodes.find((n: any) => n.path === hoveredGraphNode || n.id === hoveredGraphNode);
+        if (!hNode) return ids;
+        activeGraph.edges.forEach((e: any) => {
+            if (e.from === hNode.id) ids.add(e.to);
+            if (e.to === hNode.id) ids.add(e.from);
+        });
+        return ids;
+    }, [activeGraph, hoveredGraphNode]);
+
     const handleViewModeChange = (mode: '2D' | '3D') => {
         setViewMode(mode);
         try {
@@ -730,7 +789,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     };
 
-    // Track container dimensions and handle resize/fullscreen transitions
+    // Track container dimensions and handle resize transitions
     useEffect(() => {
         if (!containerRef.current) return;
         const updateSize = () => {
@@ -753,58 +812,51 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         });
         observer.observe(containerRef.current);
         return () => observer.disconnect();
-    }, [isFullscreen]);
+    }, [isExpanded]);
 
-    // Fullscreen API toggle
-    const toggleFullscreen = useCallback(async () => {
-        if (!containerRef.current) return;
-        try {
-            if (!document.fullscreenElement) {
-                await containerRef.current.requestFullscreen();
-            } else {
-                await document.exitFullscreen();
-            }
-        } catch (e) {
-            console.error("Fullscreen toggle failed", e);
-            setIsFullscreen(prev => !prev);
-        }
+    // In-page expanded toggle
+    const toggleExpanded = useCallback(() => {
+        setIsExpanded(prev => !prev);
     }, []);
 
-    // Fullscreenchange event listener
-    useEffect(() => {
-        const handleFullscreenChange = () => {
-            const isFs = document.fullscreenElement === containerRef.current;
-            setIsFullscreen(isFs);
-            if (containerRef.current) {
-                const w = containerRef.current.clientWidth;
-                const h = containerRef.current.clientHeight;
-                setDimensions({ width: w, height: h });
-            }
-            if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-                setTimeout(() => {
-                    fgInstanceRef.current?.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
-                }, 120);
-            }
-        };
-        document.addEventListener('fullscreenchange', handleFullscreenChange);
-        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-    }, [viewMode]);
-
-    // Escape key fallback
+    // Escape key exits expanded mode
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && isFullscreen) {
-                if (document.fullscreenElement) {
-                    document.exitFullscreen().catch(() => {});
-                } else {
-                    setIsFullscreen(false);
-                }
+            if (e.key === 'Escape' && isExpanded) {
+                setIsExpanded(false);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isFullscreen]);
+    }, [isExpanded]);
+
+    // Lock page scroll while expanded
+    useEffect(() => {
+        if (isExpanded) {
+            const originalOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+            return () => {
+                document.body.style.overflow = originalOverflow;
+            };
+        }
+    }, [isExpanded]);
+
+    // On expanded toggle: resize and fit to view (2D handled via FlowFitViewHandler, 3D via zoomToFit)
+    useEffect(() => {
+        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const timer = setTimeout(() => {
+            if (containerRef.current) {
+                setDimensions({
+                    width: containerRef.current.clientWidth,
+                    height: containerRef.current.clientHeight
+                });
+            }
+            if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
+                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 30);
+            }
+        }, 120);
+        return () => clearTimeout(timer);
+    }, [isExpanded, viewMode]);
 
     const handleSelectNode = useCallback((node: any) => {
         if (!node) return;
@@ -852,12 +904,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             fg.controls().autoRotate = !prefersReducedMotion;
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
-            // Polish: Center 3D camera on initial load
+            // Polish: Center 3D camera on initial load so nodes fill ~60% of canvas
             setTimeout(() => {
                 if (typeof fg.zoomToFit === 'function') {
-                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
+                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 30);
                 }
-            }, 250);
+            }, 350);
         }
     }, []);
 
@@ -868,35 +920,46 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             connCount.set(e.to, (connCount.get(e.to) || 0) + 1);
         });
 
-        // Filter for simplify
-        const nodes = activeGraph.nodes.filter((n: any) => !simplify || n.type === 'file').map((n: any) => {
-            let color = 'rgba(161, 161, 170, 1)';
-            let val = 1;
-            if (n.type === 'file') {
-                color = '#4FD1B5';
-                val = 4;
-            } else if (n.type === 'class') {
-                color = '#E3A04A';
-                val = 2;
-            } else if (n.type === 'function' || n.type === 'method') {
-                color = '#8A918C';
-                val = 1;
-            }
+        // Filter valid nodes, removing stray / non-code nodes
+        const nodes = activeGraph.nodes
+            .filter((n: any) => {
+                if (simplify && n.type !== 'file') return false;
+                if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method' && n.type !== 'repository') {
+                    return false;
+                }
+                return Boolean(n.id);
+            })
+            .map((n: any) => {
+                let color = '#8A918C';
+                let val = 1;
+                if (n.type === 'repository') {
+                    color = '#E8EAE6';
+                    val = 3;
+                } else if (n.type === 'file') {
+                    color = '#4FD1B5';
+                    val = 4;
+                } else if (n.type === 'class') {
+                    color = '#E3A04A';
+                    val = 2;
+                } else if (n.type === 'function' || n.type === 'method') {
+                    color = '#8A918C';
+                    val = 1;
+                }
 
-            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
+                const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
 
-            return {
-                id: n.id,
-                name: n.name || (nodePath ? nodePath.split('/').pop() : n.id),
-                path: nodePath,
-                color,
-                val,
-                type: n.type,
-                connections: connCount.get(n.id) || 0,
-                neighbors: new Set<string>(),
-                links: [] as any[]
-            };
-        });
+                return {
+                    id: n.id,
+                    name: n.name || (nodePath ? nodePath.split('/').pop() : n.id),
+                    path: nodePath,
+                    color,
+                    val,
+                    type: n.type,
+                    connections: connCount.get(n.id) || 0,
+                    neighbors: new Set<string>(),
+                    links: [] as any[]
+                };
+            });
 
         const nodeMap = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
 
@@ -934,7 +997,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 return n.path === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
             });
             if (target && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 40, (node: any) => {
+                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 30, (node: any) => {
                     return node.id === target.id || target.neighbors?.has(node.id);
                 });
             }
@@ -942,18 +1005,67 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData]);
 
+    // Keep 3D sprite labels constant screen size and hide overlapping ones
+    useEffect(() => {
+        if (viewMode !== '3D') return;
+        let animId: number;
+        const tmpVec = new THREE.Vector3();
+
+        const updateSprites = () => {
+            const fg = fgInstanceRef.current;
+            if (fg && typeof fg.scene === 'function' && typeof fg.camera === 'function') {
+                const scene = fg.scene();
+                const camera = fg.camera();
+                if (scene && camera) {
+                    const w = dimensions.width || (typeof window !== 'undefined' ? window.innerWidth : 800);
+                    const h = dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
+                    const screenPositions: Array<{ x: number; y: number; sprite: any }> = [];
+
+                    scene.traverse((obj: any) => {
+                        if (obj.isSprite && obj.textHeight !== undefined) {
+                            const dist = camera.position.distanceTo(obj.getWorldPosition(tmpVec));
+                            const fovRad = ((camera.fov || 45) * Math.PI) / 180;
+                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (14 / Math.max(1, h));
+                            obj.textHeight = Math.max(1, targetHeight);
+
+                            const screenPos = tmpVec.clone().project(camera);
+                            const screenX = (screenPos.x + 1) * w / 2;
+                            const screenY = (-screenPos.y + 1) * h / 2;
+                            screenPositions.push({ x: screenX, y: screenY, sprite: obj });
+                        }
+                    });
+
+                    const drawn: Array<{ x: number; y: number }> = [];
+                    for (const item of screenPositions) {
+                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 55 && Math.abs(d.y - item.y) < 22);
+                        if (overlaps) {
+                            item.sprite.visible = false;
+                        } else {
+                            item.sprite.visible = true;
+                            drawn.push({ x: item.x, y: item.y });
+                        }
+                    }
+                }
+            }
+            animId = requestAnimationFrame(updateSprites);
+        };
+
+        animId = requestAnimationFrame(updateSprites);
+        return () => cancelAnimationFrame(animId);
+    }, [viewMode, dimensions]);
+
     return (
         <div
             ref={containerRef}
             className={cn(
-                "bg-[#0a0a0b] overflow-hidden relative select-none",
-                isFullscreen
-                    ? "fixed inset-0 z-50 w-screen h-screen flex flex-col"
-                    : "w-full h-full rounded-lg border border-zinc-800/50"
+                "bg-[#07090A] overflow-hidden select-none",
+                isExpanded
+                    ? "fixed top-[48px] left-0 right-0 bottom-0 z-40 w-full h-[calc(100vh-48px)] flex flex-col"
+                    : "w-full h-full rounded-lg border border-zinc-800/50 relative"
             )}
             style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
         >
-            {/* View Mode & Fullscreen Toolbar */}
+            {/* View Mode & Expanded Toolbar */}
             <div className="absolute top-3.5 left-3.5 z-30 glass-surface rounded-lg p-1.5 flex items-center gap-1.5 border border-white/10 shadow-lg text-xs font-mono select-none flex-wrap">
                 <button
                     onClick={() => handleViewModeChange('2D')}
@@ -1041,47 +1153,51 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 <div className="h-3.5 w-[1px] bg-white/10" />
 
                 <button
-                    onClick={toggleFullscreen}
+                    onClick={toggleExpanded}
                     className={cn(
                         "p-1 text-xs rounded transition-colors flex items-center justify-center cursor-pointer",
-                        isFullscreen
+                        isExpanded
                             ? "bg-[#4FD1B5] text-[#04100D]"
                             : "text-[#8A918C] hover:text-[#E8EAE6]"
                     )}
-                    title={isFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen (Esc to exit)"}
+                    title={isExpanded ? "Collapse (Esc to exit)" : "Expand (Esc to exit)"}
                 >
-                    {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                    {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
                 </button>
             </div>
 
-            {/* In fullscreen, floating connected files panel */}
-            {isFullscreen && (
-                <div className="absolute top-3.5 right-3.5 z-30 w-72 max-h-[calc(100vh-2rem)] overflow-y-auto glass-surface border-white/10 rounded-xl p-3.5 text-xs shadow-2xl backdrop-blur-md">
-                    <div className="flex items-center justify-between pb-2 mb-2 border-b border-white/10">
+            {/* In expanded mode, floating glass panel */}
+            {isExpanded && (
+                <div className="absolute top-3.5 right-3.5 z-30 w-[280px] max-h-[calc(100vh-48px-2rem)] overflow-y-auto bg-[rgba(16,20,21,0.8)] backdrop-blur-md border border-white/10 rounded-xl p-3.5 text-xs shadow-2xl space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-white/10">
                         <span className="font-semibold text-xs text-[#E8EAE6]">Node details</span>
                         <button
-                            onClick={toggleFullscreen}
+                            onClick={() => setIsExpanded(false)}
                             className="text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
-                            title="Exit fullscreen"
+                            title="Collapse"
                         >
-                            Exit fullscreen
+                            Collapse
                         </button>
                     </div>
                     {selectedFile ? (
                         <div className="space-y-3">
-                            <div className="space-y-1 text-xs">
-                                <div className="font-mono text-xs font-semibold text-[#E8EAE6] truncate" title={selectedFile}>
-                                    {selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                            <div className="space-y-1.5 pb-3 border-b border-white/[0.08]">
+                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                                    <span>Type</span>
+                                    <b className="text-[#E8EAE6] font-mono">{selectedSymbol?.type || 'file'}</b>
                                 </div>
-                                <div className="font-mono text-[10px] text-[#8A918C] truncate" title={selectedFile}>
-                                    {selectedFile}
+                                <div className="flex justify-between py-1 text-[#8A918C]">
+                                    <span>Path</span>
+                                    <b className="text-[#E8EAE6] font-mono text-[11px] truncate max-w-[170px]" title={selectedFile}>
+                                        {selectedFile}
+                                    </b>
                                 </div>
                             </div>
                             <ConnectedFilesList maxHeightClass="max-h-56" />
                         </div>
                     ) : (
                         <div className="text-[11px] text-[#8A918C] py-4 text-center">
-                            Click a node to inspect connected files
+                            Click a node to inspect details
                         </div>
                     )}
                 </div>
@@ -1096,7 +1212,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     selectedSymbol={selectedSymbol}
                     onSelectNode={handleSelectNode}
                     onDoubleClickNode={handleDoubleClickNode}
-                    isFullscreen={isFullscreen}
+                    isExpanded={isExpanded}
                     hoveredGraphNode={hoveredGraphNode}
                 />
             ) : (
@@ -1139,10 +1255,39 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const isCallee = neighborInfo.calleeNeighborIds.has(node.id);
                         const isDependent = neighborInfo.dependentNeighborIds.has(node.id);
                         const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
-                        const isDimmed = neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
+                        const isHoveredNeighbor = hoveredNeighbors.has(node.id);
+                        const isNeighbor = isCallee || isDependent || isHoveredNeighbor;
+                        const isRepo = node.type === 'repository';
+                        const isDimmed = !isRepo && neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
-                        const baseColor = node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
+                        const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
                         const radius = Math.pow(node.val, 1 / 3) * 3.5;
+
+                        // Repo root node = hollow ring in text color (not amber)
+                        if (isRepo) {
+                            const group = new THREE.Group();
+                            const ringGeo = new THREE.TorusGeometry(4, 0.45, 16, 32);
+                            const ringMat = new THREE.MeshBasicMaterial({ color: 0xE8EAE6 });
+                            const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+                            group.add(ringMesh);
+
+                            if (isSelected || isHovered || isNeighbor) {
+                                const sprite = new SpriteText(node.name || 'Repository');
+                                sprite.fontFace = 'IBM Plex Mono';
+                                sprite.textHeight = 4;
+                                sprite.color = '#E8EAE6';
+                                sprite.backgroundColor = 'rgba(16, 20, 21, 0.85)';
+                                sprite.borderRadius = 4;
+                                sprite.padding = [4, 2];
+                                sprite.borderColor = 'rgba(255, 255, 255, 0.1)';
+                                sprite.borderWidth = 0.5;
+                                sprite.position.y = 7;
+                                sprite.renderOrder = 999;
+                                sprite.material.depthTest = false;
+                                group.add(sprite);
+                            }
+                            return group;
+                        }
 
                         if (isDimmed) {
                             return new THREE.Mesh(
@@ -1176,12 +1321,19 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const sphere = new THREE.Mesh(new THREE.SphereGeometry(radius), material);
                         group.add(sphere);
 
-                        // Labels for selected, neighbors, hovered, or high-degree nodes
-                        if (isSelected || isCallee || isDependent || isHovered || node.type === 'file' || node.connections > 5) {
+                        // Labels only for selected node, hovered node, and direct neighbors
+                        const showLabel = isSelected || isHovered || isNeighbor;
+                        if (showLabel) {
                             const sprite = new SpriteText(node.name);
-                            sprite.color = isDependent ? '#E3A04A' : isCallee || isSelected ? '#4FD1B5' : '#E8EAE6';
+                            sprite.fontFace = 'IBM Plex Mono';
                             sprite.textHeight = 4;
-                            sprite.position.y = radius + 4;
+                            sprite.color = isDependent ? '#E3A04A' : isCallee || isSelected ? '#4FD1B5' : '#E8EAE6';
+                            sprite.backgroundColor = 'rgba(16, 20, 21, 0.85)';
+                            sprite.borderRadius = 4;
+                            sprite.padding = [4, 2];
+                            sprite.borderColor = 'rgba(255, 255, 255, 0.1)';
+                            sprite.borderWidth = 0.5;
+                            sprite.position.y = radius + 5;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
                             group.add(sprite);
@@ -1194,10 +1346,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
             {/* Small Legend */}
             <div className="absolute bottom-3.5 left-3.5 glass-surface border-white/10 rounded-lg p-2.5 text-xs space-y-2 z-10 max-w-xs font-mono">
-                <div className="flex items-center gap-3 text-[11px] text-[#8A918C]">
+                <div className="flex items-center gap-3 text-[11px] text-[#8A918C] flex-wrap">
                     <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]"></span>File</span>
-                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#E3A04A]"></span>Class</span>
                     <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#8A918C]"></span>Function</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#E3A04A]"></span>Class</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border border-[#E8EAE6] bg-transparent inline-block"></span>Repo root</span>
                 </div>
 
                 <div className="pt-1.5 border-t border-white/[0.08] flex items-center justify-between text-[11px]">
