@@ -38,6 +38,9 @@ export interface AppState {
     codeHighlightLine: number | null;
     setCodeHighlightLine: (line: number | null) => void;
 
+    hoveredGraphNode: string | null;
+    setHoveredGraphNode: (idOrPath: string | null) => void;
+
     // Output from impact analysis
     impactResult: import('./api').ChangeImpactAnalysisResult | null;
     setImpactResult: (r: import('./api').ChangeImpactAnalysisResult | null) => void;
@@ -101,6 +104,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     codeHighlightLine: null,
     setCodeHighlightLine: (line) => set({ codeHighlightLine: line }),
+
+    hoveredGraphNode: null,
+    setHoveredGraphNode: (idOrPath) => set({ hoveredGraphNode: idOrPath }),
 
     impactResult: null,
     setImpactResult: (r) => set({ impactResult: r }),

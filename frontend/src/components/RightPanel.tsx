@@ -3,6 +3,7 @@ import { useAppStore } from '../store';
 import { Badge, cn, Button } from '../ui';
 import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp, Users, AlertTriangle } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
+import { ConnectedFilesList } from './ConnectedFilesList';
 
 export function RightPanel({ className }: { className?: string }) {
     const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl } = useAppStore();
@@ -376,15 +377,26 @@ export function RightPanel({ className }: { className?: string }) {
                             <span>Type</span>
                             <b className="text-[#E8EAE6] font-mono">{nodeType}</b>
                         </div>
-                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                            <span>Name</span>
-                            <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]">{nodeName}</b>
-                        </div>
-                        {selectedFile && (
-                            <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                <span>File</span>
-                                <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
-                            </div>
+                        {selectedSymbol ? (
+                            <>
+                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                                    <span>Name</span>
+                                    <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]">{nodeName}</b>
+                                </div>
+                                {selectedFile && (
+                                    <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                                        <span>File</span>
+                                        <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            selectedFile && (
+                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                                    <span>File</span>
+                                    <b className="text-[#E8EAE6] font-mono truncate max-w-[160px]" title={selectedFile}>{selectedFile.split('/').pop()}</b>
+                                </div>
+                            )
                         )}
                         {selectedFile && (
                             <div className="flex justify-between py-1 text-[#8A918C]">
@@ -394,6 +406,11 @@ export function RightPanel({ className }: { className?: string }) {
                         )}
                     </div>
                 </div>
+
+                {/* Connected files section */}
+                {selectedFile && (
+                    <ConnectedFilesList className="pt-3 border-t border-white/[0.08]" />
+                )}
 
                 {/* Owners block */}
                 {selectedFile && (

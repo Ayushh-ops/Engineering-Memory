@@ -1,7 +1,7 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers } from 'lucide-react';
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
 import SpriteText from 'three-spritetext';
@@ -10,6 +10,8 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
+import { getNeighborInfo, getFocusedGraph } from '../graph-helpers';
+import { ConnectedFilesList } from './ConnectedFilesList';
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
     // Transform to react-flow shape
@@ -74,14 +76,76 @@ export function getLanguageBadge(filePath?: string): { label: string; color: str
     return null;
 }
 
-function FlowFitViewOnResize({ isFullscreen }: { isFullscreen: boolean }) {
+function FlowFitViewHandler({
+    isFullscreen,
+    selectedFile,
+    nodes,
+    edges
+}: {
+    isFullscreen: boolean;
+    selectedFile: string | null;
+    nodes: any[];
+    edges: any[];
+}) {
     const { fitView } = useReactFlow();
+    const hasInitialFitRef = useRef(false);
+    const prevFileRef = useRef<string | null>(selectedFile);
+
+    // Initial fit on load with padding
     useEffect(() => {
+        if (!hasInitialFitRef.current && nodes.length > 0) {
+            hasInitialFitRef.current = true;
+            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const timer = setTimeout(() => {
+                fitView({ padding: 0.2, duration: prefersReducedMotion ? 0 : 350 });
+            }, 60);
+            return () => clearTimeout(timer);
+        }
+    }, [nodes, fitView]);
+
+    // Fit view on resize or fullscreen enter/exit with padding
+    useEffect(() => {
+        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.15, duration: 300 });
-        }, 120);
+            fitView({ padding: 0.2, duration: prefersReducedMotion ? 0 : 300 });
+        }, 100);
         return () => clearTimeout(timer);
     }, [isFullscreen, fitView]);
+
+    // Center & zoom on new node with its neighbors when selectedFile changes
+    useEffect(() => {
+        if (!selectedFile) {
+            prevFileRef.current = null;
+            return;
+        }
+        if (selectedFile === prevFileRef.current) return;
+        prevFileRef.current = selectedFile;
+
+        const targetNode = nodes.find(n => {
+            const raw = n.data?.rawNode;
+            const rawPath = raw?.path || (raw?.type === 'file' ? raw?.id : undefined);
+            return rawPath === selectedFile || raw?.id === selectedFile || (raw?.type === 'file' && raw?.name === selectedFile);
+        });
+
+        if (targetNode) {
+            const neighborIds = new Set<string>();
+            edges.forEach(e => {
+                if (e.source === targetNode.id) neighborIds.add(e.target);
+                if (e.target === targetNode.id) neighborIds.add(e.source);
+            });
+            const focusNodes = [
+                { id: targetNode.id },
+                ...Array.from(neighborIds).map(id => ({ id }))
+            ];
+            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            fitView({
+                nodes: focusNodes,
+                padding: 0.25,
+                duration: prefersReducedMotion ? 0 : 400
+            });
+        }
+    }, [selectedFile, nodes, edges, fitView]);
+
     return null;
 }
 
@@ -287,14 +351,18 @@ function OverviewGraph2D({
     selectedFile,
     selectedSymbol,
     onSelectNode,
-    isFullscreen
+    onDoubleClickNode,
+    isFullscreen,
+    hoveredGraphNode
 }: {
     graph: import('../api').RepositoryGraph;
     simplify: boolean;
     selectedFile: string | null;
     selectedSymbol: any;
     onSelectNode: (rawNode: any) => void;
+    onDoubleClickNode: (rawNode: any) => void;
     isFullscreen: boolean;
+    hoveredGraphNode: string | null;
 }) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
@@ -309,24 +377,27 @@ function OverviewGraph2D({
         });
 
         const totalNodes = graph.nodes.length;
+        const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
 
         const createNode = (n: any, pos: { x: number; y: number }) => {
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
-            const isSelected = n.type === 'file'
-                ? (selectedFile === nodePath && !selectedSymbol)
-                : (selectedFile === nodePath && selectedSymbol?.name === n.name);
+            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
+            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
+            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
+            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
+            const isDimmed = neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
             // Clean file name only (no [TS] prefix, no full path)
             const displayName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const isCallable = n.type === 'function' || n.type === 'method';
             const degree = connCount.get(n.id) || 0;
-            // Labels only for hovered, selected, and top hub nodes
             const isTopHub = degree > 4;
-            const showLabel = isSelected || isTopHub || totalNodes <= 12;
+            const showLabel = isSelected || isCallee || isDependent || isHovered || isTopHub || totalNodes <= 15;
 
             let bg = 'rgba(16, 20, 21, 0.9)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)';
+            let opacity = 1;
 
             if (n.type === 'file') {
                 border = '1px solid rgba(79, 209, 181, 0.3)';
@@ -336,9 +407,32 @@ function OverviewGraph2D({
                 border = '1px solid rgba(79, 209, 181, 0.2)';
             }
 
-            if (isSelected) {
-                border = '1.5px solid #4FD1B5';
-                boxShadow = '0 0 14px rgba(79, 209, 181, 0.3)';
+            if (neighborInfo.hasSelection) {
+                if (isSelected) {
+                    border = '2px solid #4FD1B5';
+                    boxShadow = '0 0 16px rgba(79, 209, 181, 0.45)';
+                    opacity = 1;
+                } else if (isCallee) {
+                    border = '1.5px solid #4FD1B5';
+                    boxShadow = '0 0 10px rgba(79, 209, 181, 0.25)';
+                    opacity = 1;
+                } else if (isDependent) {
+                    border = '1.5px solid #E3A04A';
+                    boxShadow = '0 0 10px rgba(227, 160, 74, 0.25)';
+                    opacity = 1;
+                } else if (isHovered) {
+                    border = '2px solid #4FD1B5';
+                    boxShadow = '0 0 14px rgba(79, 209, 181, 0.5)';
+                    opacity = 1;
+                } else if (isDimmed) {
+                    border = '1px solid rgba(255, 255, 255, 0.04)';
+                    boxShadow = 'none';
+                    opacity = 0.15;
+                }
+            } else if (isHovered) {
+                border = '2px solid #4FD1B5';
+                boxShadow = '0 0 14px rgba(79, 209, 181, 0.5)';
+                opacity = 1;
             }
 
             return {
@@ -376,8 +470,10 @@ function OverviewGraph2D({
                     borderRadius: n.type === 'file' ? '8px' : '6px',
                     padding: '6px 10px',
                     boxShadow,
+                    opacity,
                     color: '#E8EAE6',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    transition: 'opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease'
                 }
             };
         };
@@ -453,41 +549,70 @@ function OverviewGraph2D({
                 return e.type === 'imports';
             })
             .map((e: any, idx: number) => {
+                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+                const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
+                const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
+                const isEdgeDimmed = neighborInfo.hasSelection && !isOutgoing && !isIncoming;
+
                 let stroke = 'rgba(113, 113, 122, 0.4)';
                 let strokeDasharray: string | undefined = undefined;
                 let animated = false;
                 let strokeWidth = 1.5;
+                let opacity = 1;
+                let zIndex = 1;
 
-                if (e.type === 'contains') {
-                    stroke = 'rgba(59, 130, 246, 0.35)';
-                    strokeDasharray = '4 3';
-                    strokeWidth = 1;
-                } else if (e.type === 'imports') {
-                    stroke = 'rgba(245, 158, 11, 0.7)';
-                    animated = true;
-                    strokeWidth = 2;
-                } else if (e.type === 'calls') {
-                    stroke = 'rgba(16, 185, 129, 0.7)';
-                    animated = true;
-                    strokeWidth = 2;
+                if (neighborInfo.hasSelection) {
+                    if (isOutgoing) {
+                        stroke = '#4FD1B5';
+                        strokeWidth = 2.5;
+                        animated = true;
+                        zIndex = 10;
+                    } else if (isIncoming) {
+                        stroke = '#E3A04A';
+                        strokeWidth = 2.5;
+                        animated = true;
+                        zIndex = 10;
+                    } else if (isEdgeDimmed) {
+                        stroke = 'rgba(255, 255, 255, 0.08)';
+                        strokeWidth = 1;
+                        opacity = 0.15;
+                        zIndex = 0;
+                    }
+                } else {
+                    if (e.type === 'contains') {
+                        stroke = 'rgba(59, 130, 246, 0.35)';
+                        strokeDasharray = '4 3';
+                        strokeWidth = 1;
+                    } else if (e.type === 'imports') {
+                        stroke = 'rgba(245, 158, 11, 0.7)';
+                        animated = true;
+                        strokeWidth = 2;
+                    } else if (e.type === 'calls') {
+                        stroke = 'rgba(16, 185, 129, 0.7)';
+                        animated = true;
+                        strokeWidth = 2;
+                    }
                 }
 
                 return {
-                    id: e.id || `edge-${e.from}-${e.to}-${e.type}-${idx}`,
+                    id: edgeId || `edge-${idx}`,
                     source: e.from,
                     target: e.to,
                     animated,
+                    zIndex,
                     style: {
                         stroke,
                         strokeWidth,
-                        strokeDasharray
+                        strokeDasharray,
+                        opacity,
+                        transition: 'opacity 0.2s ease, stroke 0.2s ease'
                     }
                 };
             });
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
-    }, [graph, simplify, selectedFile, selectedSymbol, setNodes, setEdges]);
+    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, setNodes, setEdges]);
 
     return (
         <div className="w-full h-full relative">
@@ -497,23 +622,40 @@ function OverviewGraph2D({
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
+                onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 fitView
-                minZoom={0.1}
+                fitViewOptions={{ padding: 0.2 }}
+                minZoom={0.03}
                 maxZoom={2}
+                proOptions={{ hideAttribution: true }}
             >
                 <Background color="#27272a" gap={16} size={1} />
                 <Controls
                     position="bottom-right"
-                    className="bg-zinc-900 border-zinc-800 fill-zinc-300 [&>button]:border-zinc-800 [&>button]:bg-zinc-900 [&>button]:hover:bg-zinc-800 [&>button]:fill-zinc-300"
+                    className="!bg-[rgba(16,20,21,0.8)] !backdrop-blur-md !border !border-white/10 !rounded-lg !shadow-xl !overflow-hidden [&>button]:!border-b [&>button]:!border-white/10 last:[&>button]:!border-b-0 [&>button]:!bg-transparent [&>button]:!text-[#8A918C] [&>button:hover]:!bg-white/[0.06] [&>button:hover]:!text-[#4FD1B5] [&>button>svg]:!fill-current [&>button]:!w-7 [&>button]:!h-7"
                 />
-                <FlowFitViewOnResize isFullscreen={isFullscreen} />
+                <FlowFitViewHandler
+                    isFullscreen={isFullscreen}
+                    selectedFile={selectedFile}
+                    nodes={nodes}
+                    edges={edges}
+                />
             </ReactFlow>
         </div>
     );
 }
 
 function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
-    const { selectedFile, selectedSymbol, setSelectedFile, setSelectedSymbol } = useAppStore();
+    const {
+        selectedFile,
+        selectedSymbol,
+        setSelectedFile,
+        setSelectedSymbol,
+        selectFile,
+        setActiveTab,
+        hoveredGraphNode
+    } = useAppStore();
+
     const [viewMode, setViewMode] = useState<'2D' | '3D'>(() => {
         try {
             const saved = localStorage.getItem('graph-view-mode');
@@ -522,10 +664,62 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             return '2D';
         }
     });
+
     const [isFullscreen, setIsFullscreen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const fgInstanceRef = useRef<any>(null);
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
+    const [simplify, setSimplify] = useState(false);
+    const [focusConnected, setFocusConnected] = useState(false);
+    const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
+
+    // History stack of last 10 visited files
+    const [visitedHistory, setVisitedHistory] = useState<string[]>([]);
+    const lastNavigatedFileRef = useRef<string | null>(selectedFile);
+
+    useEffect(() => {
+        if (selectedFile && selectedFile !== lastNavigatedFileRef.current) {
+            if (lastNavigatedFileRef.current) {
+                setVisitedHistory(prev => {
+                    const next = [...prev, lastNavigatedFileRef.current!];
+                    return next.slice(-10);
+                });
+            }
+            lastNavigatedFileRef.current = selectedFile;
+        }
+    }, [selectedFile]);
+
+    const handleBack = useCallback(async () => {
+        if (visitedHistory.length === 0) return;
+        const prevFile = visitedHistory[visitedHistory.length - 1];
+        setVisitedHistory(prev => prev.slice(0, -1));
+        lastNavigatedFileRef.current = prevFile;
+        setActiveTab('Graph');
+        await selectFile(prevFile);
+    }, [visitedHistory, setActiveTab, selectFile]);
+
+    const handleReset = useCallback(() => {
+        setFocusConnected(false);
+        setFocusDepth(1);
+        setSelectedFile(null);
+        setSelectedSymbol(null);
+        if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
+            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
+        }
+    }, [setSelectedFile, setSelectedSymbol, viewMode]);
+
+    const activeGraph = useMemo(() => {
+        if (focusConnected && selectedFile) {
+            return getFocusedGraph(graph, selectedFile, selectedSymbol, focusDepth);
+        }
+        return graph;
+    }, [graph, focusConnected, selectedFile, selectedSymbol, focusDepth]);
+
+    const neighborInfo = useMemo(() => {
+        return getNeighborInfo(activeGraph, selectedFile, selectedSymbol);
+    }, [activeGraph, selectedFile, selectedSymbol]);
 
     const handleViewModeChange = (mode: '2D' | '3D') => {
         setViewMode(mode);
@@ -561,28 +755,56 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return () => observer.disconnect();
     }, [isFullscreen]);
 
-    // Escape key listener for fullscreen
+    // Fullscreen API toggle
+    const toggleFullscreen = useCallback(async () => {
+        if (!containerRef.current) return;
+        try {
+            if (!document.fullscreenElement) {
+                await containerRef.current.requestFullscreen();
+            } else {
+                await document.exitFullscreen();
+            }
+        } catch (e) {
+            console.error("Fullscreen toggle failed", e);
+            setIsFullscreen(prev => !prev);
+        }
+    }, []);
+
+    // Fullscreenchange event listener
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            const isFs = document.fullscreenElement === containerRef.current;
+            setIsFullscreen(isFs);
+            if (containerRef.current) {
+                const w = containerRef.current.clientWidth;
+                const h = containerRef.current.clientHeight;
+                setDimensions({ width: w, height: h });
+            }
+            if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
+                const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                setTimeout(() => {
+                    fgInstanceRef.current?.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
+                }, 120);
+            }
+        };
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }, [viewMode]);
+
+    // Escape key fallback
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape' && isFullscreen) {
-                setIsFullscreen(false);
+                if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(() => {});
+                } else {
+                    setIsFullscreen(false);
+                }
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isFullscreen]);
-
-    // Re-fit 3D graph when dimensions change or entering/exiting fullscreen
-    useEffect(() => {
-        if (viewMode === '3D' && fgInstanceRef.current && dimensions.width > 0 && dimensions.height > 0) {
-            const timer = setTimeout(() => {
-                if (fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                    fgInstanceRef.current.zoomToFit(400, 40);
-                }
-            }, 120);
-            return () => clearTimeout(timer);
-        }
-    }, [isFullscreen, dimensions.width, dimensions.height, viewMode]);
 
     const handleSelectNode = useCallback((node: any) => {
         if (!node) return;
@@ -596,45 +818,68 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [setSelectedFile, setSelectedSymbol]);
 
-    const [graphData, setGraphData] = useState({ nodes: [], links: [] });
-    const [simplify, setSimplify] = useState(false);
-    const [highlightNodes, setHighlightNodes] = useState(new Set());
-    const [highlightLinks, setHighlightLinks] = useState(new Set());
-    const [hoverNode, setHoverNode] = useState<any>(null);
+    const handleDoubleClickNode = useCallback(async (node: any) => {
+        if (!node) return;
+        const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
+        if (nodePath) {
+            setActiveTab('Graph');
+            await selectFile(nodePath);
+        }
+    }, [setActiveTab, selectFile]);
 
-    const fgRef = (useCallback as any)((fg: any) => {
+    // Double-click detector for 3D
+    const lastClickRef = useRef<{ id: string; time: number }>({ id: '', time: 0 });
+    const handleNodeClick3D = useCallback((node: any) => {
+        const now = Date.now();
+        const isDouble = lastClickRef.current.id === node.id && (now - lastClickRef.current.time) < 350;
+        lastClickRef.current = { id: node.id, time: now };
+
+        if (isDouble) {
+            handleDoubleClickNode(node);
+        } else {
+            handleSelectNode(node);
+        }
+    }, [handleDoubleClickNode, handleSelectNode]);
+
+    const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+
+    const fgRef = useCallback((fg: any) => {
         if (fg) {
             fgInstanceRef.current = fg;
             fg.d3Force('charge').strength(-120);
             fg.d3Force('link').distance(40);
-            fg.controls().autoRotate = true;
+            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            fg.controls().autoRotate = !prefersReducedMotion;
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
-            if (typeof fg.zoomToFit === 'function') {
-                setTimeout(() => fg.zoomToFit(400, 40), 200);
-            }
+            // Polish: Center 3D camera on initial load
+            setTimeout(() => {
+                if (typeof fg.zoomToFit === 'function') {
+                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 40);
+                }
+            }, 250);
         }
-    }, [simplify]);
+    }, []);
 
     useEffect(() => {
-        const connCount = new Map();
-        graph.edges.forEach(e => {
+        const connCount = new Map<string, number>();
+        activeGraph.edges.forEach((e: any) => {
             connCount.set(e.from, (connCount.get(e.from) || 0) + 1);
             connCount.set(e.to, (connCount.get(e.to) || 0) + 1);
         });
 
         // Filter for simplify
-        const nodes = graph.nodes.filter(n => !simplify || n.type === 'file').map((n: any) => {
-            let color = 'rgba(161, 161, 170, 1)'; // default
+        const nodes = activeGraph.nodes.filter((n: any) => !simplify || n.type === 'file').map((n: any) => {
+            let color = 'rgba(161, 161, 170, 1)';
             let val = 1;
             if (n.type === 'file') {
-                color = 'rgba(59, 130, 246, 1)';
+                color = '#4FD1B5';
                 val = 4;
             } else if (n.type === 'class') {
-                color = 'rgba(245, 158, 11, 1)';
+                color = '#E3A04A';
                 val = 2;
             } else if (n.type === 'function' || n.type === 'method') {
-                color = 'rgba(16, 185, 129, 1)';
+                color = '#8A918C';
                 val = 1;
             }
 
@@ -653,20 +898,21 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             };
         });
 
-        const nodeMap = new Map(nodes.map(n => [n.id, n]));
+        const nodeMap = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
 
-        const links = graph.edges
-            .filter(e => {
+        const links = activeGraph.edges
+            .filter((e: any) => {
                 if (!simplify) return true;
                 return e.type === 'imports' && nodeMap.has(e.from) && nodeMap.has(e.to);
             })
             .map((e: any) => {
+                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
                 let color = 'rgba(113, 113, 122, 0.4)';
                 if (e.type === 'contains') color = 'rgba(59, 130, 246, 0.2)';
                 else if (e.type === 'imports') color = 'rgba(245, 158, 11, 0.6)';
                 else if (e.type === 'calls') color = 'rgba(16, 185, 129, 0.4)';
 
-                const link = { source: e.from, target: e.to, type: e.type, color };
+                const link = { source: e.from, target: e.to, type: e.type, color, id: edgeId };
                 if (nodeMap.has(e.from) && nodeMap.has(e.to)) {
                     nodeMap.get(e.from)!.neighbors.add(e.to);
                     nodeMap.get(e.to)!.neighbors.add(e.from);
@@ -676,29 +922,25 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 return link;
             });
 
-        setGraphData({ nodes, links } as any);
-        setHighlightNodes(new Set());
-        setHighlightLinks(new Set());
-    }, [graph, simplify]);
+        setGraphData({ nodes, links });
+    }, [activeGraph, simplify]);
 
-    const handleNodeClick = (node: any) => {
-        const newHighlightNodes = new Set();
-        const newHighlightLinks = new Set();
-
-        if (highlightNodes.has(node.id)) {
-            // toggle off
-        } else {
-            newHighlightNodes.add(node.id);
-            node.neighbors.forEach((neighbor: string) => newHighlightNodes.add(neighbor));
-            node.links.forEach((link: any) => newHighlightLinks.add(link));
-        }
-
-        setHighlightNodes(newHighlightNodes);
-        setHighlightLinks(newHighlightLinks);
-
-        // Sync with store
-        handleSelectNode(node);
-    };
+    // Center 3D camera on new node with its neighbors when selectedFile changes
+    useEffect(() => {
+        if (viewMode !== '3D' || !selectedFile || !fgInstanceRef.current) return;
+        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const timer = setTimeout(() => {
+            const target = graphData.nodes.find((n: any) => {
+                return n.path === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
+            });
+            if (target && typeof fgInstanceRef.current.zoomToFit === 'function') {
+                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 40, (node: any) => {
+                    return node.id === target.id || target.neighbors?.has(node.id);
+                });
+            }
+        }, 150);
+        return () => clearTimeout(timer);
+    }, [selectedFile, viewMode, graphData]);
 
     return (
         <div
@@ -712,11 +954,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
         >
             {/* View Mode & Fullscreen Toolbar */}
-            <div className="absolute top-3.5 left-3.5 z-20 glass-surface rounded-lg p-1 flex items-center gap-1 border-white/10">
+            <div className="absolute top-3.5 left-3.5 z-30 glass-surface rounded-lg p-1.5 flex items-center gap-1.5 border border-white/10 shadow-lg text-xs font-mono select-none flex-wrap">
                 <button
                     onClick={() => handleViewModeChange('2D')}
                     className={cn(
-                        "px-2.5 py-1 text-xs font-mono rounded transition-colors cursor-pointer",
+                        "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer",
                         viewMode === '2D'
                             ? "bg-[#4FD1B5] text-[#04100D] font-medium"
                             : "text-[#8A918C] hover:text-[#E8EAE6]"
@@ -727,7 +969,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 <button
                     onClick={() => handleViewModeChange('3D')}
                     className={cn(
-                        "px-2.5 py-1 text-xs font-mono rounded transition-colors cursor-pointer",
+                        "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer",
                         viewMode === '3D'
                             ? "bg-[#4FD1B5] text-[#04100D] font-medium"
                             : "text-[#8A918C] hover:text-[#E8EAE6]"
@@ -735,60 +977,127 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 >
                     3D
                 </button>
-                <div className="h-3 w-[1px] bg-white/10 mx-0.5" />
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
                 <button
-                    onClick={() => setIsFullscreen(!isFullscreen)}
+                    onClick={handleBack}
+                    disabled={visitedHistory.length === 0}
+                    className={cn(
+                        "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
+                        visitedHistory.length > 0 ? "text-[#E8EAE6] hover:bg-white/[0.06] hover:text-[#4FD1B5]" : "text-[#8A918C]"
+                    )}
+                    title={visitedHistory.length > 0 ? `Back to ${visitedHistory[visitedHistory.length - 1].split('/').pop()}` : "No previous files"}
+                >
+                    Back
+                </button>
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
+                <div className="flex items-center gap-1">
+                    <button
+                        onClick={() => setFocusConnected(!focusConnected)}
+                        className={cn(
+                            "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer border",
+                            focusConnected
+                                ? "bg-[#4FD1B5]/20 border-[#4FD1B5] text-[#4FD1B5] font-medium"
+                                : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20"
+                        )}
+                        title="Toggle focus on selected node and its neighbors"
+                    >
+                        Focus connected
+                    </button>
+                    {focusConnected && (
+                        <div className="flex items-center gap-1 pl-0.5">
+                            {[1, 2].map((d) => (
+                                <button
+                                    key={d}
+                                    onClick={() => setFocusDepth(d as 1 | 2)}
+                                    className={cn(
+                                        "px-2 py-0.5 text-[11px] font-mono rounded transition-colors cursor-pointer border",
+                                        focusDepth === d
+                                            ? "bg-[#4FD1B5] border-[#4FD1B5] text-[#04100D] font-medium"
+                                            : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
+                                    )}
+                                    title={`Depth ${d}`}
+                                >
+                                    {d}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
+                <button
+                    onClick={handleReset}
+                    className="px-2.5 py-1 text-xs text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] rounded transition-colors cursor-pointer"
+                    title="Reset graph view and focus"
+                >
+                    Reset
+                </button>
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
+                <button
+                    onClick={toggleFullscreen}
                     className={cn(
                         "p-1 text-xs rounded transition-colors flex items-center justify-center cursor-pointer",
                         isFullscreen
                             ? "bg-[#4FD1B5] text-[#04100D]"
                             : "text-[#8A918C] hover:text-[#E8EAE6]"
                     )}
-                    title={isFullscreen ? "Exit fullscreen (Esc)" : "Expand fullscreen (Esc to exit)"}
+                    title={isFullscreen ? "Exit fullscreen (Esc)" : "Fullscreen (Esc to exit)"}
                 >
                     {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
                 </button>
             </div>
 
-            {/* Exit Fullscreen Close Button */}
+            {/* In fullscreen, floating connected files panel */}
             {isFullscreen && (
-                <button
-                    onClick={() => setIsFullscreen(false)}
-                    className="absolute top-3.5 right-3.5 z-30 px-3 py-1.5 glass-surface border-white/10 text-[#E8EAE6] rounded-lg transition-colors flex items-center gap-1.5 text-xs font-mono cursor-pointer"
-                    title="Exit fullscreen (Esc)"
-                >
-                    <X size={13} />
-                    <span>Exit fullscreen</span>
-                </button>
+                <div className="absolute top-3.5 right-3.5 z-30 w-72 max-h-[calc(100vh-2rem)] overflow-y-auto glass-surface border-white/10 rounded-xl p-3.5 text-xs shadow-2xl backdrop-blur-md">
+                    <div className="flex items-center justify-between pb-2 mb-2 border-b border-white/10">
+                        <span className="font-semibold text-xs text-[#E8EAE6]">Node details</span>
+                        <button
+                            onClick={toggleFullscreen}
+                            className="text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                            title="Exit fullscreen"
+                        >
+                            Exit fullscreen
+                        </button>
+                    </div>
+                    {selectedFile ? (
+                        <div className="space-y-3">
+                            <div className="space-y-1 text-xs">
+                                <div className="font-mono text-xs font-semibold text-[#E8EAE6] truncate" title={selectedFile}>
+                                    {selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                                </div>
+                                <div className="font-mono text-[10px] text-[#8A918C] truncate" title={selectedFile}>
+                                    {selectedFile}
+                                </div>
+                            </div>
+                            <ConnectedFilesList maxHeightClass="max-h-56" />
+                        </div>
+                    ) : (
+                        <div className="text-[11px] text-[#8A918C] py-4 text-center">
+                            Click a node to inspect connected files
+                        </div>
+                    )}
+                </div>
             )}
-
-            {/* Instruction Hints */}
-            <div className={cn(
-                "absolute glass-surface border-white/10 rounded-lg p-2 text-[10px] font-mono text-[#8A918C] pointer-events-none z-10 text-right",
-                isFullscreen ? "top-14 right-3.5" : "top-3.5 right-3.5"
-            )}>
-                {viewMode === '3D' ? (
-                    <>
-                        <div>Rotate • Pan • Zoom</div>
-                        <div className="mt-0.5 text-[#4FD1B5]">Click node to inspect</div>
-                    </>
-                ) : (
-                    <>
-                        <div>Pan • Zoom</div>
-                        <div className="mt-0.5 text-[#4FD1B5]">Click node to inspect</div>
-                    </>
-                )}
-            </div>
 
             {/* Main Graph View: 2D or 3D */}
             {viewMode === '2D' ? (
                 <OverviewGraph2D
-                    graph={graph}
+                    graph={activeGraph}
                     simplify={simplify}
                     selectedFile={selectedFile}
                     selectedSymbol={selectedSymbol}
                     onSelectNode={handleSelectNode}
+                    onDoubleClickNode={handleDoubleClickNode}
                     isFullscreen={isFullscreen}
+                    hoveredGraphNode={hoveredGraphNode}
                 />
             ) : (
                 <ForceGraph3D
@@ -797,38 +1106,82 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     width={dimensions.width > 0 ? dimensions.width : undefined}
                     height={dimensions.height > 0 ? dimensions.height : undefined}
                     nodeRelSize={4}
-                    nodeAutoColorBy="group"
-                    nodeColor={(node: any) => highlightNodes.size === 0 || highlightNodes.has(node.id) ? (node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C') : 'rgba(138, 145, 140, 0.2)'}
                     nodeVal={(node: any) => node.val}
-                    linkColor={(link: any) => highlightNodes.size === 0 || highlightLinks.has(link) ? (link.type === 'imports' ? 'rgba(227, 160, 74, 0.5)' : link.type === 'calls' ? 'rgba(79, 209, 181, 0.5)' : 'rgba(255, 255, 255, 0.15)') : 'rgba(255, 255, 255, 0.05)'}
-                    linkWidth={(link: any) => highlightLinks.has(link) ? 1.5 : 0.6}
-                    linkDirectionalParticles={1}
-                    linkDirectionalParticleWidth={(link: any) => highlightLinks.has(link) ? 1.5 : 0.6}
+                    linkColor={(link: any) => {
+                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
+                        if (neighborInfo.hasSelection) {
+                            if (neighborInfo.outgoingEdgeIds.has(edgeId)) return 'rgba(79, 209, 181, 0.9)';
+                            if (neighborInfo.incomingEdgeIds.has(edgeId)) return 'rgba(227, 160, 74, 0.9)';
+                            return 'rgba(255, 255, 255, 0.04)';
+                        }
+                        return link.type === 'imports' ? 'rgba(227, 160, 74, 0.5)' : link.type === 'calls' ? 'rgba(79, 209, 181, 0.5)' : 'rgba(255, 255, 255, 0.15)';
+                    }}
+                    linkWidth={(link: any) => {
+                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
+                        if (neighborInfo.hasSelection && (neighborInfo.outgoingEdgeIds.has(edgeId) || neighborInfo.incomingEdgeIds.has(edgeId))) {
+                            return 2;
+                        }
+                        return 0.5;
+                    }}
+                    linkDirectionalParticles={(link: any) => {
+                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
+                        if (neighborInfo.hasSelection && (neighborInfo.outgoingEdgeIds.has(edgeId) || neighborInfo.incomingEdgeIds.has(edgeId))) {
+                            return 2;
+                        }
+                        return 0;
+                    }}
+                    linkDirectionalParticleWidth={1.5}
                     backgroundColor="#07090A"
-                    onNodeClick={handleNodeClick}
-                    onNodeHover={(n: any) => setHoverNode(n || null)}
+                    onNodeClick={handleNodeClick3D}
                     nodeThreeObject={(node: any) => {
-                        const isHighlight = highlightNodes.size === 0 || highlightNodes.has(node.id);
-                        const nodeColor = node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
-                        if (!isHighlight) {
+                        const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
+                        const isSelected = neighborInfo.selectedNodeIds.has(node.id);
+                        const isCallee = neighborInfo.calleeNeighborIds.has(node.id);
+                        const isDependent = neighborInfo.dependentNeighborIds.has(node.id);
+                        const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
+                        const isDimmed = neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
+
+                        const baseColor = node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
+                        const radius = Math.pow(node.val, 1 / 3) * 3.5;
+
+                        if (isDimmed) {
                             return new THREE.Mesh(
-                                new THREE.SphereGeometry(Math.pow(node.val, 1 / 3) * 3.5),
-                                new THREE.MeshLambertMaterial({ color: nodeColor, opacity: 0.1, transparent: true })
+                                new THREE.SphereGeometry(radius),
+                                new THREE.MeshLambertMaterial({ color: baseColor, opacity: 0.15, transparent: true })
                             );
                         }
 
                         const group = new THREE.Group();
-                        const geometry = new THREE.SphereGeometry(Math.pow(node.val, 1 / 3) * 3.5);
-                        const material = new THREE.MeshLambertMaterial({ color: nodeColor });
-                        const sphere = new THREE.Mesh(geometry, material);
+                        let activeColor = baseColor;
+                        let emissiveIntensity = 0;
+                        if (isSelected) {
+                            activeColor = '#4FD1B5';
+                            emissiveIntensity = 0.4;
+                        } else if (isCallee) {
+                            activeColor = '#4FD1B5';
+                            emissiveIntensity = 0.2;
+                        } else if (isDependent) {
+                            activeColor = '#E3A04A';
+                            emissiveIntensity = 0.2;
+                        } else if (isHovered) {
+                            activeColor = '#4FD1B5';
+                            emissiveIntensity = 0.35;
+                        }
+
+                        const material = new THREE.MeshLambertMaterial({
+                            color: activeColor,
+                            emissive: emissiveIntensity > 0 ? activeColor : 0x000000,
+                            emissiveIntensity
+                        });
+                        const sphere = new THREE.Mesh(new THREE.SphereGeometry(radius), material);
                         group.add(sphere);
 
-                        // Only show labels for hovered/selected/high-degree nodes
-                        if (node.type === 'file' || node.connections > 5 || hoverNode === node || highlightNodes.has(node.id)) {
+                        // Labels for selected, neighbors, hovered, or high-degree nodes
+                        if (isSelected || isCallee || isDependent || isHovered || node.type === 'file' || node.connections > 5) {
                             const sprite = new SpriteText(node.name);
-                            sprite.color = '#E8EAE6';
+                            sprite.color = isDependent ? '#E3A04A' : isCallee || isSelected ? '#4FD1B5' : '#E8EAE6';
                             sprite.textHeight = 4;
-                            sprite.position.y = Math.pow(node.val, 1 / 3) * 3.5 + 4;
+                            sprite.position.y = radius + 4;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
                             group.add(sprite);
@@ -1317,21 +1670,11 @@ export function MainPanel({ className }: { className?: string }) {
                         </div>
                         <div>
                             <h2 className="text-base font-semibold text-[#E8EAE6] font-mono tracking-tight">
-                                {activeTab === 'AskAI'
-                                    ? "Ask AI"
-                                    : (selectedFile ? (selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()) : "Repository overview")}
+                                {selectedFile ? (selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()) : "Repository overview"}
                             </h2>
                             <div className="flex gap-2 items-center mt-0.5">
-                                {activeTab === 'AskAI' ? (
-                                    <span className="text-[11px] text-[#8A918C] font-mono">
-                                        {selectedFile ? selectedFile.split('/').pop() : "whole repository"}
-                                    </span>
-                                ) : (
-                                    <>
-                                        {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
-                                        <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile || "Select a file from the sidebar to inspect"}</span>
-                                    </>
-                                )}
+                                {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
+                                <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile || "Select a file from the sidebar to inspect"}</span>
                             </div>
                         </div>
                     </div>
