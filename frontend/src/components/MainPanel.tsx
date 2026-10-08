@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
-import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats } from '../graph-helpers';
+import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
@@ -79,38 +79,42 @@ export function getLanguageBadge(filePath?: string): { label: string; color: str
 function FlowFitViewHandler({
     isExpanded,
     selectedFile,
+    simplify,
+    focusConnected,
+    focusDepth,
+    resetTrigger,
     nodes,
     edges
 }: {
     isExpanded: boolean;
     selectedFile: string | null;
+    simplify: boolean;
+    focusConnected: boolean;
+    focusDepth: 1 | 2;
+    resetTrigger: number;
     nodes: any[];
     edges: any[];
 }) {
     const { fitView } = useReactFlow();
-    const hasInitialFitRef = useRef(false);
     const prevFileRef = useRef<string | null>(selectedFile);
 
-    // Initial fit on load with padding so nodes fill ~60% of canvas
+    // Call fitView with padding 0.15 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize. minZoom 0.05.
     useEffect(() => {
-        if (!hasInitialFitRef.current && nodes.length > 0) {
-            hasInitialFitRef.current = true;
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            const timer = setTimeout(() => {
-                fitView({ padding: 0.2, duration: prefersReducedMotion ? 0 : 350 });
-            }, 60);
-            return () => clearTimeout(timer);
-        }
-    }, [nodes, fitView]);
-
-    // Fit view on resize or expanded enter/exit with padding
-    useEffect(() => {
+        if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.2, duration: prefersReducedMotion ? 0 : 300 });
-        }, 120);
+            fitView({ padding: 0.15, duration: prefersReducedMotion ? 0 : 300 });
+        }, 80);
         return () => clearTimeout(timer);
-    }, [isExpanded, fitView]);
+    }, [nodes.length, simplify, focusConnected, focusDepth, resetTrigger, isExpanded, fitView]);
+
+    useEffect(() => {
+        const handleResize = () => {
+            fitView({ padding: 0.15, duration: 0 });
+        };
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [fitView]);
 
     // Center & zoom on new node with its neighbors when selectedFile changes
     useEffect(() => {
@@ -120,6 +124,10 @@ function FlowFitViewHandler({
         }
         if (selectedFile === prevFileRef.current) return;
         prevFileRef.current = selectedFile;
+
+        if (focusConnected) {
+            return;
+        }
 
         const targetNode = nodes.find(n => {
             const raw = n.data?.rawNode;
@@ -140,11 +148,11 @@ function FlowFitViewHandler({
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fitView({
                 nodes: focusNodes,
-                padding: 0.25,
-                duration: prefersReducedMotion ? 0 : 400
+                padding: 0.15,
+                duration: prefersReducedMotion ? 0 : 350
             });
         }
-    }, [selectedFile, nodes, edges, fitView]);
+    }, [selectedFile, nodes, edges, focusConnected, fitView]);
 
     return null;
 }
@@ -353,7 +361,10 @@ function OverviewGraph2D({
     onSelectNode,
     onDoubleClickNode,
     isExpanded,
-    hoveredGraphNode
+    hoveredGraphNode,
+    focusConnected,
+    focusDepth,
+    resetTrigger
 }: {
     graph: import('../api').RepositoryGraph;
     simplify: boolean;
@@ -363,85 +374,94 @@ function OverviewGraph2D({
     onDoubleClickNode: (rawNode: any) => void;
     isExpanded: boolean;
     hoveredGraphNode: string | null;
+    focusConnected: boolean;
+    focusDepth: 1 | 2;
+    resetTrigger: number;
 }) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
 
     useEffect(() => {
-        const layoutNodes: any[] = [];
-
         // Filter out stray / commit / symbol-change nodes
         const validNodes = graph.nodes.filter((n: any) => {
+            if (simplify && n.type !== 'file' && n.type !== 'repository') {
+                return false;
+            }
             if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method' && n.type !== 'repository') {
                 return false;
             }
             return Boolean(n.id);
         });
 
-        const connCount = new Map<string, number>();
-        graph.edges.forEach(e => {
-            connCount.set(e.from, (connCount.get(e.from) || 0) + 1);
-            connCount.set(e.to, (connCount.get(e.to) || 0) + 1);
+        const validNodeIds = new Set(validNodes.map(n => n.id));
+
+        const validEdges = graph.edges.filter(e => {
+            if (!validNodeIds.has(e.from) || !validNodeIds.has(e.to)) return false;
+            if (simplify) {
+                return e.type === 'imports';
+            }
+            return true;
         });
 
         const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
 
-        // Hovered direct neighbors
-        const hoveredNeighbors = new Set<string>();
-        if (hoveredGraphNode) {
-            const hNode = validNodes.find((vn: any) => vn.path === hoveredGraphNode || vn.id === hoveredGraphNode);
-            if (hNode) {
-                graph.edges.forEach(e => {
-                    if (e.from === hNode.id) hoveredNeighbors.add(e.to);
-                    if (e.to === hNode.id) hoveredNeighbors.add(e.from);
-                });
+        // Find center node ID if focused
+        let centerId: string | null = null;
+        if (selectedFile) {
+            for (const n of validNodes) {
+                const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
+                if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && (n as any).name === selectedFile)) {
+                    if (selectedSymbol) {
+                        if ((n as any).name === selectedSymbol.name && n.type === selectedSymbol.type) {
+                            centerId = n.id;
+                            break;
+                        }
+                    } else if (n.type === 'file') {
+                        centerId = n.id;
+                        break;
+                    }
+                }
+            }
+            if (!centerId && neighborInfo.selectedNodeIds.size > 0) {
+                centerId = Array.from(neighborInfo.selectedNodeIds)[0];
             }
         }
 
-        const approvedBoxes: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
+        const positions = compute2DLayout(validNodes, validEdges, {
+            centerId,
+            isFocused: Boolean(focusConnected && selectedFile),
+            focusDepth
+        });
 
-        const createNode = (n: any, pos: { x: number; y: number }) => {
+        const layoutNodes = validNodes.map((n: any) => {
+            const pos = positions.get(n.id) || { x: 0, y: 0 };
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
             const isSelected = neighborInfo.selectedNodeIds.has(n.id);
             const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
             const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
             const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
-            const isDirectNeighbor = neighborInfo.directNeighborIds.has(n.id) || hoveredNeighbors.has(n.id);
             const isRepo = n.type === 'repository';
             const isDimmed = !isRepo && neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
-            // Clean file name only (no [TS] prefix, no full path)
-            const displayName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
+            // Base name only (client.js, not src/client.js)
+            const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
+            const displayName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
             const isCallable = n.type === 'function' || n.type === 'method';
-
-            // Show label only for selected node, hovered node, and direct neighbors
-            const wantsLabel = isSelected || isHovered || isDirectNeighbor;
-            let showLabel = false;
-            if (wantsLabel) {
-                const labelW = Math.max(70, displayName.length * 8 + 24);
-                const labelH = 24;
-                const box = { x1: pos.x, y1: pos.y + 36, x2: pos.x + labelW, y2: pos.y + 36 + labelH };
-                const overlaps = approvedBoxes.some(b => !(box.x2 < b.x1 || box.x1 > b.x2 || box.y2 < b.y1 || box.y1 > b.y2));
-                if (!overlaps) {
-                    approvedBoxes.push(box);
-                    showLabel = true;
-                }
-            }
+            const labelText = isCallable ? `${displayName}()` : displayName;
 
             let bg = 'rgba(16, 20, 21, 0.9)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
-            let boxShadow = '0 2px 8px rgba(0, 0, 0, 0.35)';
+            let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
             let opacity = 1;
             let borderRadius = '6px';
 
             if (isRepo) {
-                // Repo root node = hollow ring in text color (not amber)
                 bg = 'transparent';
                 border = '1.5px solid #E8EAE6';
                 borderRadius = '9999px';
             } else if (n.type === 'file') {
                 border = '1px solid rgba(79, 209, 181, 0.4)';
-                borderRadius = '8px';
+                borderRadius = '6px';
             } else if (n.type === 'class') {
                 border = '1px solid rgba(227, 160, 74, 0.4)';
             } else if (isCallable) {
@@ -451,19 +471,19 @@ function OverviewGraph2D({
             if (!isRepo && neighborInfo.hasSelection) {
                 if (isSelected) {
                     border = '2px solid #4FD1B5';
-                    boxShadow = '0 0 16px rgba(79, 209, 181, 0.45)';
+                    boxShadow = '0 0 12px rgba(79, 209, 181, 0.45)';
                     opacity = 1;
                 } else if (isCallee) {
                     border = '1.5px solid #4FD1B5';
-                    boxShadow = '0 0 10px rgba(79, 209, 181, 0.25)';
+                    boxShadow = '0 0 8px rgba(79, 209, 181, 0.25)';
                     opacity = 1;
                 } else if (isDependent) {
                     border = '1.5px solid #E3A04A';
-                    boxShadow = '0 0 10px rgba(227, 160, 74, 0.25)';
+                    boxShadow = '0 0 8px rgba(227, 160, 74, 0.25)';
                     opacity = 1;
                 } else if (isHovered) {
                     border = '2px solid #4FD1B5';
-                    boxShadow = '0 0 14px rgba(79, 209, 181, 0.5)';
+                    boxShadow = '0 0 10px rgba(79, 209, 181, 0.4)';
                     opacity = 1;
                 } else if (isDimmed) {
                     border = '1px solid rgba(255, 255, 255, 0.04)';
@@ -472,7 +492,7 @@ function OverviewGraph2D({
                 }
             } else if (isHovered) {
                 border = isRepo ? '2px solid #E8EAE6' : '2px solid #4FD1B5';
-                boxShadow = isRepo ? '0 0 14px rgba(232, 234, 230, 0.4)' : '0 0 14px rgba(79, 209, 181, 0.5)';
+                boxShadow = isRepo ? '0 0 12px rgba(232, 234, 230, 0.4)' : '0 0 12px rgba(79, 209, 181, 0.45)';
                 opacity = 1;
             }
 
@@ -481,32 +501,25 @@ function OverviewGraph2D({
                 position: pos,
                 data: {
                     label: (
-                        <div className="flex flex-col gap-1 min-w-[90px] max-w-[200px] text-left pointer-events-none select-none">
-                            <div className="flex items-center gap-1.5">
-                                <span
-                                    className={cn(
-                                        "w-2 h-2 rounded-full inline-block shrink-0",
-                                        isRepo
-                                            ? "border border-[#E8EAE6] bg-transparent"
-                                            : n.type === 'file'
-                                            ? "bg-[#4FD1B5]"
-                                            : n.type === 'class'
-                                            ? "bg-[#E3A04A]"
-                                            : "bg-[#8A918C]"
-                                    )}
-                                />
-                                <span className="text-[10px] text-[#8A918C]">
-                                    {isRepo ? 'repo' : n.type}
-                                </span>
-                            </div>
-                            {showLabel && (
-                                <div
-                                    className="font-mono text-[12px] text-[#E8EAE6] px-2 py-0.5 rounded-full bg-[rgba(16,20,21,0.85)] border border-white/10 shadow-md inline-block whitespace-nowrap truncate max-w-[190px]"
-                                    title={displayName}
-                                >
-                                    {displayName}{isCallable ? '()' : ''}
-                                </div>
-                            )}
+                        <div
+                            className="flex items-center gap-1.5 text-xs font-mono select-none pointer-events-none truncate max-w-[170px]"
+                            title={nodePath || displayName}
+                        >
+                            <span
+                                className={cn(
+                                    "w-2 h-2 rounded-full inline-block shrink-0",
+                                    isRepo
+                                        ? "border border-[#E8EAE6] bg-transparent"
+                                        : n.type === 'file'
+                                        ? "bg-[#4FD1B5]"
+                                        : n.type === 'class'
+                                        ? "bg-[#E3A04A]"
+                                        : "bg-[#8A918C]"
+                                )}
+                            />
+                            <span className="truncate text-[#E8EAE6] text-[11px] leading-tight font-mono">
+                                {labelText}
+                            </span>
                         </div>
                     ),
                     rawNode: n
@@ -515,7 +528,7 @@ function OverviewGraph2D({
                     background: bg,
                     border,
                     borderRadius,
-                    padding: '6px 10px',
+                    padding: '5px 9px',
                     boxShadow,
                     opacity,
                     color: '#E8EAE6',
@@ -523,143 +536,76 @@ function OverviewGraph2D({
                     transition: 'opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease'
                 }
             };
-        };
+        });
 
-        if (simplify) {
-            const fileNodes = validNodes.filter(n => n.type === 'file');
-            const cols = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(fileNodes.length))));
-            const colWidth = 260;
-            const rowHeight = 110;
+        const layoutEdges = validEdges.map((e: any, idx: number) => {
+            const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+            const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
+            const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
+            const isEdgeDimmed = neighborInfo.hasSelection && !isOutgoing && !isIncoming;
 
-            fileNodes.forEach((n, idx) => {
-                const col = idx % cols;
-                const row = Math.floor(idx / cols);
-                layoutNodes.push(createNode(n, { x: 40 + col * colWidth, y: 40 + row * rowHeight }));
-            });
-        } else {
-            // Group by file path
-            const fileMap = new Map<string, { fileNode?: any; children: any[] }>();
-            let repoNode: any = null;
+            let stroke = 'rgba(255, 255, 255, 0.12)';
+            let strokeDasharray: string | undefined = undefined;
+            let animated = false;
+            let strokeWidth = 1;
+            let opacity = 0.5;
+            let zIndex = 1;
 
-            validNodes.forEach((n: any) => {
-                if (n.type === 'repository') {
-                    repoNode = n;
-                    return;
+            if (neighborInfo.hasSelection) {
+                if (isOutgoing) {
+                    stroke = '#4FD1B5';
+                    strokeWidth = 2;
+                    animated = true;
+                    opacity = 0.95;
+                    zIndex = 10;
+                } else if (isIncoming) {
+                    stroke = '#E3A04A';
+                    strokeWidth = 2;
+                    animated = true;
+                    opacity = 0.95;
+                    zIndex = 10;
+                } else if (isEdgeDimmed) {
+                    stroke = 'rgba(255, 255, 255, 0.05)';
+                    strokeWidth = 1;
+                    opacity = 0.1;
+                    zIndex = 0;
                 }
-                const path = n.path || (n.type === 'file' ? n.id : undefined);
-                if (path) {
-                    if (!fileMap.has(path)) {
-                        fileMap.set(path, { children: [] });
-                    }
-                    const group = fileMap.get(path)!;
-                    if (n.type === 'file') {
-                        group.fileNode = n;
-                    } else {
-                        group.children.push(n);
-                    }
+            } else {
+                if (e.type === 'contains') {
+                    stroke = 'rgba(138, 145, 140, 0.25)';
+                    strokeDasharray = '3 3';
+                    strokeWidth = 1;
+                    opacity = 0.4;
+                } else if (e.type === 'imports') {
+                    stroke = 'rgba(79, 209, 181, 0.3)';
+                    strokeWidth = 1;
+                    opacity = 0.6;
+                } else if (e.type === 'calls') {
+                    stroke = 'rgba(79, 209, 181, 0.3)';
+                    strokeWidth = 1;
+                    opacity = 0.6;
                 }
-            });
-
-            if (repoNode) {
-                layoutNodes.push(createNode(repoNode, { x: 40, y: -45 }));
             }
 
-            let currentX = 40;
-            fileMap.forEach((group) => {
-                const { fileNode, children } = group;
-                const subCols = children.length > 6 ? 2 : 1;
-                const subColWidth = 210;
-                const clusterWidth = Math.max(240, subCols * subColWidth);
-
-                if (fileNode) {
-                    const fileX = currentX + Math.floor((clusterWidth - 210) / 2);
-                    layoutNodes.push(createNode(fileNode, { x: fileX, y: 40 }));
+            return {
+                id: edgeId || `edge-${idx}`,
+                source: e.from,
+                target: e.to,
+                animated,
+                zIndex,
+                style: {
+                    stroke,
+                    strokeWidth,
+                    strokeDasharray,
+                    opacity,
+                    transition: 'opacity 0.2s ease, stroke 0.2s ease'
                 }
-
-                children.forEach((child, idx) => {
-                    const subCol = idx % subCols;
-                    const subRow = Math.floor(idx / subCols);
-                    const childX = currentX + subCol * subColWidth;
-                    const childY = (fileNode ? 140 : 40) + subRow * 75;
-                    layoutNodes.push(createNode(child, { x: childX, y: childY }));
-                });
-
-                currentX += clusterWidth + 80;
-            });
-        }
-
-        const nodeIds = new Set(layoutNodes.map(n => n.id));
-        const layoutEdges = graph.edges
-            .filter(e => nodeIds.has(e.from) && nodeIds.has(e.to))
-            .filter(e => {
-                if (!simplify) return true;
-                return e.type === 'imports';
-            })
-            .map((e: any, idx: number) => {
-                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-                const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
-                const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
-                const isEdgeDimmed = neighborInfo.hasSelection && !isOutgoing && !isIncoming;
-
-                let stroke = 'rgba(113, 113, 122, 0.4)';
-                let strokeDasharray: string | undefined = undefined;
-                let animated = false;
-                let strokeWidth = 1.5;
-                let opacity = 1;
-                let zIndex = 1;
-
-                if (neighborInfo.hasSelection) {
-                    if (isOutgoing) {
-                        stroke = '#4FD1B5';
-                        strokeWidth = 2.5;
-                        animated = true;
-                        zIndex = 10;
-                    } else if (isIncoming) {
-                        stroke = '#E3A04A';
-                        strokeWidth = 2.5;
-                        animated = true;
-                        zIndex = 10;
-                    } else if (isEdgeDimmed) {
-                        stroke = 'rgba(255, 255, 255, 0.08)';
-                        strokeWidth = 1;
-                        opacity = 0.15;
-                        zIndex = 0;
-                    }
-                } else {
-                    if (e.type === 'contains') {
-                        stroke = 'rgba(59, 130, 246, 0.35)';
-                        strokeDasharray = '4 3';
-                        strokeWidth = 1;
-                    } else if (e.type === 'imports') {
-                        stroke = 'rgba(245, 158, 11, 0.7)';
-                        animated = true;
-                        strokeWidth = 2;
-                    } else if (e.type === 'calls') {
-                        stroke = 'rgba(16, 185, 129, 0.7)';
-                        animated = true;
-                        strokeWidth = 2;
-                    }
-                }
-
-                return {
-                    id: edgeId || `edge-${idx}`,
-                    source: e.from,
-                    target: e.to,
-                    animated,
-                    zIndex,
-                    style: {
-                        stroke,
-                        strokeWidth,
-                        strokeDasharray,
-                        opacity,
-                        transition: 'opacity 0.2s ease, stroke 0.2s ease'
-                    }
-                };
-            });
+            };
+        });
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
-    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, setNodes, setEdges]);
+    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
 
     return (
         <div className="w-full h-full relative">
@@ -671,8 +617,8 @@ function OverviewGraph2D({
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 fitView
-                fitViewOptions={{ padding: 0.2 }}
-                minZoom={0.03}
+                fitViewOptions={{ padding: 0.15 }}
+                minZoom={0.05}
                 maxZoom={2}
                 proOptions={{ hideAttribution: true }}
             >
@@ -684,6 +630,10 @@ function OverviewGraph2D({
                 <FlowFitViewHandler
                     isExpanded={isExpanded}
                     selectedFile={selectedFile}
+                    simplify={simplify}
+                    focusConnected={focusConnected}
+                    focusDepth={focusDepth}
+                    resetTrigger={resetTrigger}
                     nodes={nodes}
                     edges={edges}
                 />
@@ -720,6 +670,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [simplify, setSimplify] = useState(false);
     const [focusConnected, setFocusConnected] = useState(false);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
+    const [resetTrigger, setResetTrigger] = useState(0);
 
     // History stack of last 10 visited files
     const [visitedHistory, setVisitedHistory] = useState<string[]>([]);
@@ -751,9 +702,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setFocusDepth(1);
         setSelectedFile(null);
         setSelectedSymbol(null);
+        setResetTrigger(prev => prev + 1);
         if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 30);
+            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 140);
         }
     }, [setSelectedFile, setSelectedSymbol, viewMode]);
 
@@ -904,10 +856,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             fg.controls().autoRotate = !prefersReducedMotion;
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
-            // Polish: Center 3D camera on initial load so nodes fill ~60% of canvas
+            // Polish: Center 3D camera on initial load with margin
             setTimeout(() => {
                 if (typeof fg.zoomToFit === 'function') {
-                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 30);
+                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 140);
                 }
             }, 350);
         }
@@ -947,10 +899,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 }
 
                 const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
+                const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
+                const baseName = n.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
 
                 return {
                     id: n.id,
-                    name: n.name || (nodePath ? nodePath.split('/').pop() : n.id),
+                    name: baseName,
                     path: nodePath,
                     color,
                     val,
@@ -997,7 +951,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 return n.path === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
             });
             if (target && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 30, (node: any) => {
+                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 140, (node: any) => {
                     return node.id === target.id || target.neighbors?.has(node.id);
                 });
             }
@@ -1005,7 +959,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData]);
 
-    // Keep 3D sprite labels constant screen size and hide overlapping ones
+    // Keep 3D sprite labels constant screen size and hide overlapping ones (priority: selected > hovered > neighbors)
     useEffect(() => {
         if (viewMode !== '3D') return;
         let animId: number;
@@ -1019,25 +973,33 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 if (scene && camera) {
                     const w = dimensions.width || (typeof window !== 'undefined' ? window.innerWidth : 800);
                     const h = dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
-                    const screenPositions: Array<{ x: number; y: number; sprite: any }> = [];
+                    const screenPositions: Array<{ x: number; y: number; sprite: any; priority: number }> = [];
 
                     scene.traverse((obj: any) => {
-                        if (obj.isSprite && obj.textHeight !== undefined) {
+                        if (obj.isSprite && obj.textHeight !== undefined && obj.userData?.priority !== undefined) {
                             const dist = camera.position.distanceTo(obj.getWorldPosition(tmpVec));
                             const fovRad = ((camera.fov || 45) * Math.PI) / 180;
-                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (14 / Math.max(1, h));
+                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (13 / Math.max(1, h));
                             obj.textHeight = Math.max(1, targetHeight);
 
                             const screenPos = tmpVec.clone().project(camera);
                             const screenX = (screenPos.x + 1) * w / 2;
                             const screenY = (-screenPos.y + 1) * h / 2;
-                            screenPositions.push({ x: screenX, y: screenY, sprite: obj });
+                            screenPositions.push({
+                                x: screenX,
+                                y: screenY,
+                                sprite: obj,
+                                priority: (obj.userData?.priority as number) || 1
+                            });
                         }
                     });
 
+                    // Collision avoidance: priority selected > hovered > neighbors
+                    screenPositions.sort((a, b) => b.priority - a.priority);
+
                     const drawn: Array<{ x: number; y: number }> = [];
                     for (const item of screenPositions) {
-                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 55 && Math.abs(d.y - item.y) < 22);
+                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 60 && Math.abs(d.y - item.y) < 20);
                         if (overlaps) {
                             item.sprite.visible = false;
                         } else {
@@ -1108,36 +1070,46 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                 <div className="flex items-center gap-1">
                     <button
-                        onClick={() => setFocusConnected(!focusConnected)}
+                        onClick={() => {
+                            if (!selectedFile) return;
+                            setFocusConnected(!focusConnected);
+                        }}
+                        disabled={!selectedFile}
                         className={cn(
-                            "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer border",
-                            focusConnected
-                                ? "bg-[#4FD1B5]/20 border-[#4FD1B5] text-[#4FD1B5] font-medium"
-                                : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20"
+                            "px-2.5 py-1 text-xs rounded transition-colors border select-none",
+                            !selectedFile
+                                ? "border-white/5 text-[#8A918C]/40 opacity-40 cursor-not-allowed"
+                                : focusConnected
+                                ? "bg-[#4FD1B5]/20 border-[#4FD1B5] text-[#4FD1B5] font-medium cursor-pointer"
+                                : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 cursor-pointer"
                         )}
-                        title="Toggle focus on selected node and its neighbors"
+                        title={!selectedFile ? "Select a node first" : "Toggle focus on selected node and its neighbors"}
                     >
                         Focus connected
                     </button>
-                    {focusConnected && (
-                        <div className="flex items-center gap-1 pl-0.5">
-                            {[1, 2].map((d) => (
-                                <button
-                                    key={d}
-                                    onClick={() => setFocusDepth(d as 1 | 2)}
-                                    className={cn(
-                                        "px-2 py-0.5 text-[11px] font-mono rounded transition-colors cursor-pointer border",
-                                        focusDepth === d
-                                            ? "bg-[#4FD1B5] border-[#4FD1B5] text-[#04100D] font-medium"
-                                            : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
-                                    )}
-                                    title={`Depth ${d}`}
-                                >
-                                    {d}
-                                </button>
-                            ))}
-                        </div>
-                    )}
+                    <div className="flex items-center gap-1 pl-0.5">
+                        {[1, 2].map((d) => (
+                            <button
+                                key={d}
+                                onClick={() => {
+                                    if (!selectedFile) return;
+                                    setFocusDepth(d as 1 | 2);
+                                }}
+                                disabled={!selectedFile}
+                                className={cn(
+                                    "px-2 py-0.5 text-[11px] font-mono rounded transition-colors border select-none",
+                                    !selectedFile
+                                        ? "border-white/5 text-[#8A918C]/40 opacity-40 cursor-not-allowed"
+                                        : focusDepth === d && focusConnected
+                                        ? "bg-[#4FD1B5] border-[#4FD1B5] text-[#04100D] font-medium cursor-pointer"
+                                        : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                                )}
+                                title={!selectedFile ? "Select a node first" : `Depth ${d}`}
+                            >
+                                {d}
+                            </button>
+                        ))}
+                    </div>
                 </div>
 
                 <div className="h-3.5 w-[1px] bg-white/10" />
@@ -1214,6 +1186,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     onDoubleClickNode={handleDoubleClickNode}
                     isExpanded={isExpanded}
                     hoveredGraphNode={hoveredGraphNode}
+                    focusConnected={focusConnected}
+                    focusDepth={focusDepth}
+                    resetTrigger={resetTrigger}
                 />
             ) : (
                 <ForceGraph3D
@@ -1223,14 +1198,18 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     height={dimensions.height > 0 ? dimensions.height : undefined}
                     nodeRelSize={4}
                     nodeVal={(node: any) => node.val}
+                    nodeLabel={(node: any) => node.path || node.name || node.id}
                     linkColor={(link: any) => {
                         const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
                         if (neighborInfo.hasSelection) {
                             if (neighborInfo.outgoingEdgeIds.has(edgeId)) return 'rgba(79, 209, 181, 0.9)';
                             if (neighborInfo.incomingEdgeIds.has(edgeId)) return 'rgba(227, 160, 74, 0.9)';
+                            if (link.type === 'contains') return 'rgba(138, 145, 140, 0.2)';
                             return 'rgba(255, 255, 255, 0.04)';
                         }
-                        return link.type === 'imports' ? 'rgba(227, 160, 74, 0.5)' : link.type === 'calls' ? 'rgba(79, 209, 181, 0.5)' : 'rgba(255, 255, 255, 0.15)';
+                        if (link.type === 'imports' || link.type === 'calls') return 'rgba(79, 209, 181, 0.45)';
+                        if (link.type === 'contains') return 'rgba(138, 145, 140, 0.25)';
+                        return 'rgba(255, 255, 255, 0.15)';
                     }}
                     linkWidth={(link: any) => {
                         const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
@@ -1261,9 +1240,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const isDimmed = !isRepo && neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
                         const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
-                        const radius = Math.pow(node.val, 1 / 3) * 3.5;
+                        const radius = Math.min(10, Math.max(3, Math.pow(node.val, 1 / 3) * 3.5));
 
-                        // Repo root node = hollow ring in text color (not amber)
+                        // Repo root node = hollow ring in text color (not amber), label 'repo'
                         if (isRepo) {
                             const group = new THREE.Group();
                             const ringGeo = new THREE.TorusGeometry(4, 0.45, 16, 32);
@@ -1272,9 +1251,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             group.add(ringMesh);
 
                             if (isSelected || isHovered || isNeighbor) {
-                                const sprite = new SpriteText(node.name || 'Repository');
+                                const sprite = new SpriteText('repo');
                                 sprite.fontFace = 'IBM Plex Mono';
-                                sprite.textHeight = 4;
+                                sprite.textHeight = 3.5;
                                 sprite.color = '#E8EAE6';
                                 sprite.backgroundColor = 'rgba(16, 20, 21, 0.85)';
                                 sprite.borderRadius = 4;
@@ -1284,6 +1263,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                                 sprite.position.y = 7;
                                 sprite.renderOrder = 999;
                                 sprite.material.depthTest = false;
+                                (sprite as any).userData = {
+                                    priority: isSelected ? 3 : isHovered ? 2 : 1
+                                };
                                 group.add(sprite);
                             }
                             return group;
@@ -1297,26 +1279,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         }
 
                         const group = new THREE.Group();
-                        let activeColor = baseColor;
-                        let emissiveIntensity = 0;
-                        if (isSelected) {
-                            activeColor = '#4FD1B5';
-                            emissiveIntensity = 0.4;
-                        } else if (isCallee) {
-                            activeColor = '#4FD1B5';
-                            emissiveIntensity = 0.2;
-                        } else if (isDependent) {
-                            activeColor = '#E3A04A';
-                            emissiveIntensity = 0.2;
-                        } else if (isHovered) {
-                            activeColor = '#4FD1B5';
-                            emissiveIntensity = 0.35;
-                        }
-
+                        // Node colors strictly by type (file teal #4FD1B5, function grey #8A918C, class amber #E3A04A) - NEVER recolor dependents amber!
                         const material = new THREE.MeshLambertMaterial({
-                            color: activeColor,
-                            emissive: emissiveIntensity > 0 ? activeColor : 0x000000,
-                            emissiveIntensity
+                            color: baseColor,
+                            emissive: isSelected ? baseColor : 0x000000,
+                            emissiveIntensity: isSelected ? 0.35 : 0
                         });
                         const sphere = new THREE.Mesh(new THREE.SphereGeometry(radius), material);
                         group.add(sphere);
@@ -1326,8 +1293,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         if (showLabel) {
                             const sprite = new SpriteText(node.name);
                             sprite.fontFace = 'IBM Plex Mono';
-                            sprite.textHeight = 4;
-                            sprite.color = isDependent ? '#E3A04A' : isCallee || isSelected ? '#4FD1B5' : '#E8EAE6';
+                            sprite.textHeight = 3.5;
+                            sprite.color = '#E8EAE6';
                             sprite.backgroundColor = 'rgba(16, 20, 21, 0.85)';
                             sprite.borderRadius = 4;
                             sprite.padding = [4, 2];
@@ -1336,6 +1303,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             sprite.position.y = radius + 5;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
+                            (sprite as any).userData = {
+                                priority: isSelected ? 3 : isHovered ? 2 : 1
+                            };
                             group.add(sprite);
                         }
 
@@ -1351,6 +1321,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#8A918C]"></span>Function</span>
                     <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#E3A04A]"></span>Class</span>
                     <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border border-[#E8EAE6] bg-transparent inline-block"></span>Repo root</span>
+                </div>
+
+                <div className="pt-1.5 border-t border-white/[0.08] flex items-center gap-3 text-[11px] text-[#8A918C] flex-wrap">
+                    <span className="font-semibold text-[10px] text-[#E8EAE6]">Edges:</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#4FD1B5] inline-block"></span>Imports</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#E3A04A] inline-block"></span>Imported by</span>
+                    <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#8A918C] inline-block"></span>Contains</span>
                 </div>
 
                 <div className="pt-1.5 border-t border-white/[0.08] flex items-center justify-between text-[11px]">
@@ -1826,9 +1803,9 @@ export function MainPanel({ className }: { className?: string }) {
     // and give visual feedback.
 
     return (
-        <div className={cn("flex flex-col bg-[#07090A] select-none", className)}>
-            {/* Header / Breadcrumb */}
-            <div className="p-3.5 border-b border-white/10">
+        <div className={cn("flex flex-col bg-[#07090A] select-none h-full min-h-0", className)}>
+            {/* Header / Breadcrumb & Tabs (fixed at top) */}
+            <div className="p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10">
                 <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px]">
                     {selectedFile ? selectedFile.split('/').map((part, i, arr) => (
                         <span key={i} className="flex items-center gap-1.5">
@@ -1907,7 +1884,7 @@ export function MainPanel({ className }: { className?: string }) {
             </div>
 
             {/* Content */}
-            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6]", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code') && "flex flex-col min-h-0")}>
+            <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6] min-h-0", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code' || activeTab === 'Impact' || activeTab === 'ChangeSet') && "flex flex-col")}>
                 <>
                     {/* Overview Tab: stat tiles, hotspots list (with bottom fade), composition bar */}
                     {activeTab === 'Overview' && (
@@ -2016,7 +1993,7 @@ export function MainPanel({ className }: { className?: string }) {
 
                     {activeTab === 'Impact' && (
                         <div className="flex-1 flex flex-col space-y-4 min-h-0">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between shrink-0">
                                 <div>
                                     <h3 className="text-sm font-semibold text-[#E8EAE6]">What could this change affect?</h3>
                                     <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
@@ -2077,14 +2054,14 @@ export function MainPanel({ className }: { className?: string }) {
                             ) : impactResult ? (
                                 <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 min-h-[460px]">
                                     {/* Concentric blast-radius rings SVG */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full">
-                                        <svg viewBox="0 0 400 400" className="w-full max-w-[420px] h-auto max-h-[420px]" role="img">
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full min-h-0">
+                                        <svg viewBox="0 0 440 440" preserveAspectRatio="xMidYMid meet" className="w-full max-w-[420px] h-auto max-h-[380px]" role="img">
                                             <title>Blast radius rings</title>
-                                            {[70, 125, 180].map((r) => (
+                                            {[65, 115, 165].map((r) => (
                                                 <circle
                                                     key={r}
-                                                    cx="200"
-                                                    cy="200"
+                                                    cx="220"
+                                                    cy="220"
                                                     r={r}
                                                     fill="none"
                                                     stroke="rgba(255, 255, 255, 0.08)"
@@ -2093,18 +2070,18 @@ export function MainPanel({ className }: { className?: string }) {
                                             ))}
                                             <circle
                                                 className="rpl"
-                                                cx="200"
-                                                cy="200"
-                                                r={depth === 1 ? 70 : (depth === 2 ? 125 : 180)}
+                                                cx="220"
+                                                cy="220"
+                                                r={depth === 1 ? 65 : (depth === 2 ? 115 : 165)}
                                                 fill="none"
                                                 stroke="#4FD1B5"
                                                 strokeWidth="1.5"
                                             />
                                             {/* Center Target Node */}
-                                            <circle cx="200" cy="200" r="10" fill="#E8EAE6" />
+                                            <circle cx="220" cy="220" r="10" fill="#E8EAE6" />
                                             <text
-                                                x="200"
-                                                y="228"
+                                                x="220"
+                                                y="246"
                                                 fontSize="11"
                                                 fill="#E8EAE6"
                                                 textAnchor="middle"
@@ -2114,28 +2091,28 @@ export function MainPanel({ className }: { className?: string }) {
                                             </text>
                                             {/* Render impact callers on concentric rings */}
                                             {impactResult.directCallers.slice(0, 6).map((dc, i) => {
-                                                const rad = 70;
+                                                const rad = 65;
                                                 const angle = (i / Math.max(1, Math.min(6, impactResult.directCallers.length))) * 6.283;
-                                                const px = 200 + Math.cos(angle) * rad;
-                                                const py = 200 + Math.sin(angle) * rad;
+                                                const px = 220 + Math.cos(angle) * rad;
+                                                const py = 220 + Math.sin(angle) * rad;
                                                 return (
                                                     <g key={i}>
-                                                        <line x1="200" y1="200" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.3" />
+                                                        <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.3" />
                                                         <circle cx={px} cy={py} r="5" fill="#E3A04A" />
-                                                        <text x={px} y={py + 15} fontSize="9" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                        <text x={px} y={py + 14} fontSize="9" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
                                                             {dc.symbol.name}
                                                         </text>
                                                     </g>
                                                 );
                                             })}
                                             {impactResult.transitiveConsumers.slice(0, 6).map((tc, i) => {
-                                                const rad = depth >= 3 ? 180 : 125;
+                                                const rad = depth >= 3 ? 165 : 115;
                                                 const angle = (i / Math.max(1, Math.min(6, impactResult.transitiveConsumers.length))) * 6.283 + 0.5;
-                                                const px = 200 + Math.cos(angle) * rad;
-                                                const py = 200 + Math.sin(angle) * rad;
+                                                const px = 220 + Math.cos(angle) * rad;
+                                                const py = 220 + Math.sin(angle) * rad;
                                                 return (
                                                     <g key={i}>
-                                                        <line x1="200" y1="200" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.3" />
+                                                        <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.3" />
                                                         <circle cx={px} cy={py} r="4" fill="#4FD1B5" />
                                                         <text x={px} y={py + 14} fontSize="9" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
                                                             {tc.symbol.name}
@@ -2147,9 +2124,9 @@ export function MainPanel({ className }: { className?: string }) {
                                     </div>
 
                                     {/* Ranked Risk List */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full">
+                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
                                         <div className="flex-1 flex flex-col min-h-0">
-                                            <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06]">
+                                            <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] shrink-0">
                                                 <div>
                                                     <span className="text-[11px] font-semibold text-[#8A918C]">Risk score</span>
                                                     <div className="flex items-baseline gap-1.5 mt-0.5">
@@ -2167,8 +2144,8 @@ export function MainPanel({ className }: { className?: string }) {
                                                 </div>
                                             </div>
 
-                                            <h4 className="text-xs font-semibold text-[#8A918C] mb-2">Ranked risk list</h4>
-                                            <div className="space-y-2 flex-1 overflow-y-auto scrollbar-custom pr-1">
+                                            <h4 className="text-xs font-semibold text-[#8A918C] mb-2 shrink-0">Ranked risk list</h4>
+                                            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1">
                                                 {impactResult.directCallers.length === 0 && impactResult.transitiveConsumers.length === 0 ? (
                                                     <div className="text-xs text-[#8A918C] py-4">No dependents found. This file may be a leaf, or its imports could not be resolved.</div>
                                                 ) : (
@@ -2822,7 +2799,7 @@ export function MainPanel({ className }: { className?: string }) {
                     {activeTab === 'ChangeSet' && (
                         <div className="flex-1 flex flex-col space-y-4 min-h-0">
                             {/* Change Set Header */}
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between shrink-0">
                                 <div>
                                     <h3 className="text-sm font-semibold text-[#E8EAE6] flex items-center gap-2">
                                         <span>Change set impact</span>

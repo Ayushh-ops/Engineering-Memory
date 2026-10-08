@@ -451,3 +451,159 @@ export function selectRepoStats(state: { graph: RepositoryGraph | null; treeFile
         hotspots
     };
 }
+
+export function compute2DLayout(
+    nodes: Array<{ id: string; type?: string; [key: string]: any }>,
+    edges: Array<{ from: string; to: string; type?: string; [key: string]: any }>,
+    options?: {
+        centerId?: string | null;
+        isFocused?: boolean;
+        focusDepth?: 1 | 2;
+    }
+): Map<string, { x: number; y: number }> {
+    const positions = new Map<string, { x: number; y: number }>();
+    if (nodes.length === 0) return positions;
+
+    // 1. If in focused mode with a selected node, use clean radial layout
+    if (options?.isFocused && options.centerId) {
+        const centerId = options.centerId;
+        positions.set(centerId, { x: 0, y: 0 });
+
+        const depth1 = nodes.filter(n =>
+            n.id !== centerId &&
+            edges.some(e => (e.from === centerId && e.to === n.id) || (e.to === centerId && e.from === n.id))
+        );
+        const depth1Ids = new Set(depth1.map(n => n.id));
+        const depth2 = nodes.filter(n => n.id !== centerId && !depth1Ids.has(n.id));
+
+        const r1 = Math.max(220, depth1.length * 34);
+        depth1.forEach((n, i) => {
+            const angle = (2 * Math.PI * i) / Math.max(1, depth1.length);
+            positions.set(n.id, {
+                x: Math.round(Math.cos(angle) * r1),
+                y: Math.round(Math.sin(angle) * r1)
+            });
+        });
+
+        if (depth2.length > 0) {
+            const r2 = r1 + Math.max(200, depth2.length * 26);
+            depth2.forEach((n, i) => {
+                const angle = (2 * Math.PI * i) / Math.max(1, depth2.length) + 0.3;
+                positions.set(n.id, {
+                    x: Math.round(Math.cos(angle) * r2),
+                    y: Math.round(Math.sin(angle) * r2)
+                });
+            });
+        }
+
+        return positions;
+    }
+
+    // 2. Auto force-directed layout for full graph or simplified graph
+    interface SimNode {
+        id: string;
+        x: number;
+        y: number;
+        vx: number;
+        vy: number;
+    }
+
+    const simNodes: SimNode[] = [];
+    const simMap = new Map<string, SimNode>();
+
+    nodes.forEach((n, idx) => {
+        if (n.type === 'repository') {
+            const sn: SimNode = { id: n.id, x: 0, y: 0, vx: 0, vy: 0 };
+            simNodes.push(sn);
+            simMap.set(n.id, sn);
+            return;
+        }
+        const theta = idx * 2.399963; // golden angle
+        const r = 90 + Math.sqrt(idx) * 80;
+        const sn: SimNode = {
+            id: n.id,
+            x: Math.cos(theta) * r,
+            y: Math.sin(theta) * r * 0.7,
+            vx: 0,
+            vy: 0
+        };
+        simNodes.push(sn);
+        simMap.set(n.id, sn);
+    });
+
+    const edgePairs: Array<[SimNode, SimNode]> = [];
+    edges.forEach(e => {
+        const u = simMap.get(e.from);
+        const v = simMap.get(e.to);
+        if (u && v && u !== v) {
+            edgePairs.push([u, v]);
+        }
+    });
+
+    const k = 190;
+    const k2 = k * k;
+    const iterations = 100;
+
+    for (let step = 0; step < iterations; step++) {
+        const temp = Math.max(1, 30 * (1 - step / iterations));
+
+        for (let i = 0; i < simNodes.length; i++) {
+            const u = simNodes[i];
+            for (let j = i + 1; j < simNodes.length; j++) {
+                const v = simNodes[j];
+                const dx = u.x - v.x;
+                const dy = (u.y - v.y) * 1.5;
+                const dist2 = dx * dx + dy * dy + 1;
+                const dist = Math.sqrt(dist2);
+                if (dist < 600) {
+                    const force = k2 / dist;
+                    const fx = (dx / dist) * force;
+                    const fy = (dy / dist) * force;
+                    u.vx += fx;
+                    u.vy += fy;
+                    v.vx -= fx;
+                    v.vy -= fy;
+                }
+            }
+        }
+
+        for (let e = 0; e < edgePairs.length; e++) {
+            const [u, v] = edgePairs[e];
+            const dx = v.x - u.x;
+            const dy = v.y - u.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+            const force = (dist * dist) / k * 0.04;
+            const fx = (dx / dist) * force;
+            const fy = (dy / dist) * force;
+            u.vx += fx;
+            u.vy += fy;
+            v.vx -= fx;
+            v.vy -= fy;
+        }
+
+        for (let i = 0; i < simNodes.length; i++) {
+            const u = simNodes[i];
+            u.vx -= u.x * 0.025;
+            u.vy -= u.y * 0.025;
+        }
+
+        for (let i = 0; i < simNodes.length; i++) {
+            const u = simNodes[i];
+            const vel = Math.sqrt(u.vx * u.vx + u.vy * u.vy);
+            if (vel > temp) {
+                u.vx = (u.vx / vel) * temp;
+                u.vy = (u.vy / vel) * temp;
+            }
+            u.x += u.vx;
+            u.y += u.vy;
+            u.vx *= 0.45;
+            u.vy *= 0.45;
+        }
+    }
+
+    simNodes.forEach(sn => {
+        positions.set(sn.id, { x: Math.round(sn.x), y: Math.round(sn.y) });
+    });
+
+    return positions;
+}
