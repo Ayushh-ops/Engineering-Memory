@@ -36,6 +36,7 @@ export interface LlmRequest {
     question: string;
     facts: unknown;
     instructions?: string[];
+    history?: Array<{ role: string; content: string }>;
     responseOptions?: {
         temperature?: number;
         maxTokens?: number;

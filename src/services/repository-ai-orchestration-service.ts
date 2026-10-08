@@ -18,6 +18,7 @@ export interface RepositoryAiOrchestrationRequest {
     limits?: Partial<RepositoryContextLimits>;
     allowInsufficientContext?: boolean;
     lang?: "en" | "hinglish";
+    history?: Array<{ role: string; content: string }>;
 }
 
 export class RepositoryAiOrchestrationService {
@@ -139,11 +140,12 @@ export class RepositoryAiOrchestrationService {
             question: request.question,
             graph: finalAnalysis.graph,
             limits: request.limits,
-            allowInsufficientContext: request.allowInsufficientContext,
+            allowInsufficientContext: request.target.type === "file" ? false : request.allowInsufficientContext,
             evidence,
             impact,
             fileContent,
-            lang: request.lang
+            lang: request.lang,
+            history: request.history
         };
 
         return { aiRequest };

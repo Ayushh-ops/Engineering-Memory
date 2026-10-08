@@ -6,7 +6,7 @@ import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
 import { buildPrompt } from "./prompt-builder";
-import { AiAnswerService } from "./answer-service";
+import { AiAnswerService, isGroundedQuestion } from "./answer-service";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
@@ -742,34 +742,39 @@ async function main(): Promise<void> {
         `Expected truncation notice in answer, got: ${largeAnswerResult.answer}`
     );
 
-    // Test Hinglish instruction addition
-    const hinglishProvider = new FakeLlmProvider({
+    // Test Automatic Language instruction addition
+    const autoLangProvider = new FakeLlmProvider({
         status: "ok",
         answer: "Auth file user authentication handle karta hai.",
         citations: [],
         confidence: "medium"
     });
-    const hinglishResult = await new AiAnswerService(hinglishProvider).answer({
+    const autoLangResult = await new AiAnswerService(autoLangProvider).answer({
         repository: "example/repository",
         target: {
             type: "file",
             path: "src/auth.ts"
         },
-        question: "Explain this file",
+        question: "ye file kya karti hai?",
         graph,
-        lang: "hinglish",
         allowInsufficientContext: true
     });
-    assert.equal(hinglishResult.status, "ok");
-    const lastInstructions = hinglishProvider.calls[0]?.instructions;
+    assert.equal(autoLangResult.status, "ok");
+    const lastInstructions = autoLangProvider.calls[0]?.instructions;
     assert.ok(
-        lastInstructions?.some((inst) => inst.includes("Reply in simple Hinglish")),
-        "Expected Hinglish instruction in provider call"
+        lastInstructions?.some((inst) => inst.includes("Reply in the same language and script as the user's latest message")),
+        "Expected automatic language instruction in provider call"
     );
     assert.ok(
         lastInstructions?.some((inst) => inst.includes("End with a line FOLLOWUPS:")),
         "Expected FOLLOWUPS instruction in provider call"
     );
+
+    // Test pronoun grounding: "this", "ye", "yeh", "is file"
+    assert.equal(isGroundedQuestion("explain this file", { type: "file", path: "src/auth.ts" }), true);
+    assert.equal(isGroundedQuestion("ye kya karta hai", { type: "file", path: "src/auth.ts" }), true);
+    assert.equal(isGroundedQuestion("yeh code explain karo", { type: "file", path: "src/auth.ts" }), true);
+    assert.equal(isGroundedQuestion("is file me kya functions hai", { type: "file", path: "src/auth.ts" }), true);
 
     console.log("AI fixtures passed");
 }

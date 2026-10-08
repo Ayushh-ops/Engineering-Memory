@@ -185,50 +185,141 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     );
 }
 
+export function extractValidEvidence(text: string, analyzedPaths: Set<string>): string[] {
+    if (!text || analyzedPaths.size === 0) return [];
+
+    const validChips: string[] = [];
+    const seen = new Set<string>();
+
+    const tokenRegex = /(?:^|[\s`(\[<"'])((?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(\d+))?(?:$|[\s`\)\]>"',;:?.])/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenRegex.exec(text)) !== null) {
+        const fullToken = match[0];
+        const rawPath = match[1];
+        const lineStr = match[2];
+
+        // Never treat URLs or host:port as evidence
+        if (
+            rawPath.includes("http") ||
+            rawPath.includes("localhost") ||
+            rawPath.includes("127.0.0.1") ||
+            fullToken.includes("://")
+        ) {
+            continue;
+        }
+
+        const cleanPath = rawPath.replace(/^\.\//, "");
+        let matchedPath: string | null = null;
+
+        if (analyzedPaths.has(cleanPath)) {
+            matchedPath = cleanPath;
+        } else if (analyzedPaths.has(rawPath)) {
+            matchedPath = rawPath;
+        } else {
+            for (const ap of analyzedPaths) {
+                if (ap.endsWith("/" + cleanPath) || ap === cleanPath) {
+                    matchedPath = ap;
+                    break;
+                }
+            }
+        }
+
+        if (matchedPath) {
+            const chip = lineStr ? `${matchedPath}:${lineStr}` : matchedPath;
+            if (!seen.has(chip)) {
+                seen.add(chip);
+                validChips.push(chip);
+            }
+        }
+    }
+
+    return validChips;
+}
+
 function renderInlineMarkdown(text: string): React.ReactNode[] {
-    // Splits text by inline code `...` and bold **...**
+    if (!text) return [];
+
+    // Clean backslash-escaped backticks: \`code\` -> `code`
+    let clean = text.replace(/\\`/g, '`');
+
+    // Auto-close unclosed **
+    const boldMatches = clean.match(/\*\*/g);
+    if (boldMatches && boldMatches.length % 2 !== 0) {
+        clean += '**';
+    }
+
+    // Auto-close unclosed `
+    const codeMatches = clean.match(/`/g);
+    if (codeMatches && codeMatches.length % 2 !== 0) {
+        clean += '`';
+    }
+
     const parts: React.ReactNode[] = [];
-    const regex = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+    const regex = /(`[^`]+`|\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
-    while ((match = regex.exec(text)) !== null) {
+    while ((match = regex.exec(clean)) !== null) {
         if (match.index > lastIndex) {
-            parts.push(text.slice(lastIndex, match.index));
+            const raw = clean.slice(lastIndex, match.index).replace(/\*\*/g, '').replace(/`/g, '');
+            if (raw) parts.push(raw);
         }
         const m = match[0];
         if (m.startsWith('`') && m.endsWith('`')) {
             parts.push(
-                <code key={match.index} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
+                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
                     {m.slice(1, -1)}
                 </code>
             );
+        } else if (m.startsWith('***') && m.endsWith('***')) {
+            parts.push(
+                <strong key={`bold-${match.index}`} className="font-semibold text-[#E8EAE6] italic">
+                    {m.slice(3, -3)}
+                </strong>
+            );
         } else if (m.startsWith('**') && m.endsWith('**')) {
             parts.push(
-                <strong key={match.index} className="font-semibold text-[#E8EAE6]">
+                <strong key={`bold-${match.index}`} className="font-semibold text-[#E8EAE6]">
                     {m.slice(2, -2)}
                 </strong>
+            );
+        } else if (m.startsWith('*') && m.endsWith('*')) {
+            parts.push(
+                <em key={`em-${match.index}`} className="italic text-[#E8EAE6]">
+                    {m.slice(1, -1)}
+                </em>
             );
         }
         lastIndex = match.index + m.length;
     }
-    if (lastIndex < text.length) {
-        parts.push(text.slice(lastIndex));
+    if (lastIndex < clean.length) {
+        const remaining = clean.slice(lastIndex).replace(/\*\*/g, '').replace(/`/g, '');
+        if (remaining) parts.push(remaining);
     }
     return parts;
 }
 
 function MarkdownRenderer({ content }: { content: string }) {
+    if (!content) return null;
+
+    // Auto-close open code block during streaming
+    let processedContent = content;
+    const tripleBackticks = processedContent.match(/```/g);
+    if (tripleBackticks && tripleBackticks.length % 2 !== 0) {
+        processedContent += '\n```';
+    }
+
     // Parse fenced code blocks ```lang ... ``` vs lines/lists/paragraphs/tables
     const tokens: React.ReactNode[] = [];
-    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g;
+    const codeBlockRegex = /```([a-zA-Z0-9_-]*)\r?\n([\s\S]*?)```/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
     let sectionKey = 0;
-    while ((match = codeBlockRegex.exec(content)) !== null) {
+    while ((match = codeBlockRegex.exec(processedContent)) !== null) {
         if (match.index > lastIndex) {
-            const prose = content.slice(lastIndex, match.index);
+            const prose = processedContent.slice(lastIndex, match.index);
             tokens.push(<ProseRenderer key={`prose-${sectionKey++}`} text={prose} />);
         }
         const lang = match[1];
@@ -236,8 +327,8 @@ function MarkdownRenderer({ content }: { content: string }) {
         tokens.push(<CodeBlock key={`code-${sectionKey++}`} code={code.replace(/\n$/, '')} lang={lang} />);
         lastIndex = match.index + match[0].length;
     }
-    if (lastIndex < content.length) {
-        tokens.push(<ProseRenderer key={`prose-${sectionKey++}`} text={content.slice(lastIndex)} />);
+    if (lastIndex < processedContent.length) {
+        tokens.push(<ProseRenderer key={`prose-${sectionKey++}`} text={processedContent.slice(lastIndex)} />);
     }
 
     return <div className="space-y-2 text-xs leading-relaxed text-[#E8EAE6]">{tokens}</div>;
@@ -323,11 +414,22 @@ function ProseRenderer({ text }: { text: string }) {
             flushTable();
         }
 
-        // List item
+        // Numbered list item
+        const orderedMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+        if (orderedMatch) {
+            currentList.push(
+                <li key={i} className="text-xs text-[#E8EAE6] list-decimal ml-4">
+                    {renderInlineMarkdown(orderedMatch[2])}
+                </li>
+            );
+            return;
+        }
+
+        // Bullet list item
         if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
             const itemText = trimmed.slice(2);
             currentList.push(
-                <li key={i} className="text-xs text-[#E8EAE6]">
+                <li key={i} className="text-xs text-[#E8EAE6] list-disc ml-4">
                     {renderInlineMarkdown(itemText)}
                 </li>
             );
@@ -337,7 +439,9 @@ function ProseRenderer({ text }: { text: string }) {
         flushList();
 
         // Headings (with backticks inside rendered as code via renderInlineMarkdown)
-        if (trimmed.startsWith('### ')) {
+        if (trimmed.startsWith('#### ')) {
+            elements.push(<h5 key={i} className="text-xs font-semibold text-[#E8EAE6] mt-2 mb-1">{renderInlineMarkdown(trimmed.slice(5))}</h5>);
+        } else if (trimmed.startsWith('### ')) {
             elements.push(<h4 key={i} className="text-xs font-semibold text-[#E8EAE6] mt-2 mb-1">{renderInlineMarkdown(trimmed.slice(4))}</h4>);
         } else if (trimmed.startsWith('## ')) {
             elements.push(<h3 key={i} className="text-sm font-semibold text-[#E8EAE6] mt-2 mb-1">{renderInlineMarkdown(trimmed.slice(3))}</h3>);
@@ -1365,11 +1469,34 @@ export function MainPanel({ className }: { className?: string }) {
         repoUrl, selectedSha, setCodeHighlightLine, selectFile,
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
         changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
-        treeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit
+        treeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
+        setAiCitations
     } = useAppStore();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
     const fileRisk = useMemo(() => selectedFile ? computeRisk(selectedFile, graph, commits) : null, [selectedFile, graph, commits]);
+
+    const analyzedPaths = useMemo(() => {
+        const paths = new Set<string>();
+        const hasGraphFiles = graph?.nodes && graph.nodes.some(n => n.type === 'file');
+        if (hasGraphFiles) {
+            for (const node of graph!.nodes) {
+                if (node.type === 'file') {
+                    const p = (node as any).path || node.id;
+                    if (p) {
+                        paths.add(p);
+                        paths.add(p.replace(/^\.\//, ''));
+                    }
+                }
+            }
+        } else if (treeFiles && treeFiles.length > 0) {
+            for (const file of treeFiles) {
+                paths.add(file);
+                paths.add(file.replace(/^\.\//, ''));
+            }
+        }
+        return paths;
+    }, [graph, treeFiles]);
 
     const hotspotsList = useMemo(() => {
         if (!graph) return [];
@@ -1429,6 +1556,17 @@ export function MainPanel({ className }: { className?: string }) {
         setChatMessages([]);
     }, [chatStorageKey]);
 
+    // Keep aiCitations in sync with the latest assistant message
+    useEffect(() => {
+        const lastAssistant = chatMessages.slice().reverse().find(m => m.role === 'assistant' && !m.isThinking);
+        if (lastAssistant && lastAssistant.content) {
+            const chips = extractValidEvidence(lastAssistant.content, analyzedPaths);
+            setAiCitations(chips);
+        } else {
+            setAiCitations([]);
+        }
+    }, [chatMessages, analyzedPaths, setAiCitations]);
+
     const saveChatMessages = useCallback((msgs: Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>) => {
         const toSave = msgs.filter(m => !m.isThinking).slice(-30);
         setChatMessages(msgs);
@@ -1443,6 +1581,7 @@ export function MainPanel({ className }: { className?: string }) {
 
     const handleNewChat = useCallback(() => {
         setChatMessages([]);
+        setAiCitations([]);
         setAiError(null);
         setAskQ('');
         if (chatStorageKey) {
@@ -1452,7 +1591,7 @@ export function MainPanel({ className }: { className?: string }) {
                 // ignore
             }
         }
-    }, [chatStorageKey]);
+    }, [chatStorageKey, setAiCitations]);
 
     const buildMarkdownReport = useCallback(async (): Promise<string> => {
         const fileName = selectedFile ? selectedFile.split('/').pop() : (selectedSymbol?.name || 'unknown');
@@ -1606,24 +1745,40 @@ export function MainPanel({ className }: { className?: string }) {
     };
 
     const parseAnswerFollowups = (rawAnswer: string): { cleanAnswer: string; followups: string[] } => {
-        const lines = rawAnswer.split('\n');
-        let followups: string[] = [];
-        const cleanLines: string[] = [];
+        if (!rawAnswer) return { cleanAnswer: '', followups: [] };
 
-        for (const line of lines) {
-            const match = line.match(/^FOLLOWUPS:\s*(.+)$/i);
-            if (match) {
-                const parts = match[1].split('|').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-                if (parts.length > 0) {
-                    followups = parts.slice(0, 3);
-                }
-            } else {
-                cleanLines.push(line);
+        const followupRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*(.*)$/im;
+        const match = rawAnswer.match(followupRegex);
+
+        let cleanAnswer = rawAnswer;
+        let followups: string[] = [];
+
+        if (match && match.index !== undefined) {
+            cleanAnswer = rawAnswer.slice(0, match.index).trim();
+            const trailing = match[1] || '';
+            const parts = trailing.split('|').map(s => s.trim().replace(/^["'*`\s]+|["'*`\s]+$/g, '')).filter(Boolean);
+            if (parts.length > 0) {
+                followups = parts.slice(0, 3);
             }
+        } else {
+            const lines = rawAnswer.split(/\r?\n/);
+            const cleanLines: string[] = [];
+            for (const line of lines) {
+                const lineMatch = line.match(/^\s*FOLLOWUPS:\s*(.*)$/i);
+                if (lineMatch) {
+                    const parts = lineMatch[1].split('|').map(s => s.trim().replace(/^["'*`\s]+|["'*`\s]+$/g, '')).filter(Boolean);
+                    if (parts.length > 0) {
+                        followups = parts.slice(0, 3);
+                    }
+                } else {
+                    cleanLines.push(line);
+                }
+            }
+            cleanAnswer = cleanLines.join('\n').trim();
         }
 
         return {
-            cleanAnswer: cleanLines.join('\n').trim(),
+            cleanAnswer,
             followups
         };
     };
@@ -1665,6 +1820,24 @@ export function MainPanel({ className }: { className?: string }) {
         abortControllerRef.current = controller;
         setIsStreaming(true);
 
+        const historyToSend = chatMessages
+            .filter(m => !m.isThinking && m.content.trim().length > 0)
+            .slice(-6)
+            .map(m => ({ role: m.role, content: m.content }));
+
+        let totalHistoryChars = historyToSend.reduce((acc, m) => acc + m.content.length, 0);
+        while (totalHistoryChars > 4000 && historyToSend.length > 0) {
+            const first = historyToSend[0];
+            const excess = totalHistoryChars - 4000;
+            if (first.content.length <= excess) {
+                totalHistoryChars -= first.content.length;
+                historyToSend.shift();
+            } else {
+                first.content = first.content.slice(excess);
+                totalHistoryChars = 4000;
+            }
+        }
+
         let accumulatedStreamedText = '';
 
         try {
@@ -1674,7 +1847,7 @@ export function MainPanel({ className }: { className?: string }) {
                 [selectedFile],
                 target as any,
                 q,
-                undefined,
+                historyToSend,
                 (token: string) => {
                     accumulatedStreamedText += token;
                     setChatMessages(prev => {
@@ -2329,10 +2502,9 @@ export function MainPanel({ className }: { className?: string }) {
                                                         <>
                                                             <MarkdownRenderer content={msg.content} />
 
-                                                            {/* Evidence chips: only show when answer actually cites file:line */}
+                                                            {/* Evidence chips: only real repo references */}
                                                             {(() => {
-                                                                const matches = msg.content.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
-                                                                const citations = matches ? Array.from(new Set(matches)) : [];
+                                                                const citations = extractValidEvidence(msg.content, analyzedPaths);
                                                                 if (citations.length === 0) return null;
                                                                 return (
                                                                     <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
@@ -2342,13 +2514,11 @@ export function MainPanel({ className }: { className?: string }) {
                                                                                 key={cIdx}
                                                                                 onClick={() => {
                                                                                     const lastColon = c.lastIndexOf(':');
-                                                                                    if (lastColon !== -1) {
-                                                                                        const filePath = c.substring(0, lastColon);
-                                                                                        const lineNum = parseInt(c.substring(lastColon + 1), 10);
-                                                                                        if (filePath) setSelectedFile(filePath);
-                                                                                        if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
-                                                                                        setActiveTab('Code');
-                                                                                    }
+                                                                                    const filePath = lastColon !== -1 ? c.substring(0, lastColon) : c;
+                                                                                    const lineNum = lastColon !== -1 ? parseInt(c.substring(lastColon + 1), 10) : NaN;
+                                                                                    if (filePath) setSelectedFile(filePath);
+                                                                                    if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
+                                                                                    setActiveTab('Code');
                                                                                 }}
                                                                                 className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
                                                                                 title={"Open " + c + " in Code viewer"}

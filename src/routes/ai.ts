@@ -57,7 +57,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { repository, target, question, graph, limits, lang } = req.body as Record<string, unknown>;
+        const { repository, target, question, graph, limits, history } = req.body as Record<string, unknown>;
 
         if (typeof repository !== "string" || repository.trim().length === 0) {
             return res.status(400).json({ error: "Repository is required." });
@@ -83,7 +83,9 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
-        const selectedLang = lang === "hinglish" ? "hinglish" : "en";
+        const parsedHistory = Array.isArray(history)
+            ? (history as any[]).filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string")).slice(-6)
+            : undefined;
 
         try {
             const result = await service.answer({
@@ -93,7 +95,7 @@ export function createAiRouter(
                 graph: graph as Parameters<typeof service.answer>[0]["graph"],
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
-                lang: selectedLang
+                history: parsedHistory
             });
 
             return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
@@ -132,7 +134,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { url, sha, paths, target, question, limits, lang } = req.body as Record<string, unknown>;
+        const { url, sha, paths, target, question, limits, history } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
@@ -167,7 +169,9 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
-        const selectedLang = lang === "hinglish" ? "hinglish" : "en";
+        const parsedHistory = Array.isArray(history)
+            ? (history as any[]).filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string")).slice(-6)
+            : undefined;
         const isSse = req.headers.accept?.includes("text/event-stream");
 
         if (isSse) {
@@ -192,7 +196,7 @@ export function createAiRouter(
                             question: question.trim(),
                             limits: limits as Parameters<typeof service.answer>[0]["limits"],
                             allowInsufficientContext: true,
-                            lang: selectedLang
+                            history: parsedHistory
                         },
                         (token: string) => {
                             sendEvent("token", { token });
@@ -208,7 +212,7 @@ export function createAiRouter(
                         question: question.trim(),
                         limits: limits as Parameters<typeof service.answer>[0]["limits"],
                         allowInsufficientContext: true,
-                        lang: selectedLang
+                        history: parsedHistory
                     });
                 }
 
@@ -253,7 +257,7 @@ export function createAiRouter(
                 question: question.trim(),
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
-                lang: selectedLang
+                history: parsedHistory
             });
 
             return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({

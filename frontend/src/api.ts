@@ -244,8 +244,8 @@ export const api = {
         }
     },
     ai: {
-        ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string, lang?: "en" | "hinglish") {
-            return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+        ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string, history?: Array<{ role: string; content: string }>) {
+            return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
         },
         async askStream(
             url: string,
@@ -253,7 +253,7 @@ export const api = {
             paths: string[],
             target: ImpactTarget,
             question: string,
-            lang: "en" | "hinglish" | undefined,
+            history: Array<{ role: string; content: string }> | undefined,
             onToken: (token: string) => void,
             signal?: AbortSignal
         ): Promise<AiAnswerResult> {
@@ -264,7 +264,7 @@ export const api = {
                         'Content-Type': 'application/json',
                         'Accept': 'text/event-stream'
                     },
-                    body: JSON.stringify({ url, sha, paths, target, question, lang: lang || "en" }),
+                    body: JSON.stringify({ url, sha, paths, target, question, history }),
                     signal
                 });
 
@@ -274,7 +274,7 @@ export const api = {
                 }
 
                 if (!response.body) {
-                    return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+                    return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
                 }
 
                 const reader = response.body.getReader();
@@ -325,7 +325,7 @@ export const api = {
                     throw err;
                 }
                 // Fall back to non-streaming endpoint if streaming fails
-                return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, lang: lang || "en" });
+                return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
             }
         }
     }

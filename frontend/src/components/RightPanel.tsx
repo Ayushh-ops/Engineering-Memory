@@ -7,7 +7,7 @@ import { ConnectedFilesList } from './ConnectedFilesList';
 import { computeRisk } from '../graph-helpers';
 
 export function RightPanel({ className }: { className?: string }) {
-    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit } = useAppStore();
+    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit, aiCitations, setCodeHighlightLine } = useAppStore();
     const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
     const [ownersLoading, setOwnersLoading] = useState(false);
     const [rateLimited, setRateLimited] = useState(false);
@@ -155,7 +155,7 @@ export function RightPanel({ className }: { className?: string }) {
 
     // 2. Ask AI Tab: evidence list (no blast block)
     if (activeTab === 'AskAI') {
-        const evidence = impactResult?.callSiteEvidence || [];
+        const citations = aiCitations || [];
         return (
             <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
                 <div className="p-3.5 border-b border-white/10">
@@ -164,7 +164,7 @@ export function RightPanel({ className }: { className?: string }) {
                             <MessageSquare size={13} className="text-[#4FD1B5]" />
                             <span>Evidence list</span>
                         </h3>
-                        <Badge variant="default">{evidence.length} cited</Badge>
+                        <Badge variant="default">{citations.length} cited</Badge>
                     </div>
                     <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
                         {selectedFile ? selectedFile.split('/').pop() : 'Context sources'}
@@ -172,24 +172,42 @@ export function RightPanel({ className }: { className?: string }) {
                 </div>
 
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-3 text-xs">
-                    {evidence.length > 0 ? (
-                        evidence.map((c: any, idx: number) => (
-                            <div key={c.id || idx} className="glass-surface p-2.5 rounded-lg border-white/10 space-y-1.5">
-                                <div className="flex justify-between font-mono text-[11px] text-[#4FD1B5]">
-                                    <span className="truncate">{c.file ? c.file.split('/').pop() : 'Source'}</span>
-                                    {c.startLine && <span>line {c.startLine}</span>}
-                                </div>
-                                {c.expression && (
-                                    <pre className="text-[11px] font-mono bg-black/40 p-2 rounded border border-white/5 text-[#E8EAE6] overflow-x-auto">
-                                        <code>{c.expression}</code>
-                                    </pre>
-                                )}
-                            </div>
-                        ))
+                    {citations.length > 0 ? (
+                        citations.map((c: string, idx: number) => {
+                            const lastColon = c.lastIndexOf(':');
+                            const filePath = lastColon !== -1 ? c.substring(0, lastColon) : c;
+                            const lineNum = lastColon !== -1 ? parseInt(c.substring(lastColon + 1), 10) : NaN;
+                            const fileName = filePath.split('/').pop() || filePath;
+
+                            return (
+                                <button
+                                    key={idx}
+                                    onClick={() => {
+                                        if (selectFile) {
+                                            selectFile(filePath);
+                                        }
+                                        if (!isNaN(lineNum)) {
+                                            setCodeHighlightLine(lineNum);
+                                        }
+                                        setActiveTab('Code');
+                                    }}
+                                    className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1 block"
+                                    title={`Open ${c} in Code viewer`}
+                                >
+                                    <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
+                                        <span className="truncate">{fileName}</span>
+                                        {!isNaN(lineNum) && <span>line {lineNum}</span>}
+                                    </div>
+                                    <div className="text-[10px] text-[#8A918C] font-mono truncate">
+                                        {filePath}
+                                    </div>
+                                </button>
+                            );
+                        })
                     ) : (
                         <div className="p-6 text-center text-[#8A918C] space-y-1.5">
                             <div className="text-xs">No active evidence citations</div>
-                            <div className="text-[11px] text-[#8A918C]/70">Evidence citations appear when AI answers reference specific lines.</div>
+                            <div className="text-[11px] text-[#8A918C]/70">Evidence citations appear when AI answers reference specific files or lines.</div>
                         </div>
                     )}
                 </div>

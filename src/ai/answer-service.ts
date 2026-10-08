@@ -15,6 +15,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     impact?: ChangeImpactAnalysisResult;
     fileContent?: string;
     lang?: "en" | "hinglish";
+    history?: Array<{ role: string; content: string }>;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -31,6 +32,16 @@ export function isGroundedQuestion(question: string, target: { type: string; pat
         target.sha
     ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
+    // Treat "this", "ye", "yeh", "is file" as the currently selected file
+    const filePronouns = [/\bthis\b/, /\bye\b/, /\byeh\b/, /\bis file\b/];
+    const hasFilePronoun = filePronouns.some((re) => re.test(normalized));
+
+    if (target.type === "file" && hasFilePronoun) {
+        if (!normalized.includes("this repo") && !normalized.includes("this repository")) {
+            return true;
+        }
+    }
+
     const broadPatterns = [
         "root cause",
         "bug in this repo",
@@ -43,6 +54,10 @@ export function isGroundedQuestion(question: string, target: { type: string; pat
 
     if (broadPatterns.some((pattern) => normalized.includes(pattern))) {
         return false;
+    }
+
+    if (target.type === "file") {
+        return true;
     }
 
     if (specificTargets.some((value) => normalized.includes(value.toLowerCase()))) {
@@ -122,8 +137,8 @@ export class AiAnswerService {
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             // Trim fileContent or evidence to fit within MAX_AI_CONTEXT_BYTES instead of refusing
-            if (aiContext.fileContent && aiContext.fileContent.length > 2000) {
-                const trimBudget = Math.max(1000, 2000);
+            if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
+                const trimBudget = 8000;
                 aiContext = {
                     ...aiContext,
                     fileContent: aiContext.fileContent.slice(0, trimBudget),
@@ -134,6 +149,7 @@ export class AiAnswerService {
             }
         }
 
+        const isFileSelected = request.target.type === "file" || aiContext.target.type === "file";
         if (request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
             return {
                 status: "insufficient_context",
@@ -147,25 +163,33 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
+            "Reply in the same language and script as the user's latest message. If the user writes Hindi in Roman script (Hinglish), reply in natural Hinglish. If Devanagari, reply in Hindi. If English, reply in English. Keep code, file names, identifiers and technical terms unchanged. Never mention this rule.",
             "End with a line FOLLOWUPS: q1 | q2 | q3 (short questions)"
         ];
-        if (request.lang === "hinglish") {
-            instructions.push(
-                "Reply in simple Hinglish (Hindi in Roman script mixed with English). Keep file names, function names, variable names and technical terms in English. Short sentences, short bullets."
-            );
-        }
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
             target: aiContext.target,
             question: request.question,
-            facts: aiContext,
-            instructions
+            facts: {
+                ...aiContext,
+                ...(request.history && request.history.length > 0 ? { history: request.history } : {})
+            },
+            instructions,
+            history: request.history
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
 
         if (providerResponse.status === "insufficient_context") {
+            if (isFileSelected) {
+                return {
+                    status: "ok",
+                    answer: providerResponse.answer || "Based on the selected file context.",
+                    citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
+                    confidence: "medium"
+                };
+            }
             return {
                 status: "insufficient_context",
                 answer: providerResponse.answer || "The supplied repository context is insufficient to answer this question reliably.",
@@ -265,8 +289,8 @@ export class AiAnswerService {
         let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
-            if (aiContext.fileContent && aiContext.fileContent.length > 2000) {
-                const trimBudget = Math.max(1000, 2000);
+            if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
+                const trimBudget = 8000;
                 aiContext = {
                     ...aiContext,
                     fileContent: aiContext.fileContent.slice(0, trimBudget),
@@ -277,7 +301,8 @@ export class AiAnswerService {
             }
         }
 
-        if (request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
+        const isFileSelected = request.target.type === "file" || aiContext.target.type === "file";
+        if (!isFileSelected && request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
             return {
                 status: "insufficient_context",
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
@@ -290,26 +315,34 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
+            "Reply in the same language and script as the user's latest message. If the user writes Hindi in Roman script (Hinglish), reply in natural Hinglish. If Devanagari, reply in Hindi. If English, reply in English. Keep code, file names, identifiers and technical terms unchanged. Never mention this rule.",
             "End with a line FOLLOWUPS: q1 | q2 | q3 (short questions)"
         ];
-        if (request.lang === "hinglish") {
-            instructions.push(
-                "Reply in simple Hinglish (Hindi in Roman script mixed with English). Keep file names, function names, variable names and technical terms in English. Short sentences, short bullets."
-            );
-        }
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
             target: aiContext.target,
             question: request.question,
-            facts: aiContext,
-            instructions
+            facts: {
+                ...aiContext,
+                ...(request.history && request.history.length > 0 ? { history: request.history } : {})
+            },
+            instructions,
+            history: request.history
         };
 
         try {
             const providerResponse = await this.provider.streamAnswer(providerRequest, onToken);
 
             if (providerResponse.status === "insufficient_context") {
+                if (isFileSelected) {
+                    return {
+                        status: "ok",
+                        answer: providerResponse.answer || "Based on the selected file context.",
+                        citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
+                        confidence: "medium"
+                    };
+                }
                 return {
                     status: "insufficient_context",
                     answer: providerResponse.answer || "The supplied repository context is insufficient to answer this question reliably.",

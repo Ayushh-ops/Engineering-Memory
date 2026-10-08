@@ -48,6 +48,10 @@ export interface AppState {
     impactResult: import('./api').ChangeImpactAnalysisResult | null;
     setImpactResult: (r: import('./api').ChangeImpactAnalysisResult | null) => void;
 
+    // AI Citations (evidence chips)
+    aiCitations: string[];
+    setAiCitations: (citations: string[]) => void;
+
     // Change Set (in-memory)
     changeSet: string[];
     addToChangeSet: (path: string) => void;
@@ -116,6 +120,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     impactResult: null,
     setImpactResult: (r) => set({ impactResult: r }),
+
+    aiCitations: [],
+    setAiCitations: (citations) => set({ aiCitations: citations }),
 
     changeSet: [],
     addToChangeSet: (path: string) => set((state) => {

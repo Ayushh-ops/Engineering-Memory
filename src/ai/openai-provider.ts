@@ -7,7 +7,7 @@ import {
 } from "./config";
 
 export interface OpenAIMessage {
-    role: "system" | "user";
+    role: "system" | "user" | "assistant";
     content: string;
 }
 
@@ -107,7 +107,7 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
-        return [
+        const messages: OpenAIMessage[] = [
             {
                 role: "system",
                 content: [
@@ -122,17 +122,31 @@ export class OpenAIProvider implements LlmProvider {
                     "Mention file:line when possible.",
                     ...(request.instructions ?? [])
                 ].join(" ")
-            },
-            {
-                role: "user",
-                content: JSON.stringify({
-                    repository: request.repository,
-                    target: request.target,
-                    question: request.question,
-                    facts: factsPayload
-                }, null, 2)
             }
         ];
+
+        if (Array.isArray(request.history)) {
+            for (const h of request.history) {
+                if (h && typeof h.content === "string") {
+                    messages.push({
+                        role: h.role === "assistant" ? "assistant" : "user",
+                        content: h.content
+                    });
+                }
+            }
+        }
+
+        messages.push({
+            role: "user",
+            content: JSON.stringify({
+                repository: request.repository,
+                target: request.target,
+                question: request.question,
+                facts: factsPayload
+            }, null, 2)
+        });
+
+        return messages;
     }
 
     private handleHttpError(response: Response, responseText: string, config: OpenAIConfig): LlmResponse {

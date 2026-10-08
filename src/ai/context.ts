@@ -52,6 +52,8 @@ export interface AiRepositoryContext {
     fileContent?: string;
     fileTruncated?: boolean;
     fileTruncatedLines?: number;
+    directImports?: string[];
+    directDependents?: string[];
 }
 
 /**
@@ -59,7 +61,7 @@ export interface AiRepositoryContext {
  * boundary for the whole context object; `buildAiContext` keeps the compact
  * impact projection inside it and `AiAnswerService` re-checks the result.
  */
-export const MAX_AI_CONTEXT_BYTES = 16000;
+export const MAX_AI_CONTEXT_BYTES = 24000;
 
 /** Reserved for the `"impact"` property wrapper around the compact projection. */
 const AI_CONTEXT_IMPACT_WRAPPER_CHARS = 32;
@@ -136,6 +138,28 @@ export function buildAiContext(
         sha: change.id.split(":")[1] ?? undefined
     }));
 
+    const targetPath = context.target.request.type === "file"
+        ? context.target.request.path
+        : context.target.request.type === "symbol"
+            ? context.target.request.symbol.path
+            : undefined;
+
+    const directImportPaths = targetPath
+        ? context.imports
+            .filter((edge) => (decodeGraphFileId(edge.from) ?? edge.from) === targetPath)
+            .map((edge) => decodeGraphFileId(edge.to) ?? edge.to)
+            .filter((p, idx, arr) => arr.indexOf(p) === idx)
+            .slice(0, 10)
+        : [];
+
+    const directDependentPaths = targetPath
+        ? context.imports
+            .filter((edge) => (decodeGraphFileId(edge.to) ?? edge.to) === targetPath)
+            .map((edge) => decodeGraphFileId(edge.from) ?? edge.from)
+            .filter((p, idx, arr) => arr.indexOf(p) === idx)
+            .slice(0, 10)
+        : [];
+
     let cappedContent: string | undefined = undefined;
     let fileTruncated: boolean | undefined = undefined;
     let fileTruncatedLines: number | undefined = undefined;
@@ -177,29 +201,6 @@ export function buildAiContext(
             }
         }
 
-        // Up to 5 direct imports/dependents as file names only
-        const targetPath = context.target.request.type === "file"
-            ? context.target.request.path
-            : context.target.request.type === "symbol"
-                ? context.target.request.symbol.path
-                : undefined;
-
-        const directImportPaths = targetPath
-            ? context.imports
-                .filter((edge) => (decodeGraphFileId(edge.from) ?? edge.from) === targetPath)
-                .map((edge) => (decodeGraphFileId(edge.to) ?? edge.to).split("/").pop() ?? (decodeGraphFileId(edge.to) ?? edge.to))
-                .filter((p, idx, arr) => arr.indexOf(p) === idx)
-                .slice(0, 5)
-            : [];
-
-        const directDependentPaths = targetPath
-            ? context.imports
-                .filter((edge) => (decodeGraphFileId(edge.to) ?? edge.to) === targetPath)
-                .map((edge) => (decodeGraphFileId(edge.from) ?? edge.from).split("/").pop() ?? (decodeGraphFileId(edge.from) ?? edge.from))
-                .filter((p, idx, arr) => arr.indexOf(p) === idx)
-                .slice(0, 5)
-            : [];
-
         // Outline section: cap outline entries so snippet also fits
         const outlineText = outlineEntries.length > 0 ? `Outline:\n${outlineEntries.join("\n")}` : "";
         const importsText = directImportPaths.length > 0 ? `Direct imports: ${directImportPaths.join(", ")}` : "";
@@ -240,6 +241,8 @@ export function buildAiContext(
         callers,
         commits,
         symbolChanges,
+        ...(fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
+        ...(fileContent && directDependentPaths.length > 0 ? { directDependents: directDependentPaths } : {}),
         ...(evidence.length > 0 ? { evidence } : {}),
         ...(cappedContent !== undefined ? { fileContent: cappedContent } : {}),
         ...(fileTruncated !== undefined ? { fileTruncated } : {}),
