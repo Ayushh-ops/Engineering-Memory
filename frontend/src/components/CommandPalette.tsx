@@ -2,10 +2,11 @@ import { useEffect, useState, useRef, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { Search, FileCode, FileText } from 'lucide-react';
 import { isCodeFile } from '../analyze-helpers';
+import { computeRisk } from '../graph-helpers';
 import { cn } from '../ui';
 
 export function CommandPalette() {
-    const { commandPaletteOpen, setCommandPaletteOpen, treeFiles, selectFile, selectedFile } = useAppStore();
+    const { commandPaletteOpen, setCommandPaletteOpen, treeFiles, selectFile, selectedFile, graph, commits } = useAppStore();
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
     const inputRef = useRef<HTMLInputElement>(null);
@@ -38,22 +39,60 @@ export function CommandPalette() {
         }
     }, [commandPaletteOpen]);
 
-    // Filter files: max 8 results, case-insensitive match on name and path
+    // Score files by recency in commits and risk score in graph
+    const hotspotScores = useMemo(() => {
+        const scores = new Map<string, number>();
+        if (commits && commits.length > 0) {
+            commits.slice(0, 10).forEach((c, idx) => {
+                const recencyBoost = (10 - idx) * 3;
+                (c.files || []).forEach((f: any) => {
+                    const fname = typeof f === 'string' ? f : (f.filename || f.path);
+                    if (fname) {
+                        scores.set(fname, (scores.get(fname) || 0) + recencyBoost);
+                    }
+                });
+            });
+        }
+        if (graph) {
+            const fileNodes = graph.nodes.filter(n => n.type === 'file');
+            fileNodes.forEach(fn => {
+                const p = (fn as any).path || fn.id;
+                if (p) {
+                    const r = computeRisk(p, graph, commits).score;
+                    scores.set(p, (scores.get(p) || 0) + r);
+                }
+            });
+        }
+        return scores;
+    }, [graph, commits]);
+
+    // Filter files: max 8 results, sorted by recent/hotspot first
     const results = useMemo(() => {
         if (!treeFiles || treeFiles.length === 0) return [];
         const q = query.trim().toLowerCase();
+        const scoreFile = (f: string) => hotspotScores.get(f) || 0;
+
         if (!q) {
-            return treeFiles.slice(0, 8);
+            return [...treeFiles]
+                .sort((a, b) => scoreFile(b) - scoreFile(a))
+                .slice(0, 8);
         }
-        const matches: string[] = [];
-        for (const file of treeFiles) {
-            if (file.toLowerCase().includes(q)) {
-                matches.push(file);
-                if (matches.length >= 8) break;
-            }
-        }
-        return matches;
-    }, [treeFiles, query]);
+
+        const matches = treeFiles.filter((file) => file.toLowerCase().includes(q));
+        return matches
+            .sort((a, b) => {
+                const aName = a.split('/').pop()?.toLowerCase() || '';
+                const bName = b.split('/').pop()?.toLowerCase() || '';
+                const aExact = aName === q;
+                const bExact = bName === q;
+                if (aExact !== bExact) return aExact ? -1 : 1;
+                const aStarts = aName.startsWith(q);
+                const bStarts = bName.startsWith(q);
+                if (aStarts !== bStarts) return aStarts ? -1 : 1;
+                return scoreFile(b) - scoreFile(a);
+            })
+            .slice(0, 8);
+    }, [treeFiles, query, hotspotScores]);
 
     // Keep selected index in bounds when results change
     useEffect(() => {
@@ -162,6 +201,11 @@ export function CommandPalette() {
                             );
                         })
                     )}
+                </div>
+
+                <div className="px-4 py-2 border-t border-white/[0.06] bg-white/[0.02] text-[11px] text-[#8A918C] font-mono flex items-center justify-between">
+                    <span>Type to search files</span>
+                    <span className="text-[10px] text-[#8A918C]/60">↑↓ to navigate · Enter to select</span>
                 </div>
             </div>
         </div>

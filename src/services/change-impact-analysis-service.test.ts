@@ -164,6 +164,10 @@ const healthTestGraph: RepositoryGraph = {
         { id: "file:src%2Fc.ts", type: "file", name: "src/c.ts", path: "src/c.ts" },
         { id: "file:src%2Funused.ts", type: "file", name: "src/unused.ts", path: "src/unused.ts" },
         { id: "file:src%2Findex.ts", type: "file", name: "src/index.ts", path: "src/index.ts" },
+        { id: "file:src%2Fsettings.py", type: "file", name: "src/settings.py", path: "src/settings.py" },
+        { id: "file:src%2F__init__.py", type: "file", name: "src/__init__.py", path: "src/__init__.py" },
+        { id: "file:src%2FApp.tsx", type: "file", name: "src/App.tsx", path: "src/App.tsx" },
+        { id: "file:vite.config.ts", type: "file", name: "vite.config.ts", path: "vite.config.ts" },
         { id: "file:src%2Fgod.ts", type: "file", name: "src/god.ts", path: "src/god.ts" },
         ...Array.from({ length: 16 }, (_, i) => ({
             id: `file:src%2Fsub${i}.ts`,
@@ -190,6 +194,10 @@ assert.equal(health.circularImports.length, 1);
 assert.deepEqual(health.circularImports[0], ["src/a.ts", "src/b.ts"]);
 assert.ok(health.unusedFiles.includes("src/unused.ts"));
 assert.ok(!health.unusedFiles.includes("src/index.ts"));
+assert.ok(!health.unusedFiles.includes("src/settings.py"));
+assert.ok(!health.unusedFiles.includes("src/__init__.py"));
+assert.ok(!health.unusedFiles.includes("src/App.tsx"));
+assert.ok(!health.unusedFiles.includes("vite.config.ts"));
 assert.equal(health.godFiles.length, 1);
 assert.equal(health.godFiles[0].path, "src/god.ts");
 assert.equal(health.godFiles[0].importCount, 16);

@@ -15,12 +15,24 @@ export function RightPanel({ className }: { className?: string }) {
     const hotspotFiles = useMemo(() => {
         if (!graph) return new Set<string>();
         const files = graph.nodes.filter((n: any) => n.type === 'file');
-        const scored = files.map((f: any) => ({
-            path: f.path || f.id,
-            risk: computeRisk(f.path || f.id, graph, commits).score
-        })).sort((a: any, b: any) => b.risk - a.risk);
+        const scored = files
+            .filter((f: any) => {
+                const p = (f.path || f.id || '').toLowerCase();
+                const fn = p.split('/').pop() || '';
+                if (fn.includes('eslint') || fn.includes('postcss') || fn.includes('tailwind') || fn.includes('vite') || fn.includes('.config.')) return false;
+                return true;
+            })
+            .map((f: any) => ({
+                path: f.path || f.id,
+                risk: computeRisk(f.path || f.id, graph, commits).score
+            })).sort((a: any, b: any) => b.risk - a.risk);
         return new Set<string>(scored.slice(0, 5).map((f: any) => f.path));
     }, [graph, commits]);
+
+    // Repo-level tabs must not show Node details
+    if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
+        return null;
+    }
 
     useEffect(() => {
         let isMounted = true;
@@ -363,33 +375,20 @@ export function RightPanel({ className }: { className?: string }) {
     return (
         <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
             <div className="p-3.5 border-b border-white/10">
-                <div className="flex items-center justify-between">
-                    <h3 className="font-mono text-xs font-semibold truncate text-[#E8EAE6]" title={nodeName}>
-                        {nodeName}{selectedSymbol?.type === 'function' || selectedSymbol?.type === 'method' ? '()' : ''}
-                    </h3>
-                    <Badge variant={nodeType === 'file' ? 'default' : (nodeType === 'class' ? 'amber' : 'emerald')}>
-                        {nodeType}
-                    </Badge>
-                </div>
-                <div className="text-[11px] text-[#8A918C] truncate mt-1 font-mono" title={selectedFile || ''}>
-                    {selectedFile || 'main branch'}
-                </div>
+                <h3 className="text-xs font-semibold text-[#E8EAE6]">Node details</h3>
             </div>
 
             <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                <div className="space-y-3">
-                    <div className="text-[11px] text-[#8A918C] font-normal">Node details</div>
-                    <div className="space-y-1.5">
-                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                            <span>Type</span>
-                            <b className="text-[#E8EAE6] font-mono">{nodeType}</b>
-                        </div>
-                        <div className="flex justify-between py-1 text-[#8A918C]">
-                            <span>Path</span>
-                            <b className="text-[#E8EAE6] font-mono text-[11px] truncate max-w-[170px]" title={selectedFile || ''}>
-                                {selectedFile || '-'}
-                            </b>
-                        </div>
+                <div className="space-y-1.5">
+                    <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                        <span>Type</span>
+                        <b className="text-[#E8EAE6] font-mono">{nodeType}</b>
+                    </div>
+                    <div className="flex justify-between py-1 text-[#8A918C]">
+                        <span>Path</span>
+                        <b className="text-[#E8EAE6] font-mono text-[11px] truncate max-w-[170px]" title={selectedFile || ''}>
+                            {selectedFile || '-'}
+                        </b>
                     </div>
                 </div>
 

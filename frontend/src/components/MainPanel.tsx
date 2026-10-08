@@ -125,10 +125,6 @@ function FlowFitViewHandler({
         if (selectedFile === prevFileRef.current) return;
         prevFileRef.current = selectedFile;
 
-        if (focusConnected) {
-            return;
-        }
-
         const targetNode = nodes.find(n => {
             const raw = n.data?.rawNode;
             const rawPath = raw?.path || (raw?.type === 'file' ? raw?.id : undefined);
@@ -152,7 +148,7 @@ function FlowFitViewHandler({
                 duration: prefersReducedMotion ? 0 : 350
             });
         }
-    }, [selectedFile, nodes, edges, focusConnected, fitView]);
+    }, [selectedFile, nodes, edges, fitView]);
 
     return null;
 }
@@ -1498,10 +1494,29 @@ export function MainPanel({ className }: { className?: string }) {
         return paths;
     }, [graph, treeFiles]);
 
+    const isConfigFile = useCallback((pathStr: string) => {
+        const lower = pathStr.toLowerCase();
+        const base = lower.split('/').pop() || lower;
+        return (
+            base.includes('eslint') ||
+            base.includes('postcss') ||
+            base.includes('tailwind') ||
+            base.includes('vite') ||
+            base.includes('.config.') ||
+            base.startsWith('tsconfig') ||
+            base.startsWith('.prettier') ||
+            base.startsWith('.env')
+        );
+    }, []);
+
     const hotspotsList = useMemo(() => {
         if (!graph) return [];
         const fileNodes = graph.nodes.filter(n => n.type === 'file');
         return fileNodes
+            .filter(fn => {
+                const p = (fn as any).path || fn.id || '';
+                return !isConfigFile(p);
+            })
             .map(fn => {
                 const p = (fn as any).path || fn.id;
                 const r = computeRisk(p, graph, commits);
@@ -1510,7 +1525,52 @@ export function MainPanel({ className }: { className?: string }) {
             })
             .sort((a, b) => b.risk.score - a.risk.score)
             .slice(0, 8);
-    }, [graph, commits]);
+    }, [graph, commits, isConfigFile]);
+
+    const compositionData = useMemo(() => {
+        const fileList: string[] = [];
+        if (graph?.nodes) {
+            for (const n of graph.nodes) {
+                if (n.type === 'file') {
+                    const p = (n as any).path || n.id;
+                    if (p) fileList.push(p);
+                }
+            }
+        } else if (treeFiles && treeFiles.length > 0) {
+            fileList.push(...treeFiles);
+        }
+
+        if (fileList.length === 0) return [];
+
+        const counts: Record<string, number> = {};
+        for (const f of fileList) {
+            const lower = f.toLowerCase();
+            let cat = 'Other';
+            if (lower.endsWith('.ts') || lower.endsWith('.tsx')) cat = 'TypeScript';
+            else if (lower.endsWith('.js') || lower.endsWith('.jsx') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) cat = 'JavaScript';
+            else if (lower.endsWith('.py') || lower.endsWith('.pyw')) cat = 'Python';
+            else if (lower.endsWith('.json')) cat = 'JSON';
+            else if (lower.endsWith('.md')) cat = 'Markdown';
+            else if (lower.endsWith('.css') || lower.endsWith('.scss')) cat = 'CSS';
+            else if (lower.endsWith('.html')) cat = 'HTML';
+            else if (lower.endsWith('.go')) cat = 'Go';
+            else if (lower.endsWith('.rs')) cat = 'Rust';
+            else if (lower.endsWith('.java')) cat = 'Java';
+            counts[cat] = (counts[cat] || 0) + 1;
+        }
+
+        const total = fileList.length;
+        const palette = ['#4FD1B5', '#E3A04A', '#38bdf8', '#c084fc', '#facc15', '#8A918C'];
+
+        return Object.entries(counts)
+            .sort((a, b) => b[1] - a[1])
+            .map(([label, count], idx) => ({
+                label,
+                count,
+                percentage: Math.max(1, Math.round((count / total) * 100)),
+                color: palette[idx % palette.length]
+            }));
+    }, [graph, treeFiles]);
 
     const hotspotPaths = useMemo(() => {
         return new Set(hotspotsList.slice(0, 5).map(h => h.path));
@@ -1971,180 +2031,180 @@ export function MainPanel({ className }: { className?: string }) {
     }, [activeTab, fetchHealth]);
 
     const isCode = selectedFile ? isCodeFile(selectedFile) : false;
-
-    // We will render the frame of MainPanel even if no file is selected so tabs work
-    // and give visual feedback.
+    const isRepoLevelTab = activeTab === 'Overview' || activeTab === 'ChangeSet' || activeTab === 'Health';
 
     return (
         <div className={cn("flex flex-col bg-[#07090A] select-none h-full min-h-0", className)}>
             {/* Header / Breadcrumb & Tabs (fixed at top) */}
             <div className="p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10">
-                <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px]">
-                    {selectedFile ? selectedFile.split('/').map((part, i, arr) => (
-                        <span key={i} className="flex items-center gap-1.5">
-                            <span className="hover:text-[#E8EAE6] cursor-pointer">{part}</span>
-                            {i < arr.length - 1 && <span className="opacity-40">/</span>}
-                        </span>
-                    )) : (
-                        <span>main repository</span>
-                    )}
-                </div>
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="w-7 h-7 rounded-lg glass-surface border-white/10 flex items-center justify-center text-[#4FD1B5]">
-                            {isCode ? <FileCode size={14} /> : <FileText size={14} />}
+                {!isRepoLevelTab && selectedFile && (
+                    <>
+                        <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px]">
+                            {selectedFile.split('/').map((part, i, arr) => (
+                                <span key={i} className="flex items-center gap-1.5">
+                                    <span className="hover:text-[#E8EAE6] cursor-pointer">{part}</span>
+                                    {i < arr.length - 1 && <span className="opacity-40">/</span>}
+                                </span>
+                            ))}
                         </div>
-                        <div>
-                            <h2 className="text-base font-semibold text-[#E8EAE6] font-mono tracking-tight">
-                                {selectedFile ? (selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()) : "Repository overview"}
-                            </h2>
-                            <div className="flex gap-2 items-center mt-0.5">
-                                {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
-                                <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile || "Select a file from the sidebar to inspect"}</span>
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                                <div className="w-7 h-7 rounded-lg glass-surface border-white/10 flex items-center justify-center text-[#4FD1B5]">
+                                    {isCode ? <FileCode size={14} /> : <FileText size={14} />}
+                                </div>
+                                <div>
+                                    <h2 className="text-base font-semibold text-[#E8EAE6] font-mono tracking-tight">
+                                        {selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                                    </h2>
+                                    <div className="flex gap-2 items-center mt-0.5">
+                                        {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
+                                        <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    onClick={() => addToChangeSet(selectedFile)}
+                                    disabled={changeSet.includes(selectedFile) || changeSet.length >= 20}
+                                    className={cn(
+                                        "px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer border",
+                                        changeSet.includes(selectedFile)
+                                            ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/40 text-[#4FD1B5] cursor-default"
+                                            : "glass-surface border-white/10 text-[#E8EAE6] hover:border-[#4FD1B5]/50 hover:text-[#4FD1B5]"
+                                    )}
+                                    title={changeSet.includes(selectedFile) ? "Already in change set" : "Add to change set"}
+                                >
+                                    <Plus size={13} />
+                                    <span>{changeSet.includes(selectedFile) ? "In change set" : "Add to change set"}</span>
+                                </button>
                             </div>
                         </div>
-                    </div>
-                    {selectedFile && (
-                        <div className="flex items-center gap-2">
-                            <button
-                                onClick={() => addToChangeSet(selectedFile)}
-                                disabled={changeSet.includes(selectedFile) || changeSet.length >= 20}
-                                className={cn(
-                                    "px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer border",
-                                    changeSet.includes(selectedFile)
-                                        ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/40 text-[#4FD1B5] cursor-default"
-                                        : "glass-surface border-white/10 text-[#E8EAE6] hover:border-[#4FD1B5]/50 hover:text-[#4FD1B5]"
-                                )}
-                                title={changeSet.includes(selectedFile) ? "Already in change set" : "Add to change set"}
-                            >
-                                <Plus size={13} />
-                                <span>{changeSet.includes(selectedFile) ? "In change set" : "Add to change set"}</span>
-                            </button>
-                        </div>
-                    )}
-                </div>
+                    </>
+                )}
 
-                <div className="flex gap-4 mt-4 border-b border-white/[0.06]">
-                    {[
-                        { id: 'Overview', icon: Hexagon, label: 'Overview' },
-                        { id: 'Graph', icon: Network, label: 'Graph' },
-                        { id: 'Impact', icon: Activity, label: 'Impact' },
-                        { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length} ${changeSet.length === 1 ? 'input' : 'inputs'})` : ''}` },
-                        { id: 'Connections', icon: Network, label: 'Connections' },
-                        { id: 'Code', icon: Code2, label: 'Code' },
-                        { id: 'History', icon: Clock, label: 'History' },
-                        { id: 'Health', icon: HeartPulse, label: 'Health' },
-                        { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' }
-                    ].map(t => {
-                        const Icon = t.icon;
-                        const isActive = activeTab === t.id;
-                        return (
-                            <button
-                                key={t.id} onClick={() => setActiveTab(t.id as any)}
-                                className={cn(
-                                    "text-xs pb-2 transition-colors flex items-center gap-1.5 cursor-pointer relative font-medium",
-                                    isActive
-                                        ? "text-[#E8EAE6] before:content-[''] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-[#4FD1B5]"
-                                        : "text-[#8A918C] hover:text-[#E8EAE6]"
-                                )}
-                            >
-                                <Icon size={13} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
-                                <span>{t.label}</span>
-                            </button>
-                        );
-                    })}
+                <div className="flex items-center gap-1 border-b border-white/[0.06] overflow-x-auto scrollbar-none">
+                    {/* Repo-level tabs */}
+                    <div className="flex items-center gap-3 shrink-0">
+                        {[
+                            { id: 'Overview', icon: Hexagon, label: 'Overview' },
+                            { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length} ${changeSet.length === 1 ? 'input' : 'inputs'})` : ''}` },
+                            { id: 'Health', icon: HeartPulse, label: 'Health' },
+                        ].map(t => {
+                            const Icon = t.icon;
+                            const isActive = activeTab === t.id;
+                            return (
+                                <button
+                                    key={t.id} onClick={() => setActiveTab(t.id as any)}
+                                    className={cn(
+                                        "text-xs pb-2 transition-colors flex items-center gap-1.5 cursor-pointer relative font-medium shrink-0",
+                                        isActive
+                                            ? "text-[#E8EAE6] before:content-[''] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-[#4FD1B5]"
+                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
+                                    )}
+                                >
+                                    <Icon size={13} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
+                                    <span>{t.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {/* Thin divider */}
+                    <div className="w-[1px] h-3.5 bg-white/20 mx-2 shrink-0 self-center mb-2" />
+
+                    {/* File-level tabs */}
+                    <div className="flex items-center gap-3 shrink-0">
+                        {[
+                            { id: 'Graph', icon: Network, label: 'Graph' },
+                            { id: 'Impact', icon: Activity, label: 'Impact' },
+                            { id: 'Connections', icon: Network, label: 'Connections' },
+                            { id: 'Code', icon: Code2, label: 'Code' },
+                            { id: 'History', icon: Clock, label: 'History' },
+                            { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' }
+                        ].map(t => {
+                            const Icon = t.icon;
+                            const isActive = activeTab === t.id;
+                            return (
+                                <button
+                                    key={t.id} onClick={() => setActiveTab(t.id as any)}
+                                    className={cn(
+                                        "text-xs pb-2 transition-colors flex items-center gap-1.5 cursor-pointer relative font-medium shrink-0",
+                                        isActive
+                                            ? "text-[#E8EAE6] before:content-[''] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-[#4FD1B5]"
+                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
+                                    )}
+                                >
+                                    <Icon size={13} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
+                                    <span>{t.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
 
             {/* Content */}
             <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6] min-h-0", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code' || activeTab === 'Impact' || activeTab === 'ChangeSet') && "flex flex-col")}>
                 <>
-                    {/* Overview Tab: stat tiles, hotspots list (with bottom fade), composition bar */}
+                    {/* Overview Tab: hotspots list, composition bar */}
                     {activeTab === 'Overview' && (
-                        <div className="space-y-5">
-                            {/* 4 Stat Tiles */}
-                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.totalFiles}</b>
-                                    <span className="text-xs text-[#8A918C]">files</span>
-                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">tracked</div>
-                                </div>
-                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.symbols}</b>
-                                    <span className="text-xs text-[#8A918C]">symbols</span>
-                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">indexed</div>
-                                </div>
-                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.links}</b>
-                                    <span className="text-xs text-[#8A918C]">links</span>
-                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">mapped</div>
-                                </div>
-                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.hotspots}</b>
-                                    <span className="text-xs text-[#8A918C]">hotspots</span>
-                                    <div className="text-[11px] text-[#E3A04A] mt-1 font-mono">active</div>
-                                </div>
-                            </div>
-
+                        <div className="space-y-4">
                             {/* Hotspots & Composition */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="glass-surface p-4 rounded-xl border-white/10 relative flex flex-col">
+                                <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col">
                                     <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Hotspots, ranked by churn and dependents</h4>
-                                    <div className="relative flex-1">
-                                        <div className="space-y-2 max-h-[220px] overflow-y-auto scrollbar-custom pb-4">
-                                            {hotspotsList.length === 0 ? (
-                                                <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>
-                                            ) : (
-                                                hotspotsList.map((h) => (
-                                                    <div
-                                                        key={h.id}
-                                                        onClick={() => selectFile(h.path)}
-                                                        className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
-                                                    >
-                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path}>{h.name}</span>
-                                                        <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                            <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${h.risk.score}%` }} />
-                                                        </div>
-                                                        <span className="text-[#8A918C] font-mono text-right">{h.risk.directDependents}</span>
+                                    <div className="space-y-2 max-h-[260px] overflow-y-auto scrollbar-custom">
+                                        {hotspotsList.length === 0 ? (
+                                            <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>
+                                        ) : (
+                                            hotspotsList.map((h) => (
+                                                <div
+                                                    key={h.id}
+                                                    onClick={() => selectFile(h.path)}
+                                                    className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] last:border-0 text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
+                                                >
+                                                    <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path}>{h.name}</span>
+                                                    <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                        <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${h.risk.score}%` }} />
                                                     </div>
-                                                ))
-                                            )}
-                                        </div>
-                                        {/* Bottom fade */}
-                                        <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-[rgba(16,20,21,0.95)] to-transparent" />
+                                                    <span className="text-[#8A918C] font-mono text-right">{h.risk.directDependents}</span>
+                                                </div>
+                                            ))
+                                        )}
                                     </div>
                                 </div>
 
                                 <div className="glass-surface p-4 rounded-xl border-white/10">
                                     <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Composition</h4>
-                                    <div className="flex h-2 rounded-full overflow-hidden gap-0.5 mb-3 bg-white/[0.08]">
-                                        <div className="h-full bg-[#4FD1B5]" style={{ width: '55%' }} />
-                                        <div className="h-full bg-[#E3A04A]" style={{ width: '30%' }} />
-                                        <div className="h-full bg-[#8A918C]" style={{ width: '15%' }} />
-                                    </div>
-                                    <div className="space-y-1.5 text-xs">
-                                        <div className="flex justify-between items-center py-1 border-b border-white/[0.05]">
-                                            <span className="flex items-center gap-2 text-[#8A918C]">
-                                                <span className="w-2 h-2 rounded-full bg-[#4FD1B5]" />
-                                                Source files
-                                            </span>
-                                            <b className="font-mono text-[#E8EAE6]">55%</b>
-                                        </div>
-                                        <div className="flex justify-between items-center py-1 border-b border-white/[0.05]">
-                                            <span className="flex items-center gap-2 text-[#8A918C]">
-                                                <span className="w-2 h-2 rounded-full bg-[#E3A04A]" />
-                                                Classes & types
-                                            </span>
-                                            <b className="font-mono text-[#E8EAE6]">30%</b>
-                                        </div>
-                                        <div className="flex justify-between items-center py-1">
-                                            <span className="flex items-center gap-2 text-[#8A918C]">
-                                                <span className="w-2 h-2 rounded-full bg-[#8A918C]" />
-                                                Functions & modules
-                                            </span>
-                                            <b className="font-mono text-[#E8EAE6]">15%</b>
-                                        </div>
-                                    </div>
+                                    {compositionData.length === 0 ? (
+                                        <div className="text-xs text-[#8A918C]">No analyzed files yet.</div>
+                                    ) : (
+                                        <>
+                                            <div className="flex h-2 rounded-full overflow-hidden gap-0.5 mb-3 bg-white/[0.08]">
+                                                {compositionData.map((c, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className="h-full"
+                                                        style={{ width: `${c.percentage}%`, backgroundColor: c.color }}
+                                                        title={`${c.label}: ${c.percentage}%`}
+                                                    />
+                                                ))}
+                                            </div>
+                                            <div className="space-y-1.5 text-xs">
+                                                {compositionData.map((c, i) => (
+                                                    <div key={i} className="flex justify-between items-center py-1 border-b border-white/[0.05] last:border-0">
+                                                        <span className="flex items-center gap-2 text-[#8A918C]">
+                                                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.color }} />
+                                                            {c.label}
+                                                        </span>
+                                                        <span className="font-mono text-[#E8EAE6]">
+                                                            {c.count} <span className="text-[#8A918C] text-[11px]">({c.percentage}%)</span>
+                                                        </span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -2165,59 +2225,60 @@ export function MainPanel({ className }: { className?: string }) {
                     )}
 
                     {activeTab === 'Impact' && (
-                        <div className="flex-1 flex flex-col space-y-4 min-h-0">
-                            <div className="flex items-center justify-between shrink-0">
-                                <div>
-                                    <h3 className="text-sm font-semibold text-[#E8EAE6]">What could this change affect?</h3>
-                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
-                                        All files and symbols affected if you modify <span className="font-mono text-[#E8EAE6]">{selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this file')}</span>.
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
-                                        <button
-                                            onClick={handleDownloadReport}
-                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#E8EAE6] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1.5"
-                                            title="Download report as Markdown"
-                                        >
-                                            <Download size={13} />
-                                            <span>Download report</span>
-                                        </button>
-                                        <button
-                                            onClick={handleCopyReport}
-                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#E8EAE6] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1.5"
-                                            title="Copy report as PR comment"
-                                        >
-                                            {copiedReport ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} />}
-                                            <span>{copiedReport ? "Copied" : "Copy as PR comment"}</span>
-                                        </button>
+                        !selectedFile ? (
+                            <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                <Activity size={24} className="text-[#8A918C]/40 mb-1" />
+                                <div className="text-xs text-[#8A918C]">Select a file from the sidebar to calculate its blast radius and impact.</div>
+                            </div>
+                        ) : (
+                            <div className="flex-1 flex flex-col space-y-4 min-h-0">
+                                <div className="flex items-center justify-between shrink-0 gap-3 whitespace-nowrap overflow-x-auto scrollbar-none py-1">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <h3 className="text-xs font-semibold text-[#E8EAE6] truncate">
+                                            Impact: <span className="font-mono text-[#4FD1B5] font-normal">{selectedSymbol?.name || selectedFile.split('/').pop()}</span>
+                                        </h3>
                                     </div>
-                                    <div className="flex items-center gap-2 glass-surface p-1.5 rounded-lg border-white/10">
-                                        <div className="flex items-center gap-1.5 px-2">
-                                            <label className="text-[11px] text-[#8A918C]">Depth</label>
-                                            <div className="flex gap-1">
+                                    <div className="flex items-center gap-2 shrink-0">
+                                        <div className="flex items-center gap-1 glass-surface p-1 rounded-lg border-white/10">
+                                            <button
+                                                onClick={handleDownloadReport}
+                                                className="p-1.5 rounded text-[#8A918C] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                                title="Download report as Markdown"
+                                            >
+                                                <Download size={13} />
+                                            </button>
+                                            <button
+                                                onClick={handleCopyReport}
+                                                className="p-1.5 rounded text-[#8A918C] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer"
+                                                title="Copy report as PR comment"
+                                            >
+                                                {copiedReport ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} />}
+                                            </button>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 glass-surface p-1 rounded-lg border-white/10 shrink-0">
+                                            <span className="text-[10px] text-[#8A918C] pl-1.5 pr-0.5">Depth</span>
+                                            <div className="flex items-center gap-1 shrink-0">
                                                 {[1, 2, 3].map(d => (
                                                     <button
                                                         key={d}
                                                         onClick={() => setDepth(d)}
                                                         className={cn(
-                                                            "px-2.5 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer border",
+                                                            "px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer border shrink-0",
                                                             depth === d
                                                                 ? "border-[#4FD1B5] text-[#4FD1B5] bg-[#4FD1B5]/10"
                                                                 : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
                                                         )}
                                                     >
-                                                        Depth {d}
+                                                        {d}
                                                     </button>
                                                 ))}
                                             </div>
+                                            <Button onClick={reanalyze} className="px-2.5 py-1 text-[11px] ml-1 shrink-0 whitespace-nowrap" disabled={analyzing}>
+                                                {analyzing ? <Loader2 size={11} className="animate-spin" /> : 'Re-analyze'}
+                                            </Button>
                                         </div>
-                                        <Button onClick={reanalyze} className="px-3 py-1 text-xs" disabled={analyzing}>
-                                            {analyzing ? <Loader2 size={12} className="animate-spin" /> : 'Re-analyze'}
-                                        </Button>
                                     </div>
                                 </div>
-                            </div>
 
                             {analyzing ? (
                                 <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
@@ -2424,38 +2485,42 @@ export function MainPanel({ className }: { className?: string }) {
                                     </div>
                                 </div>
                             ) : (
-                                <div className="glass-surface p-8 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
-                                    <div className="text-xs text-[#8A918C]">
-                                        {selectedFile
-                                            ? `Impact analysis has not been calculated for ${selectedFile.split('/').pop()}. Click Re-analyze above to run it.`
-                                            : "Select a file from the sidebar to calculate its blast radius."}
+                                    <div className="glass-surface p-8 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                        <div className="text-xs text-[#8A918C]">
+                                            Impact analysis has not been calculated for {selectedFile.split('/').pop()}. Click Re-analyze above to run it.
+                                        </div>
                                     </div>
-                                </div>
-                            )}
-                        </div>
+                                )}
+                            </div>
+                        )
                     )}
 
                     {activeTab === 'AskAI' && (
-                        <div className="flex-1 flex flex-col min-h-0 glass-surface border-white/10 rounded-xl overflow-hidden">
-                            <div className="p-3.5 bg-white/[0.02] border-b border-white/10 flex items-center justify-between shrink-0">
-                                <div className="flex items-center gap-2 text-xs font-semibold text-[#E8EAE6]">
-                                    <MessageSquare size={14} className="text-[#4FD1B5]" />
-                                    <span>Ask AI</span>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                    <span className="text-[11px] font-mono text-[#8A918C] truncate max-w-[200px]">
-                                        {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'whole repository')}
-                                    </span>
-                                    <button
-                                        onClick={handleNewChat}
-                                        className="px-2 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
-                                        title="Clear conversation"
-                                    >
-                                        <Plus size={12} />
-                                        <span>New chat</span>
-                                    </button>
-                                </div>
+                        !selectedFile ? (
+                            <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                <MessageSquare size={24} className="text-[#8A918C]/40 mb-1" />
+                                <div className="text-xs text-[#8A918C]">Select a file from the sidebar to ask questions about it.</div>
                             </div>
+                        ) : (
+                            <div className="flex-1 flex flex-col min-h-0 glass-surface border-white/10 rounded-xl overflow-hidden">
+                                <div className="p-3.5 bg-white/[0.02] border-b border-white/10 flex items-center justify-between shrink-0">
+                                    <div className="flex items-center gap-2 text-xs font-mono text-[#8A918C]">
+                                        <FileCode size={13} className="text-[#4FD1B5]" />
+                                        <span className="text-[#E8EAE6] truncate max-w-[280px]">
+                                            {selectedSymbol?.name ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={handleNewChat}
+                                            className="px-2 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
+                                            title="Clear conversation"
+                                        >
+                                            <Plus size={12} />
+                                            <span>New chat</span>
+                                        </button>
+                                    </div>
+                                </div>
 
                             {/* Chat Messages - Fixed height scroll area */}
                             <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3 min-h-0">
@@ -2608,88 +2673,94 @@ export function MainPanel({ className }: { className?: string }) {
                                 </div>
                             </div>
                         </div>
+                        )
                     )}
 
                     {activeTab === 'History' && (
-                        <div className="space-y-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <h3 className="text-xs font-semibold text-[#E8EAE6]">Commit history</h3>
-                                    <p className="text-[11px] text-[#8A918C] mt-0.5">
-                                        Showing changes for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'current selection'}</span>. Switch commits in the sidebar to inspect other points in time.
-                                    </p>
-                                </div>
-                                <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 text-[#4FD1B5] bg-[#4FD1B5]/10">
-                                    {selectedSha?.substring(0, 7) || 'HEAD'}
-                                </span>
+                        !selectedFile ? (
+                            <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                <Clock size={24} className="text-[#8A918C]/40 mb-1" />
+                                <div className="text-xs text-[#8A918C]">Select a file from the sidebar to inspect its commit timeline.</div>
                             </div>
-
-                            {!historyData ? (
-                                <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
-                                    <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
-                                    <span className="text-xs font-mono">Fetching commit history...</span>
-                                </div>
-                            ) : historyData.length === 0 ? (
-                                <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2">
-                                    <Clock size={22} className="text-[#8A918C] mb-1" />
-                                    <div className="text-xs font-medium text-[#E8EAE6]">No commits found</div>
-                                    <div className="text-[11px] text-[#8A918C] max-w-sm">
-                                        {selectedFile
-                                            ? "No commits found for this file. Try inspecting another file from the sidebar."
-                                            : "Select a file from the sidebar to inspect its commit timeline."}
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <h3 className="text-xs font-semibold text-[#E8EAE6]">Commit history</h3>
+                                        <p className="text-[11px] text-[#8A918C] mt-0.5">
+                                            Showing changes for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'current selection'}</span>. Switch commits in the sidebar to inspect other points in time.
+                                        </p>
                                     </div>
+                                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 text-[#4FD1B5] bg-[#4FD1B5]/10">
+                                        {selectedSha?.substring(0, 7) || 'HEAD'}
+                                    </span>
                                 </div>
-                            ) : (
-                                <div className="relative pl-6 space-y-3 before:content-[''] before:absolute before:left-2 before:top-3 before:bottom-3 before:w-[1px] before:bg-white/10">
-                                    {historyData.map((commit: any, i) => {
-                                        const commitFiles = (commit.files || []).map((f: any) => f.filename || f.path || f);
-                                        const isHotspot = Boolean(
-                                            commitFiles.some((cf: string) => hotspotPaths.has(cf)) ||
-                                            (selectedFile && hotspotPaths.has(selectedFile)) ||
-                                            (commit.changes && commit.changes > 50) ||
-                                            (commit.files && commit.files.some((f: any) => (f.changes || 0) > 40 || (f.additions || 0) + (f.deletions || 0) > 40))
-                                        );
-                                        const isSelected = selectedHistoryCommit?.sha === commit.sha;
 
-                                        return (
-                                            <div
-                                                key={commit.sha || i}
-                                                onClick={() => setSelectedHistoryCommit(commit)}
-                                                className={cn(
-                                                    "relative glass-surface p-3.5 rounded-xl border transition-colors cursor-pointer text-xs",
-                                                    isSelected ? "border-[#4FD1B5] bg-white/[0.04]" : "border-white/10 hover:border-white/20 hover:bg-white/[0.02]"
-                                                )}
-                                            >
-                                                {/* Dot on hairline connector line: amber for hotspots, accent for standard */}
-                                                <span
+                                {!historyData ? (
+                                    <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
+                                        <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
+                                        <span className="text-xs font-mono">Fetching commit history...</span>
+                                    </div>
+                                ) : historyData.length === 0 ? (
+                                    <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2">
+                                        <Clock size={22} className="text-[#8A918C] mb-1" />
+                                        <div className="text-xs font-medium text-[#E8EAE6]">No commits found</div>
+                                        <div className="text-[11px] text-[#8A918C] max-w-sm">
+                                            No commits found for this file. Try inspecting another file from the sidebar.
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="relative pl-6 space-y-3 before:content-[''] before:absolute before:left-2 before:top-3 before:bottom-3 before:w-[1px] before:bg-white/10">
+                                        {historyData.map((commit: any, i) => {
+                                            const commitFiles = (commit.files || []).map((f: any) => f.filename || f.path || f);
+                                            const isHotspot = Boolean(
+                                                commitFiles.some((cf: string) => hotspotPaths.has(cf)) ||
+                                                (selectedFile && hotspotPaths.has(selectedFile)) ||
+                                                (commit.changes && commit.changes > 50) ||
+                                                (commit.files && commit.files.some((f: any) => (f.changes || 0) > 40 || (f.additions || 0) + (f.deletions || 0) > 40))
+                                            );
+                                            const isSelected = selectedHistoryCommit?.sha === commit.sha;
+
+                                            return (
+                                                <div
+                                                    key={commit.sha || i}
+                                                    onClick={() => setSelectedHistoryCommit(commit)}
                                                     className={cn(
-                                                        "absolute -left-[22px] top-4 w-2.5 h-2.5 rounded-full border-2 bg-[#07090A]",
-                                                        isHotspot ? "border-[#E3A04A]" : "border-[#4FD1B5]"
+                                                        "relative glass-surface p-3.5 rounded-xl border transition-colors cursor-pointer text-xs",
+                                                        isSelected ? "border-[#4FD1B5] bg-white/[0.04]" : "border-white/10 hover:border-white/20 hover:bg-white/[0.02]"
                                                     )}
-                                                    title={isHotspot ? "Touched hotspot file" : "Commit"}
-                                                />
+                                                >
+                                                    {/* Dot on hairline connector line: amber for hotspots, accent for standard */}
+                                                    <span
+                                                        className={cn(
+                                                            "absolute -left-[22px] top-4 w-2.5 h-2.5 rounded-full border-2 bg-[#07090A]",
+                                                            isHotspot ? "border-[#E3A04A]" : "border-[#4FD1B5]"
+                                                        )}
+                                                        title={isHotspot ? "Touched hotspot file" : "Commit"}
+                                                    />
 
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <div className="font-medium text-[#E8EAE6] truncate">{commit.message}</div>
-                                                </div>
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <div className="font-medium text-[#E8EAE6] truncate">{commit.message}</div>
+                                                    </div>
 
-                                                <div className="flex items-center gap-2.5 text-[11px] font-mono text-[#8A918C] mt-1.5 flex-wrap">
-                                                    <span className="text-[#4FD1B5]">{commit.sha ? commit.sha.substring(0, 7) : ''}</span>
-                                                    <span>•</span>
-                                                    <span>{commit.authorName}</span>
-                                                    {commit.authorDate && (
-                                                        <>
-                                                            <span>•</span>
-                                                            <span>{formatRelativeDate(commit.authorDate)}</span>
-                                                        </>
-                                                    )}
+                                                    <div className="flex items-center gap-2.5 text-[11px] font-mono text-[#8A918C] mt-1.5 flex-wrap">
+                                                        <span className="text-[#4FD1B5]">{commit.sha ? commit.sha.substring(0, 7) : ''}</span>
+                                                        <span>•</span>
+                                                        <span>{commit.authorName}</span>
+                                                        {commit.authorDate && (
+                                                            <>
+                                                                <span>•</span>
+                                                                <span>{formatRelativeDate(commit.authorDate)}</span>
+                                                            </>
+                                                        )}
+                                                    </div>
                                                 </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                        </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )
                     )}
 
                     {activeTab === 'Health' && (
@@ -2798,6 +2869,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             </div>
                                             {openHealthSections.unused ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
                                         </button>
+                                        <p className="text-[11px] text-[#8A918C]">Entry and config files are excluded</p>
 
                                         {openHealthSections.unused && (
                                             <div className="pt-2 border-t border-white/[0.06] space-y-2">
@@ -2874,15 +2946,21 @@ export function MainPanel({ className }: { className?: string }) {
                     )}
 
                     {activeTab === 'Connections' && (
-                        <div className="space-y-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <h3 className="text-sm font-semibold text-[#E8EAE6]">File connections</h3>
-                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
-                                        Incoming and outgoing file dependencies for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'selected file'}</span>.
-                                    </p>
-                                </div>
+                        !selectedFile ? (
+                            <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
+                                <Network size={24} className="text-[#8A918C]/40 mb-1" />
+                                <div className="text-xs text-[#8A918C]">Select a file from the sidebar to inspect its connections.</div>
                             </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <h3 className="text-sm font-semibold text-[#E8EAE6]">File connections</h3>
+                                        <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
+                                            Incoming and outgoing file dependencies for <span className="font-mono text-[#E8EAE6]">{selectedFile.split('/').pop()}</span>.
+                                        </p>
+                                    </div>
+                                </div>
                             {!connectionsData ? (
                                 <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-3">
                                     <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
@@ -2960,6 +3038,7 @@ export function MainPanel({ className }: { className?: string }) {
                                 </div>
                             )}
                         </div>
+                        )
                     )}
 
                     {activeTab === 'Code' && (

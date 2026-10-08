@@ -29,10 +29,11 @@ function isTestPath(path: string): boolean {
 function isConfigPath(path: string): boolean {
     const normalized = path.replace(/\\/g, "/").toLowerCase();
     const fileName = normalized.split("/").pop() || "";
-    if (fileName.includes(".config.") || fileName.startsWith(".eslintrc") || fileName.startsWith("eslint.config.")) return true;
-    if (fileName.includes("vite") && fileName.includes("config")) return true;
-    if (fileName.includes("postcss") && fileName.includes("config")) return true;
-    if (fileName.includes("tailwind") && fileName.includes("config")) return true;
+    if (fileName.includes(".config.") || /\.config\.[^.]+$/.test(fileName)) return true;
+    if (fileName.startsWith(".eslintrc") || fileName.includes("eslint")) return true;
+    if (fileName.includes("vite")) return true;
+    if (fileName.includes("postcss")) return true;
+    if (fileName.includes("tailwind")) return true;
     if (fileName.includes("tsconfig") || fileName.includes("package.json") || fileName.includes("package-lock.json")) return true;
     if (fileName.endsWith(".lock") || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml") return true;
     if (/\.(json|yaml|yml|toml|ini|env|config)$/.test(fileName)) return true;
@@ -40,10 +41,20 @@ function isConfigPath(path: string): boolean {
 }
 
 function isEntryPath(path: string): boolean {
-    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    const normalized = path.replace(/\\/g, "/");
     const fileName = normalized.split("/").pop() || "";
-    const baseName = fileName.replace(/\.[^.]+$/, "");
-    return ["main", "index", "app", "server"].includes(baseName);
+    const lower = fileName.toLowerCase();
+    const baseName = lower.replace(/\.[^.]+$/, "");
+
+    // Python entry / framework files
+    if (["__init__.py", "settings.py", "urls.py", "wsgi.py", "asgi.py", "manage.py"].includes(lower)) {
+        return true;
+    }
+    // main.*, index.*, app.* (including App.*), server.*
+    if (["main", "index", "app", "server"].includes(baseName)) {
+        return true;
+    }
+    return false;
 }
 
 export function computeGraphHealth(graph: RepositoryGraph): HealthSummaryResult {
