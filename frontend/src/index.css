@@ -20,6 +20,10 @@
         --muted-foreground: #8A918C;
     }
 
+    html {
+        scroll-behavior: smooth;
+    }
+
     body {
         background-color: var(--bg);
         color: var(--tx);
@@ -34,6 +38,28 @@
 }
 
 @layer utilities {
+    .landing-card {
+        transition: border-color 0.25s ease, transform 0.25s ease, background-color 0.25s ease;
+    }
+    .landing-card:hover {
+        border-color: rgba(79, 209, 181, 0.35) !important;
+        transform: translateY(-2px);
+        background-color: rgba(20, 26, 27, 0.8) !important;
+    }
+
+    .landing-btn {
+        transition: filter 0.2s ease, transform 0.2s ease;
+    }
+    .landing-btn:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+    }
+
+    .landing-field:focus-within {
+        border-color: rgba(79, 209, 181, 0.6) !important;
+        box-shadow: 0 0 0 4px rgba(79, 209, 181, 0.12);
+    }
+
     .glass-surface {
         background: var(--sf);
         border: 1px solid var(--ln);
