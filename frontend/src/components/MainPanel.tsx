@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
-import { getNeighborInfo, getFocusedGraph } from '../graph-helpers';
+import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
@@ -1387,8 +1387,31 @@ export function MainPanel({ className }: { className?: string }) {
         selectedSymbol, impactResult, setImpactResult, graph,
         repoUrl, selectedSha, setCodeHighlightLine, selectFile,
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
-        changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading
+        changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
+        treeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit
     } = useAppStore();
+
+    const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
+    const fileRisk = useMemo(() => selectedFile ? computeRisk(selectedFile, graph, commits) : null, [selectedFile, graph, commits]);
+
+    const hotspotsList = useMemo(() => {
+        if (!graph) return [];
+        const fileNodes = graph.nodes.filter(n => n.type === 'file');
+        return fileNodes
+            .map(fn => {
+                const p = (fn as any).path || fn.id;
+                const r = computeRisk(p, graph, commits);
+                const name = (fn as any).name || (p ? p.split('/').pop() : fn.id);
+                return { id: fn.id, path: p, name, risk: r };
+            })
+            .sort((a, b) => b.risk.score - a.risk.score)
+            .slice(0, 8);
+    }, [graph, commits]);
+
+    const hotspotPaths = useMemo(() => {
+        return new Set(hotspotsList.slice(0, 5).map(h => h.path));
+    }, [hotspotsList]);
+
     const [depth, setDepth] = useState(3);
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
@@ -1530,7 +1553,7 @@ export function MainPanel({ className }: { className?: string }) {
                     lines.push(`## Owners`);
                     lines.push('');
                     for (const o of ownersRes.owners) {
-                        lines.push(`- **${o.name}**: ${o.share}% (${o.count} commits)`);
+                        lines.push(`- **${o.name}**: ${o.share}% (${o.count} ${o.count === 1 ? 'commit' : 'commits'})`);
                     }
                     if (ownersRes.busFactorRisk) {
                         lines.push('');
@@ -1856,7 +1879,7 @@ export function MainPanel({ className }: { className?: string }) {
                         { id: 'Overview', icon: Hexagon, label: 'Overview' },
                         { id: 'Graph', icon: Network, label: 'Graph' },
                         { id: 'Impact', icon: Activity, label: 'Impact' },
-                        { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length})` : ''}` },
+                        { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length} ${changeSet.length === 1 ? 'input' : 'inputs'})` : ''}` },
                         { id: 'Connections', icon: Network, label: 'Connections' },
                         { id: 'Code', icon: Code2, label: 'Code' },
                         { id: 'History', icon: Clock, label: 'History' },
@@ -1890,40 +1913,28 @@ export function MainPanel({ className }: { className?: string }) {
                     {activeTab === 'Overview' && (
                         <div className="space-y-5">
                             {/* 4 Stat Tiles */}
-                            {(() => {
-                                let fCount = 0, symCount = 0, linkCount = 0;
-                                if (graph) {
-                                    graph.nodes.forEach(n => {
-                                        if (n.type === 'file') fCount++;
-                                        else symCount++;
-                                    });
-                                    linkCount = graph.edges.length;
-                                }
-                                return (
-                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                                        <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                            <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{fCount || 0}</b>
-                                            <span className="text-xs text-[#8A918C]">files</span>
-                                            <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">tracked</div>
-                                        </div>
-                                        <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                            <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{symCount || 0}</b>
-                                            <span className="text-xs text-[#8A918C]">symbols</span>
-                                            <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">indexed</div>
-                                        </div>
-                                        <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                            <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{linkCount || 0}</b>
-                                            <span className="text-xs text-[#8A918C]">links</span>
-                                            <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">mapped</div>
-                                        </div>
-                                        <div className="glass-surface p-3.5 rounded-xl border-white/10">
-                                            <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{Math.min(5, fCount)}</b>
-                                            <span className="text-xs text-[#8A918C]">hotspots</span>
-                                            <div className="text-[11px] text-[#E3A04A] mt-1 font-mono">active</div>
-                                        </div>
-                                    </div>
-                                );
-                            })()}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
+                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.totalFiles}</b>
+                                    <span className="text-xs text-[#8A918C]">files</span>
+                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">tracked</div>
+                                </div>
+                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
+                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.symbols}</b>
+                                    <span className="text-xs text-[#8A918C]">symbols</span>
+                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">indexed</div>
+                                </div>
+                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
+                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.links}</b>
+                                    <span className="text-xs text-[#8A918C]">links</span>
+                                    <div className="text-[11px] text-[#4FD1B5] mt-1 font-mono">mapped</div>
+                                </div>
+                                <div className="glass-surface p-3.5 rounded-xl border-white/10">
+                                    <b className="block text-2xl font-bold tracking-tight text-[#E8EAE6] font-mono">{stats.hotspots}</b>
+                                    <span className="text-xs text-[#8A918C]">hotspots</span>
+                                    <div className="text-[11px] text-[#E3A04A] mt-1 font-mono">active</div>
+                                </div>
+                            </div>
 
                             {/* Hotspots & Composition */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1931,27 +1942,23 @@ export function MainPanel({ className }: { className?: string }) {
                                     <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Hotspots, ranked by churn and dependents</h4>
                                     <div className="relative flex-1">
                                         <div className="space-y-2 max-h-[220px] overflow-y-auto scrollbar-custom pb-4">
-                                            {(() => {
-                                                const fileNodes = graph ? graph.nodes.filter(n => n.type === 'file') : [];
-                                                const displayFiles = fileNodes.slice(0, 8);
-                                                if (displayFiles.length === 0) {
-                                                    return <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>;
-                                                }
-                                                return displayFiles.map((fn, idx) => {
-                                                    const score = Math.max(30, 95 - idx * 11);
-                                                    const callers = Math.max(2, 18 - idx * 2);
-                                                    const name = (fn as any).name || ((fn as any).path ? (fn as any).path.split('/').pop() : fn.id);
-                                                    return (
-                                                        <div key={fn.id} className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] text-xs">
-                                                            <span className="font-mono text-[#E8EAE6] truncate">{name}</span>
-                                                            <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                                <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${score}%` }} />
-                                                            </div>
-                                                            <span className="text-[#8A918C] font-mono text-right">{callers}</span>
+                                            {hotspotsList.length === 0 ? (
+                                                <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>
+                                            ) : (
+                                                hotspotsList.map((h) => (
+                                                    <div
+                                                        key={h.id}
+                                                        onClick={() => selectFile(h.path)}
+                                                        className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
+                                                    >
+                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path}>{h.name}</span>
+                                                        <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                            <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${h.risk.score}%` }} />
                                                         </div>
-                                                    );
-                                                });
-                                            })()}
+                                                        <span className="text-[#8A918C] font-mono text-right">{h.risk.directDependents}</span>
+                                                    </div>
+                                                ))
+                                            )}
                                         </div>
                                         {/* Bottom fade */}
                                         <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-[rgba(16,20,21,0.95)] to-transparent" />
@@ -2142,51 +2149,93 @@ export function MainPanel({ className }: { className?: string }) {
                                     {/* Ranked Risk List */}
                                     <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full">
                                         <div className="flex-1 flex flex-col min-h-0">
-                                            <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Ranked risk list</h4>
+                                            <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06]">
+                                                <div>
+                                                    <span className="text-[11px] font-semibold text-[#8A918C]">Risk score</span>
+                                                    <div className="flex items-baseline gap-1.5 mt-0.5">
+                                                        <span className="text-2xl font-bold font-mono text-[#E8EAE6]">
+                                                            {fileRisk ? fileRisk.score : (impactResult.score ?? 0)}
+                                                        </span>
+                                                        <span className="text-xs font-mono text-[#8A918C]">/ 100</span>
+                                                    </div>
+                                                </div>
+                                                <div className="w-24 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                    <div
+                                                        className={cn("h-full rounded-full", (fileRisk?.score ?? 0) > 60 ? "bg-red-400" : (fileRisk?.score ?? 0) > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
+                                                        style={{ width: `${Math.min(100, Math.max(5, fileRisk ? fileRisk.score : 0))}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+
+                                            <h4 className="text-xs font-semibold text-[#8A918C] mb-2">Ranked risk list</h4>
                                             <div className="space-y-2 flex-1 overflow-y-auto scrollbar-custom pr-1">
                                                 {impactResult.directCallers.length === 0 && impactResult.transitiveConsumers.length === 0 ? (
                                                     <div className="text-xs text-[#8A918C] py-4">No dependents found. This file may be a leaf, or its imports could not be resolved.</div>
                                                 ) : (
                                                     [...impactResult.directCallers, ...impactResult.transitiveConsumers].slice(0, 12).map((c, i) => {
-                                                        const risk = Math.max(20, 96 - i * 7);
-                                                        const isWarm = risk > 75;
+                                                        const itemPath = c.symbol.path || c.symbol.name;
+                                                        const itemRisk = computeRisk(itemPath, graph, commits).score;
+                                                        const isWarm = itemRisk > 75;
+                                                        const isFile = (c.symbol.type as string) === 'file';
+                                                        const isFunction = c.symbol.type === 'function' || c.symbol.type === 'method';
+                                                        const pill = isFile ? 'file' : (isFunction ? 'function' : c.symbol.type);
                                                         return (
-                                                            <div key={i} className="flex items-center gap-2.5 p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
-                                                                <span className="font-mono text-[#E8EAE6] truncate flex-1">{c.symbol.name}</span>
+                                                            <div
+                                                                key={i}
+                                                                onClick={() => selectFile(itemPath)}
+                                                                className="flex items-center gap-2 p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                            >
+                                                                <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate flex-1">{c.symbol.name}</span>
+                                                                <span className="font-mono text-[9px] px-1 py-0.5 rounded border border-white/10 text-[#8A918C]">
+                                                                    {pill}
+                                                                </span>
                                                                 <div className="w-14 h-1.5 rounded-full bg-white/[0.08] overflow-hidden shrink-0">
                                                                     <div
                                                                         className={cn("h-full rounded-full", isWarm ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
-                                                                        style={{ width: `${risk}%` }}
+                                                                        style={{ width: `${itemRisk}%` }}
                                                                     />
                                                                 </div>
-                                                                <span className="font-mono text-[11px] text-[#8A918C] w-6 text-right">{risk}</span>
+                                                                <span className="font-mono text-[11px] text-[#8A918C] w-6 text-right">{itemRisk}</span>
                                                             </div>
                                                         );
                                                     })
                                                 )}
                                             </div>
                                         </div>
-                                        {impactResult.reasons && impactResult.reasons.length > 0 && (
-                                            <div className="pt-3 border-t border-white/[0.08] mt-3">
-                                                <button
-                                                    onClick={() => setShowImpactReasons(!showImpactReasons)}
-                                                    className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
-                                                >
-                                                    <span className="font-medium">Why this score</span>
-                                                    {showImpactReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                                </button>
-                                                {showImpactReasons && (
-                                                    <div className="space-y-1.5 mt-2">
-                                                        {impactResult.reasons.map((r, i) => (
-                                                            <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
-                                                                <span className="text-[#8A918C] text-[11px]">{r.label}</span>
-                                                                <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
-                                                            </div>
-                                                        ))}
+                                        <div className="pt-3 border-t border-white/[0.08] mt-3">
+                                            <button
+                                                onClick={() => setShowImpactReasons(!showImpactReasons)}
+                                                className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
+                                                title="Formula: min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
+                                            >
+                                                <span className="font-medium flex items-center gap-1.5">
+                                                    Why this score
+                                                    <span
+                                                        className="text-[10px] text-[#8A918C] px-1 rounded border border-white/10 cursor-help"
+                                                        title="Formula: min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
+                                                    >
+                                                        ?
+                                                    </span>
+                                                </span>
+                                                {showImpactReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                            </button>
+                                            {showImpactReasons && (
+                                                <div className="space-y-1.5 mt-2">
+                                                    <div
+                                                        className="text-[10px] font-mono text-[#8A918C] px-2 py-1 bg-white/[0.02] border border-white/[0.06] rounded truncate"
+                                                        title="score = min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
+                                                    >
+                                                        score = min(100, 4×direct + 2×transitive + 0.25×churn% + tests)
                                                     </div>
-                                                )}
-                                            </div>
-                                        )}
+                                                    {(fileRisk ? fileRisk.reasons : (impactResult.reasons || [])).map((r, i) => (
+                                                        <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
+                                                            <span className="text-[#8A918C] text-[11px]">{r.label}</span>
+                                                            <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
                                         {/* Tests to run */}
                                         <div className="pt-3 border-t border-white/[0.08] mt-3">
                                             <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
@@ -2219,8 +2268,8 @@ export function MainPanel({ className }: { className?: string }) {
                                             })()}
                                         </div>
 
-                                        <div className="text-[11px] text-[#8A918C] pt-3 border-t border-white/[0.08] mt-3">
-                                            Risk score is ranked out of 100 based on call distance and churn.
+                                        <div className="text-[11px] text-[#8A918C] pt-3 border-t border-white/[0.08] mt-3" title="score = min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))">
+                                            Formula: min(100, 4×direct + 2×transitive + 0.25×churn% + tests)
                                         </div>
                                     </div>
                                 </div>
@@ -2446,19 +2495,31 @@ export function MainPanel({ className }: { className?: string }) {
                             ) : (
                                 <div className="relative pl-6 space-y-3 before:content-[''] before:absolute before:left-2 before:top-3 before:bottom-3 before:w-[1px] before:bg-white/10">
                                     {historyData.map((commit: any, i) => {
+                                        const commitFiles = (commit.files || []).map((f: any) => f.filename || f.path || f);
                                         const isHotspot = Boolean(
-                                            (commit.files && commit.files.some((f: any) => (f.changes || 0) > 40 || (f.additions || 0) + (f.deletions || 0) > 40)) ||
+                                            commitFiles.some((cf: string) => hotspotPaths.has(cf)) ||
+                                            (selectedFile && hotspotPaths.has(selectedFile)) ||
                                             (commit.changes && commit.changes > 50) ||
-                                            (i === 0 && historyData.length > 3)
+                                            (commit.files && commit.files.some((f: any) => (f.changes || 0) > 40 || (f.additions || 0) + (f.deletions || 0) > 40))
                                         );
+                                        const isSelected = selectedHistoryCommit?.sha === commit.sha;
+
                                         return (
-                                            <div key={commit.sha || i} className="relative glass-surface p-3.5 rounded-xl border-white/10 text-xs">
+                                            <div
+                                                key={commit.sha || i}
+                                                onClick={() => setSelectedHistoryCommit(commit)}
+                                                className={cn(
+                                                    "relative glass-surface p-3.5 rounded-xl border transition-colors cursor-pointer text-xs",
+                                                    isSelected ? "border-[#4FD1B5] bg-white/[0.04]" : "border-white/10 hover:border-white/20 hover:bg-white/[0.02]"
+                                                )}
+                                            >
                                                 {/* Dot on hairline connector line: amber for hotspots, accent for standard */}
                                                 <span
                                                     className={cn(
                                                         "absolute -left-[22px] top-4 w-2.5 h-2.5 rounded-full border-2 bg-[#07090A]",
                                                         isHotspot ? "border-[#E3A04A]" : "border-[#4FD1B5]"
                                                     )}
+                                                    title={isHotspot ? "Touched hotspot file" : "Commit"}
                                                 />
 
                                                 <div className="flex items-center justify-between gap-3">
@@ -2488,7 +2549,14 @@ export function MainPanel({ className }: { className?: string }) {
                         <div className="space-y-4">
                             <div className="flex items-center justify-between">
                                 <div>
-                                    <h3 className="text-xs font-semibold text-[#E8EAE6]">Repository health</h3>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <h3 className="text-xs font-semibold text-[#E8EAE6]">Repository health</h3>
+                                        {stats.analyzedFiles < stats.totalFiles && (
+                                            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                                                Based on {stats.analyzedFiles} of {stats.totalFiles} files
+                                            </span>
+                                        )}
+                                    </div>
                                     <p className="text-[11px] text-[#8A918C] mt-0.5">
                                         Architectural smells and dependency diagnostics computed from the repository graph.
                                     </p>
@@ -2759,7 +2827,7 @@ export function MainPanel({ className }: { className?: string }) {
                                     <h3 className="text-sm font-semibold text-[#E8EAE6] flex items-center gap-2">
                                         <span>Change set impact</span>
                                         <span className="text-xs font-mono font-normal text-[#8A918C]">
-                                            ({changeSet.length} {changeSet.length === 1 ? 'file' : 'files'})
+                                            ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
                                         </span>
                                     </h3>
                                     <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
@@ -2815,12 +2883,12 @@ export function MainPanel({ className }: { className?: string }) {
                             ) : changeSetLoading ? (
                                 <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
-                                    <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} files...</span>
+                                    <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'}...</span>
                                 </div>
                             ) : !changeSetResult ? (
                                 <div className="flex-1 text-center py-16 border border-white/10 rounded-xl glass-surface p-6 flex flex-col items-center justify-center gap-3">
                                     <div className="text-xs text-[#8A918C]">
-                                        {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'} ready for analysis.
+                                        {changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'} ready for analysis.
                                     </div>
                                     <Button
                                         onClick={async () => {
@@ -2870,7 +2938,7 @@ export function MainPanel({ className }: { className?: string }) {
                                                 </div>
                                             </div>
                                             <span className="text-[11px] text-[#8A918C]/80">
-                                                Based on max input risk plus change set size
+                                                Based on union of affected files, dependents, and churn
                                             </span>
                                         </div>
 
@@ -2946,7 +3014,7 @@ export function MainPanel({ className }: { className?: string }) {
                                                                 <div className="flex items-center gap-1.5 shrink-0 ml-2">
                                                                     {sources.length > 0 && (
                                                                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.04] text-[#8A918C] border border-white/[0.06]" title={`Affected by: ${sources.join(', ')}`}>
-                                                                            from {sources.length} {sources.length === 1 ? 'file' : 'files'}
+                                                                            from {sources.length} {sources.length === 1 ? 'input' : 'inputs'}
                                                                         </span>
                                                                     )}
                                                                 </div>
@@ -2964,7 +3032,7 @@ export function MainPanel({ className }: { className?: string }) {
                                                     <Layers size={13} className="text-[#E3A04A]" />
                                                     Impact by change set file
                                                 </h4>
-                                                <span className="text-[10px] text-[#8A918C] font-mono">{changeSet.length} inputs</span>
+                                                <span className="text-[10px] text-[#8A918C] font-mono">{changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'}</span>
                                             </div>
                                             <div className="space-y-2 max-h-[380px] overflow-y-auto scrollbar-custom pr-1">
                                                 {changeSet.map((inputPath) => {

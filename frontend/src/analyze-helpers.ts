@@ -1,9 +1,7 @@
+export const ANALYSIS_MAX_FILES = 500;
+
 export const SUPPORTED_CODE_EXTENSIONS = [
-    '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts',
-    '.py', '.pyw',
-    '.java',
-    '.go',
-    '.cpp', '.cc', '.cxx', '.h', '.hpp'
+    '.ts', '.tsx', '.js', '.jsx', '.py'
 ];
 
 export function isCodeFile(path: string): boolean {
@@ -11,26 +9,14 @@ export function isCodeFile(path: string): boolean {
     return SUPPORTED_CODE_EXTENSIONS.some(ext => lower.endsWith(ext));
 }
 
-export function getPathsToAnalyze(treeFiles: string[], targetFile: string): string[] {
-    const paths = [targetFile];
-
-    // Find siblings (files in the same directory that are code files)
-    const targetDir = targetFile.substring(0, targetFile.lastIndexOf('/'));
-
-    for (const file of treeFiles) {
-        if (file === targetFile) continue;
-        if (!isCodeFile(file)) continue;
-
-        const fileDir = file.substring(0, file.lastIndexOf('/'));
-        // If it's a sibling, or if they both are at root (lastIndexOf is -1)
-        if (fileDir === targetDir) {
-            paths.push(file);
-        }
-
-        if (paths.length >= 20) break;
+export function getPathsToAnalyze(treeFiles: string[], targetFile?: string): string[] {
+    const maxFiles = ANALYSIS_MAX_FILES;
+    const codeFiles = treeFiles.filter(f => isCodeFile(f));
+    if (targetFile && isCodeFile(targetFile)) {
+        const withoutTarget = codeFiles.filter(f => f !== targetFile);
+        return [targetFile, ...withoutTarget].slice(0, maxFiles);
     }
-
-    return paths;
+    return codeFiles.slice(0, maxFiles);
 }
 
 export function isFileInGraph(graph: any, path: string): boolean {

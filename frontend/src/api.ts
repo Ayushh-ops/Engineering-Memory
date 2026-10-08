@@ -90,6 +90,7 @@ export interface SymbolChangeGraphNode { id: string; type: "symbol-change"; path
 
 export type GraphNode = RepositoryGraphNode | FileGraphNode | ClassGraphNode | FunctionGraphNode | MethodGraphNode | CommitGraphNode | SymbolChangeGraphNode;
 export type GraphSymbolNode = Extract<GraphNode, { type: "class" | "function" | "method" }>;
+export interface ImpactSymbol { type: "class" | "function" | "method" | "file"; path?: string; name: string; }
 
 export interface CallSite { file: string; startLine: number; startColumn: number; endLine: number; endColumn: number; expression: string; }
 export interface GraphEdge { id?: string; from: string; to: string; type: GraphEdgeType; callSites?: CallSite[]; }
@@ -102,8 +103,8 @@ export interface ImpactTarget { type: "symbol" | "file"; path?: string; symbol?:
 
 export interface ChangeImpactPathRelationship { relationshipId: string; from: string; to: string; callSiteIds: string[]; type: "calls"; evidence: "available" | "unavailable"; }
 export interface ChangeImpactPath { id: string; target: string; nodes: string[]; relationships: ChangeImpactPathRelationship[]; depth: number; classification: "direct-caller" | "transitive-consumer"; }
-export interface ChangeImpactNode { id: string; type: "class" | "function" | "method"; path: string; name: string; }
-export interface ChangeImpactSymbolResult { symbol: GraphSymbolNode; depth?: number; relationship: "direct-caller" | "transitive-consumer"; evidence: "calls-edge"; }
+export interface ChangeImpactNode { id: string; type: "class" | "function" | "method" | "file"; path: string; name: string; }
+export interface ChangeImpactSymbolResult { symbol: ImpactSymbol; depth?: number; relationship: "direct-caller" | "transitive-consumer"; evidence: "calls-edge"; }
 export interface ChangeImpactCallSiteEvidence { id: string; file: string; startLine: number; startColumn: number; endLine: number; endColumn: number; expression: string; }
 export interface RepositorySourceEvidence { path: string; symbol: { type: "class" | "function" | "method"; name: string }; content: string; }
 
@@ -122,6 +123,7 @@ export interface ChangeImpactAnalysisResult {
     relatedDependencies?: string[];
     reviewCandidates?: string[];
     tests?: Array<{ path?: string; symbol?: { path: string; name: string } } | string>;
+    score?: number;
     reasons?: Array<{ label: string; value: string }>;
 }
 

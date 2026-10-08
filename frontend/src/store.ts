@@ -38,6 +38,9 @@ export interface AppState {
     codeHighlightLine: number | null;
     setCodeHighlightLine: (line: number | null) => void;
 
+    selectedHistoryCommit: any | null;
+    setSelectedHistoryCommit: (commit: any | null) => void;
+
     hoveredGraphNode: string | null;
     setHoveredGraphNode: (idOrPath: string | null) => void;
 
@@ -104,6 +107,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     codeHighlightLine: null,
     setCodeHighlightLine: (line) => set({ codeHighlightLine: line }),
+
+    selectedHistoryCommit: null,
+    setSelectedHistoryCommit: (commit) => set({ selectedHistoryCommit: commit }),
 
     hoveredGraphNode: null,
     setHoveredGraphNode: (idOrPath) => set({ hoveredGraphNode: idOrPath }),

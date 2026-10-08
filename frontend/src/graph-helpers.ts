@@ -220,3 +220,234 @@ export function getFocusedGraph(
         edges: graph.edges.filter(e => allowedNodeIds.has(e.from) && allowedNodeIds.has(e.to))
     };
 }
+
+export interface RiskDetails {
+    score: number;
+    directDependents: number;
+    transitiveDependents: number;
+    churnPercent: number;
+    hasNoTests: boolean;
+    reasons: Array<{ label: string; value: string }>;
+}
+
+export function computeRisk(
+    filePath: string,
+    graph: RepositoryGraph | null,
+    commits: any[] = []
+): RiskDetails {
+    if (!graph || !filePath) {
+        return {
+            score: 0,
+            directDependents: 0,
+            transitiveDependents: 0,
+            churnPercent: 0,
+            hasNoTests: true,
+            reasons: []
+        };
+    }
+
+    const fileNode = graph.nodes.find((n: any) => n.type === 'file' && (n.path === filePath || n.id === filePath));
+    const fileId = fileNode ? fileNode.id : filePath;
+
+    // 1. Direct dependents (incoming imports or calls)
+    const directSet = new Set<string>();
+    for (const edge of graph.edges) {
+        if (edge.to === fileId && (edge.type === 'imports' || edge.type === 'calls')) {
+            directSet.add(edge.from);
+        }
+    }
+
+    // 2. Transitive dependents (reverse BFS excluding direct and target file)
+    const visited = new Set<string>([fileId, ...directSet]);
+    const queue = Array.from(directSet);
+    const transitiveSet = new Set<string>();
+
+    while (queue.length > 0) {
+        const curr = queue.shift()!;
+        for (const edge of graph.edges) {
+            if (edge.to === curr && (edge.type === 'imports' || edge.type === 'calls')) {
+                if (!visited.has(edge.from)) {
+                    visited.add(edge.from);
+                    transitiveSet.add(edge.from);
+                    queue.push(edge.from);
+                }
+            }
+        }
+    }
+
+    const directDependents = directSet.size;
+    const transitiveDependents = transitiveSet.size;
+
+    // 3. Churn percent from commits
+    let churnPercent = 0;
+    if (commits && commits.length > 0) {
+        const touchingCommitsCount = commits.filter((c: any) =>
+            c.files && c.files.some((f: any) => f.filename === filePath || f.path === filePath)
+        ).length;
+        churnPercent = Math.min(100, Math.round((touchingCommitsCount / Math.max(1, commits.length)) * 100));
+    }
+
+    // 4. Test presence
+    const baseName = filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+    const hasTests = graph.nodes.some((n: any) => {
+        if (n.type !== 'file') return false;
+        const p = n.path || n.id;
+        if (!p) return false;
+        const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
+        if (!isTest) return false;
+        const testBase = p.split('/').pop()?.replace(/\.(test|spec)\.[^.]+$/, '').replace(/\.[^.]+$/, '') || '';
+        return testBase === baseName || p.includes(baseName);
+    });
+    const hasNoTests = !hasTests;
+
+    let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
+    if (directDependents === 0 && transitiveDependents === 0) {
+        rawScore = Math.min(15, rawScore);
+    }
+    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+
+    const reasons: Array<{ label: string; value: string }> = [
+        { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
+        { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
+        { label: "Commit churn", value: `${churnPercent}%` },
+        { label: "Test coverage", value: hasNoTests ? "No test found (+10)" : "Tests found (+0)" }
+    ];
+
+    return {
+        score,
+        directDependents,
+        transitiveDependents,
+        churnPercent,
+        hasNoTests,
+        reasons
+    };
+}
+
+export function computeChangeSetRisk(
+    changeSetFiles: string[],
+    graph: RepositoryGraph | null,
+    commits: any[] = []
+): RiskDetails {
+    if (!graph || changeSetFiles.length === 0) {
+        return {
+            score: 0,
+            directDependents: 0,
+            transitiveDependents: 0,
+            churnPercent: 0,
+            hasNoTests: true,
+            reasons: []
+        };
+    }
+
+    const inputNodeIds = new Set(
+        changeSetFiles.map(path => {
+            const n = graph.nodes.find((node: any) => node.type === 'file' && (node.path === path || node.id === path));
+            return n ? n.id : path;
+        })
+    );
+
+    const directSet = new Set<string>();
+    for (const edge of graph.edges) {
+        if (inputNodeIds.has(edge.to) && (edge.type === 'imports' || edge.type === 'calls')) {
+            if (!inputNodeIds.has(edge.from)) {
+                directSet.add(edge.from);
+            }
+        }
+    }
+
+    const visited = new Set<string>([...inputNodeIds, ...directSet]);
+    const queue = Array.from(directSet);
+    const transitiveSet = new Set<string>();
+
+    while (queue.length > 0) {
+        const curr = queue.shift()!;
+        for (const edge of graph.edges) {
+            if (edge.to === curr && (edge.type === 'imports' || edge.type === 'calls')) {
+                if (!visited.has(edge.from)) {
+                    visited.add(edge.from);
+                    transitiveSet.add(edge.from);
+                    queue.push(edge.from);
+                }
+            }
+        }
+    }
+
+    const directDependents = directSet.size;
+    const transitiveDependents = transitiveSet.size;
+
+    let churnPercent = 0;
+    if (commits && commits.length > 0) {
+        const touchingCommitsCount = commits.filter((c: any) =>
+            c.files && c.files.some((f: any) => changeSetFiles.includes(f.filename || f.path))
+        ).length;
+        churnPercent = Math.min(100, Math.round((touchingCommitsCount / Math.max(1, commits.length)) * 100));
+    }
+
+    let anyTestsFound = false;
+    for (const file of changeSetFiles) {
+        const baseName = file.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+        const found = graph.nodes.some((n: any) => {
+            if (n.type !== 'file') return false;
+            const p = n.path || n.id;
+            if (!p) return false;
+            const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
+            if (!isTest) return false;
+            const testBase = p.split('/').pop()?.replace(/\.(test|spec)\.[^.]+$/, '').replace(/\.[^.]+$/, '') || '';
+            return testBase === baseName || p.includes(baseName);
+        });
+        if (found) {
+            anyTestsFound = true;
+            break;
+        }
+    }
+    const hasNoTests = !anyTestsFound;
+
+    let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
+    if (directDependents === 0 && transitiveDependents === 0) {
+        rawScore = Math.min(15, rawScore);
+    }
+    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+
+    const reasons: Array<{ label: string; value: string }> = [
+        { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
+        { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
+        { label: "Commit churn", value: `${churnPercent}%` },
+        { label: "Test coverage", value: hasNoTests ? "No test found (+10)" : "Tests found (+0)" }
+    ];
+
+    return {
+        score,
+        directDependents,
+        transitiveDependents,
+        churnPercent,
+        hasNoTests,
+        reasons
+    };
+}
+
+export interface RepoStats {
+    totalFiles: number;
+    analyzedFiles: number;
+    symbols: number;
+    links: number;
+    hotspots: number;
+}
+
+export function selectRepoStats(state: { graph: RepositoryGraph | null; treeFiles: string[]; commits?: any[] }): RepoStats {
+    const { graph, treeFiles } = state;
+    const fileNodes = graph ? graph.nodes.filter((n: any) => n.type === 'file') : [];
+    const analyzedFiles = fileNodes.length;
+    const totalFiles = treeFiles && treeFiles.length > 0 ? treeFiles.length : analyzedFiles;
+
+    const symbols = graph ? graph.nodes.filter((n: any) => n.type !== 'file' && n.type !== 'repository').length : 0;
+    const links = graph ? graph.edges.length : 0;
+    const hotspots = Math.min(5, analyzedFiles);
+
+    return {
+        totalFiles,
+        analyzedFiles,
+        symbols,
+        links,
+        hotspots
+    };
+}

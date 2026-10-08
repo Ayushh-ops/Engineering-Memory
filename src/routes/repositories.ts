@@ -44,6 +44,7 @@ interface GitHubCommit {
         author: {
             name: string;
             date: string;
+            email?: string;
         };
     };
 }
@@ -390,17 +391,30 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
 
         const githubCommits = (await githubResponse.json()) as GitHubCommit[];
 
-        const authorCounts = new Map<string, number>();
+        const authorMap = new Map<string, { name: string; count: number }>();
         let totalCommits = 0;
 
         for (const commit of githubCommits) {
-            const authorName = commit.commit?.author?.name || "Unknown";
-            authorCounts.set(authorName, (authorCounts.get(authorName) || 0) + 1);
+            const rawEmail = commit.commit?.author?.email?.trim().toLowerCase();
+            const rawName = commit.commit?.author?.name?.trim();
+            const key = rawEmail || (rawName ? rawName.toLowerCase() : "unknown");
+            const existing = authorMap.get(key);
+            if (existing) {
+                existing.count++;
+                if ((!existing.name || existing.name === "Unknown") && rawName) {
+                    existing.name = rawName;
+                }
+            } else {
+                authorMap.set(key, {
+                    name: rawName || rawEmail || "Unknown",
+                    count: 1
+                });
+            }
             totalCommits++;
         }
 
-        const sortedAuthors = Array.from(authorCounts.entries())
-            .map(([name, count]) => ({
+        const sortedAuthors = Array.from(authorMap.values())
+            .map(({ name, count }) => ({
                 name,
                 count,
                 share: totalCommits > 0 ? Math.round((count / totalCommits) * 100) : 0
@@ -408,7 +422,7 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
             .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
         const owners = sortedAuthors.slice(0, 3);
-        const busFactorRisk = owners.length > 0 && owners[0].share >= 80;
+        const busFactorRisk = totalCommits >= 5 && owners.length > 0 && owners[0].share >= 70;
 
         const result: FileOwnersResponse = {
             repository: `${owner}/${repository}`,
@@ -656,8 +670,9 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
         return res.status(400).json({ error: "A non-empty paths array is required." });
     }
 
-    if (paths.length > 20) {
-        return res.status(400).json({ error: "A maximum of 20 file paths is allowed." });
+    const maxAnalysisFiles = parseInt(process.env.ANALYSIS_MAX_FILES || "500", 10);
+    if (paths.length > maxAnalysisFiles) {
+        return res.status(400).json({ error: `A maximum of ${maxAnalysisFiles} file paths is allowed.` });
     }
 
     if (paths.some((path) => typeof path !== "string" || path.trim().length === 0)) {

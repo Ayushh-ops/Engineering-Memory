@@ -218,32 +218,24 @@ export function createImpactRouter(
         const mergedTestsSet = new Set<string>();
         const affectedByInput: Record<string, string[]> = {};
 
+        const directSet = new Set<string>();
+        const transitiveSet = new Set<string>();
+        const inputSet = new Set(uniqueInputPaths);
+
         for (const inputPath of uniqueInputPaths) {
             const impact = impactService.analyze(graph, { type: "file", path: inputPath });
             const direct = impact.directCallers || [];
             const transitive = impact.transitiveConsumers || [];
-            const allConsumers = [...direct, ...transitive];
-
-            // Calculate single file score:
-            // Dependents count (capped at 70) + commit churn (up to 15) + test coverage penalty (15 if no test)
-            const depCount = allConsumers.length;
-            const depScore = Math.min(70, depCount * 8);
-
-            const fileNode = graph.nodes.find((n) => n.type === "file" && n.path === inputPath);
-            let commitCount = 0;
-            if (fileNode) {
-                for (const edge of graph.edges) {
-                    if (edge.type === "changed" && edge.to === fileNode.id) {
-                        commitCount++;
-                    }
-                }
+            for (const dc of direct) {
+                const p = dc.symbol?.path;
+                if (p && !inputSet.has(p)) directSet.add(p);
             }
-            const churnScore = Math.min(15, commitCount * 3);
-            const hasTests = (impact.tests || []).length > 0;
-            const testScore = hasTests ? 0 : 15;
-            const singleScore = Math.min(100, depScore + churnScore + testScore);
-            fileScores.push(singleScore);
+            for (const tc of transitive) {
+                const p = tc.symbol?.path;
+                if (p && !inputSet.has(p) && !directSet.has(p)) transitiveSet.add(p);
+            }
 
+            const allConsumers = [...direct, ...transitive];
             const theseAffected: string[] = [];
             for (const c of allConsumers) {
                 const targetPath = c.symbol?.path || (c as any).path;
@@ -262,9 +254,25 @@ export function createImpactRouter(
             }
         }
 
-        const maxScore = fileScores.length > 0 ? Math.max(...fileScores) : 0;
-        const extraFilesCount = Math.max(0, uniqueInputPaths.length - 1);
-        const combinedRisk = Math.min(100, maxScore + extraFilesCount * 5);
+        let maxCommitCount = 0;
+        for (const inputPath of uniqueInputPaths) {
+            const fileNode = graph.nodes.find((n) => n.type === "file" && n.path === inputPath);
+            let cCount = 0;
+            if (fileNode) {
+                for (const edge of graph.edges) {
+                    if (edge.type === "changed" && edge.to === fileNode.id) cCount++;
+                }
+            }
+            if (cCount > maxCommitCount) maxCommitCount = cCount;
+        }
+        const churnPercent = Math.min(100, maxCommitCount * 10);
+        const hasNoTests = mergedTestsSet.size === 0;
+
+        let rawCombinedRisk = 4 * directSet.size + 2 * transitiveSet.size + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
+        if (directSet.size === 0 && transitiveSet.size === 0) {
+            rawCombinedRisk = Math.min(15, rawCombinedRisk);
+        }
+        const combinedRisk = Math.min(100, Math.max(0, Math.round(rawCombinedRisk)));
 
         return res.status(200).json({
             combinedRisk,

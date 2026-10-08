@@ -1,16 +1,26 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { Badge, cn, Button } from '../ui';
 import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp, Users, AlertTriangle } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
 import { ConnectedFilesList } from './ConnectedFilesList';
+import { computeRisk } from '../graph-helpers';
 
 export function RightPanel({ className }: { className?: string }) {
-    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl } = useAppStore();
-    const [showReasons, setShowReasons] = useState(true);
+    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit } = useAppStore();
     const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
     const [ownersLoading, setOwnersLoading] = useState(false);
     const [rateLimited, setRateLimited] = useState(false);
+
+    const hotspotFiles = useMemo(() => {
+        if (!graph) return new Set<string>();
+        const files = graph.nodes.filter((n: any) => n.type === 'file');
+        const scored = files.map((f: any) => ({
+            path: f.path || f.id,
+            risk: computeRisk(f.path || f.id, graph, commits).score
+        })).sort((a: any, b: any) => b.risk - a.risk);
+        return new Set<string>(scored.slice(0, 5).map((f: any) => f.path));
+    }, [graph, commits]);
 
     useEffect(() => {
         let isMounted = true;
@@ -64,10 +74,14 @@ export function RightPanel({ className }: { className?: string }) {
 
     // 1. History Tab: selected commit details
     if (activeTab === 'History') {
-        const currentCommit = commits.find(c => c.sha === selectedSha) || commits[0];
+        const currentCommit = selectedHistoryCommit || commits.find(c => c.sha === selectedSha) || commits[0];
         if (!currentCommit) {
             return renderEmptyState("Select a commit from the sidebar to inspect its details");
         }
+        const isHotspot = Boolean(
+            (currentCommit.files && currentCommit.files.some((f: any) => hotspotFiles.has(f.filename || f.path))) ||
+            (selectedFile && hotspotFiles.has(selectedFile))
+        );
         return (
             <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
                 <div className="p-3.5 border-b border-white/10">
@@ -75,6 +89,9 @@ export function RightPanel({ className }: { className?: string }) {
                         <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
                             <Clock size={13} className="text-[#4FD1B5]" />
                             <span>Commit details</span>
+                            {isHotspot && (
+                                <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" title="Touched a hotspot file" />
+                            )}
                         </h3>
                         <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
                             {currentCommit.sha ? currentCommit.sha.substring(0, 7) : 'HEAD'}
@@ -93,7 +110,7 @@ export function RightPanel({ className }: { className?: string }) {
                     <div className="space-y-2 border-t border-white/[0.08] pt-3">
                         <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
                             <span>Author</span>
-                            <span className="text-[#E8EAE6] font-mono">{currentCommit.authorName || 'Unknown'}</span>
+                            <span className="text-[#E8EAE6] font-mono">{currentCommit.authorName || currentCommit.author?.name || 'Unknown'}</span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
                             <span>Hash</span>
@@ -106,6 +123,31 @@ export function RightPanel({ className }: { className?: string }) {
                             </div>
                         )}
                     </div>
+
+                    {currentCommit.files && currentCommit.files.length > 0 && (
+                        <div className="border-t border-white/[0.08] pt-3">
+                            <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Files changed ({currentCommit.files.length})</div>
+                            <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
+                                {currentCommit.files.map((f: any, idx: number) => {
+                                    const fname = f.filename || f.path || '';
+                                    const isHot = hotspotFiles.has(fname);
+                                    return (
+                                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
+                                            <div className="flex items-center gap-1.5 truncate min-w-0">
+                                                {isHot && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
+                                                <span className="font-mono text-[#E8EAE6] truncate" title={fname}>{fname.split('/').pop()}</span>
+                                            </div>
+                                            {(f.additions !== undefined || f.deletions !== undefined) && (
+                                                <span className="text-[10px] font-mono text-[#8A918C] shrink-0 ml-2">
+                                                    <span className="text-[#4FD1B5]">+{f.additions || 0}</span> <span className="text-red-400">-{f.deletions || 0}</span>
+                                                </span>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         );
@@ -266,61 +308,6 @@ export function RightPanel({ className }: { className?: string }) {
                                 </div>
                             </div>
 
-                            {/* Why this score collapsible */}
-                            {impactResult.reasons && impactResult.reasons.length > 0 && (
-                                <div className="pt-2 border-t border-white/[0.08]">
-                                    <button
-                                        onClick={() => setShowReasons(!showReasons)}
-                                        className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
-                                    >
-                                        <span className="font-medium">Why this score</span>
-                                        {showReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                    </button>
-                                    {showReasons && (
-                                        <div className="space-y-1.5 mt-2">
-                                            {impactResult.reasons.map((r, i) => (
-                                                <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
-                                                    <span className="text-[#8A918C] text-[11px]">{r.label}</span>
-                                                    <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Tests to run */}
-                            <div className="pt-2 border-t border-white/[0.08]">
-                                <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
-                                {(() => {
-                                    const tests = (impactResult.tests || [])
-                                        .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
-                                        .filter(Boolean) as string[];
-                                    if (tests.length === 0) {
-                                        return (
-                                            <div className="flex items-center gap-2 text-xs text-[#8A918C] py-1">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 inline-block" />
-                                                <span>No test found for this file</span>
-                                            </div>
-                                        );
-                                    }
-                                    return (
-                                        <div className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-custom">
-                                            {tests.map((testPath, i) => (
-                                                <button
-                                                    key={i}
-                                                    onClick={() => selectFile(testPath)}
-                                                    className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block"
-                                                    title={testPath}
-                                                >
-                                                    {testPath.split('/').pop()}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    );
-                                })()}
-                            </div>
-
                             {impactResult.directCallers.length > 0 && (
                                 <div className="pt-2">
                                     <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Direct callers ({impactResult.directCallers.length})</div>
@@ -328,7 +315,9 @@ export function RightPanel({ className }: { className?: string }) {
                                         {impactResult.directCallers.map((dc, i) => (
                                             <div key={i} className="glass-surface p-2 rounded-md border-white/5 flex justify-between items-center text-xs">
                                                 <span className="font-mono text-[#E8EAE6] truncate">{dc.symbol.name}</span>
-                                                <Badge variant="default">{dc.symbol.type}</Badge>
+                                                <Badge variant="default">
+                                                    {(dc.symbol.type as string) === 'file' ? 'file' : (dc.symbol.type === 'function' || dc.symbol.type === 'method' ? 'function' : dc.symbol.type)}
+                                                </Badge>
                                             </div>
                                         ))}
                                     </div>
@@ -401,7 +390,7 @@ export function RightPanel({ className }: { className?: string }) {
                             </span>
                             {ownersData && ownersData.totalCommits > 0 && (
                                 <span className="text-[10px] text-[#8A918C] font-mono">
-                                    {ownersData.totalCommits} commits
+                                    {ownersData.totalCommits} {ownersData.totalCommits === 1 ? 'commit' : 'commits'}
                                 </span>
                             )}
                         </div>
@@ -424,7 +413,7 @@ export function RightPanel({ className }: { className?: string }) {
                                                     {owner.name}
                                                 </span>
                                                 <span className="text-[11px] font-mono text-[#8A918C]">
-                                                    {owner.share}% <span className="text-[10px] text-white/30">({owner.count})</span>
+                                                    {owner.share}% <span className="text-[10px] text-white/30">({owner.count} {owner.count === 1 ? 'commit' : 'commits'})</span>
                                                 </span>
                                             </div>
                                             <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">

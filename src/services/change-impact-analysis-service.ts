@@ -329,7 +329,7 @@ export class ChangeImpactAnalysisService {
                     const callerResult: ChangeImpactSymbolResult = {
                         symbol: {
                             id: dep.id,
-                            type: "function" as any,
+                            type: "file" as any,
                             name: dep.path.split("/").pop() || dep.path,
                             path: dep.path
                         },

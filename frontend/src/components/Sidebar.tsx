@@ -4,6 +4,7 @@ import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loade
 import { api } from '../api';
 import { cn } from '../ui';
 import { getPathsToAnalyze, isFileInGraph, isCodeFile } from '../analyze-helpers';
+import { selectRepoStats } from '../graph-helpers';
 
 function buildTree(paths: string[]) {
     const root: any = { name: '', children: {}, isDir: true };
@@ -129,22 +130,8 @@ export function Sidebar({ className }: { className?: string }) {
     };
 
     const stats = useMemo(() => {
-        const fileCount = treeFiles && treeFiles.length > 0 ? treeFiles.length : (graph ? graph.nodes.filter(n => n.type === 'file').length : 0);
-        if (!graph && fileCount === 0) return { files: '-', functions: '-', classes: '-', links: '-' };
-        let fn = 0, c = 0;
-        if (graph) {
-            for (const n of graph.nodes) {
-                if (n.type === 'function' || n.type === 'method') fn++;
-                if (n.type === 'class') c++;
-            }
-        }
-        return {
-            files: fileCount.toString(),
-            functions: fn.toString(),
-            classes: c.toString(),
-            links: (graph ? graph.edges.length : 0).toString()
-        };
-    }, [graph, treeFiles]);
+        return selectRepoStats({ graph, treeFiles, commits });
+    }, [graph, treeFiles, commits]);
 
     const filteredTree = useMemo(() => {
         if (!search) return treeFiles;
@@ -185,26 +172,29 @@ export function Sidebar({ className }: { className?: string }) {
                 </div>
 
                 {/* Quick stats in sidebar */}
-                <div className="grid grid-cols-2 gap-1.5 mt-3 pt-3 border-t border-white/[0.08]">
-                    {[
-                        { label: 'Files', val: stats.files },
-                        { label: 'Symbols', val: stats.functions !== '-' ? (Number(stats.functions) + Number(stats.classes)).toString() : '-' },
-                        { label: 'Links', val: stats.links },
-                        { label: 'Hotspots', val: stats.files !== '-' ? Math.min(5, Number(stats.files)).toString() : '-' }
-                    ].map(s => (
-                        <div key={s.label} className="bg-white/[0.02] border border-white/[0.06] rounded-md px-2 py-1.5 flex flex-col">
-                            <span className="text-[10px] text-[#8A918C] font-normal">{s.label}</span>
-                            <span className="text-xs font-semibold text-[#E8EAE6] font-mono mt-0.5 min-h-[16px] flex items-center">
-                                {analyzingFile || (loadingTree && s.val === '-') ? (
-                                    <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
-                                ) : s.val === '-' ? (
-                                    <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
-                                ) : (
-                                    s.val
-                                )}
-                            </span>
-                        </div>
-                    ))}
+                <div className="mt-3 pt-3 border-t border-white/[0.08]">
+                    <div className="text-[10px] text-[#8A918C] mb-1.5 font-mono">
+                        {stats.analyzedFiles} of {stats.totalFiles} files analyzed
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                            { label: 'Files', val: stats.totalFiles.toString() },
+                            { label: 'Symbols', val: stats.symbols.toString() },
+                            { label: 'Links', val: stats.links.toString() },
+                            { label: 'Hotspots', val: stats.hotspots.toString() }
+                        ].map(s => (
+                            <div key={s.label} className="bg-white/[0.02] border border-white/[0.06] rounded-md px-2 py-1.5 flex flex-col">
+                                <span className="text-[10px] text-[#8A918C] font-normal">{s.label}</span>
+                                <span className="text-xs font-semibold text-[#E8EAE6] font-mono mt-0.5 min-h-[16px] flex items-center">
+                                    {analyzingFile || (loadingTree && stats.totalFiles === 0) ? (
+                                        <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
+                                    ) : (
+                                        s.val
+                                    )}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             </div>
 
@@ -237,7 +227,7 @@ export function Sidebar({ className }: { className?: string }) {
                         <div className="flex items-center justify-between px-1">
                             <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
                                 <Layers size={12} className="text-[#4FD1B5]" />
-                                Change set ({changeSet.length})
+                                Change set ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
                             </span>
                             <button
                                 onClick={clearChangeSet}
