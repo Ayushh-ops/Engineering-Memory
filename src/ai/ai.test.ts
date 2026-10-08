@@ -762,7 +762,7 @@ async function main(): Promise<void> {
     assert.equal(autoLangResult.status, "ok");
     const lastInstructions = autoLangProvider.calls[0]?.instructions;
     assert.ok(
-        lastInstructions?.some((inst) => inst.includes("Reply in the same language and script as the user's latest message")),
+        lastInstructions?.some((inst) => inst.includes("Match the script of the user's latest message")),
         "Expected automatic language instruction in provider call"
     );
     assert.ok(

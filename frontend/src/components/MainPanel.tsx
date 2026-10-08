@@ -12,6 +12,7 @@ import { isCodeFile } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
 import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
+import { ErrorBoundary } from './ErrorBoundary';
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
     // Transform to react-flow shape
@@ -236,36 +237,46 @@ export function extractValidEvidence(text: string, analyzedPaths: Set<string>): 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
     if (!text) return [];
 
-    // Clean backslash-escaped backticks: \`code\` -> `code`
-    let clean = text.replace(/\\`/g, '`');
+    let clean = text;
 
-    // Auto-close unclosed **
+    // Auto-close unclosed ** if needed
     const boldMatches = clean.match(/\*\*/g);
     if (boldMatches && boldMatches.length % 2 !== 0) {
         clean += '**';
     }
 
-    // Auto-close unclosed `
-    const codeMatches = clean.match(/`/g);
-    if (codeMatches && codeMatches.length % 2 !== 0) {
+    // Auto-close unclosed single ` if needed during streaming (excluding double backticks)
+    const singleBackticks = clean.replace(/``/g, '').match(/(?<!\\)`/g);
+    if (singleBackticks && singleBackticks.length % 2 !== 0) {
         clean += '`';
     }
 
     const parts: React.ReactNode[] = [];
-    const regex = /(`[^`]+`|\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*)/g;
+    // Priority: double-backtick code, single-backtick code, bold/italic markers
+    const regex = /(``[\s\S]+?``|`[^`\r\n]+`|\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
     while ((match = regex.exec(clean)) !== null) {
         if (match.index > lastIndex) {
-            const raw = clean.slice(lastIndex, match.index).replace(/\*\*/g, '').replace(/`/g, '');
+            const raw = clean.slice(lastIndex, match.index);
             if (raw) parts.push(raw);
         }
         const m = match[0];
-        if (m.startsWith('`') && m.endsWith('`')) {
+        if (m.startsWith('``') && m.endsWith('``') && m.length >= 4) {
+            // Render double-backtick inline code as plain text without interpolation
+            const codeContent = m.slice(2, -2).trim();
             parts.push(
                 <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
-                    {m.slice(1, -1)}
+                    {codeContent}
+                </code>
+            );
+        } else if (m.startsWith('`') && m.endsWith('`') && m.length >= 2) {
+            // Render single-backtick inline code as plain text without interpolation
+            const codeContent = m.slice(1, -1);
+            parts.push(
+                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
+                    {codeContent}
                 </code>
             );
         } else if (m.startsWith('***') && m.endsWith('***')) {
@@ -290,7 +301,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
         lastIndex = match.index + m.length;
     }
     if (lastIndex < clean.length) {
-        const remaining = clean.slice(lastIndex).replace(/\*\*/g, '').replace(/`/g, '');
+        const remaining = clean.slice(lastIndex);
         if (remaining) parts.push(remaining);
     }
     return parts;
@@ -1807,29 +1818,47 @@ export function MainPanel({ className }: { className?: string }) {
     const parseAnswerFollowups = (rawAnswer: string): { cleanAnswer: string; followups: string[] } => {
         if (!rawAnswer) return { cleanAnswer: '', followups: [] };
 
-        const followupRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*(.*)$/im;
+        const followupRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*([\s\S]*)$/i;
         const match = rawAnswer.match(followupRegex);
 
         let cleanAnswer = rawAnswer;
         let followups: string[] = [];
 
+        const isPlaceholder = (text: string) => {
+            const lower = text.toLowerCase().trim();
+            if (lower.length < 5) return true;
+            if (/^q\s*\d+$/i.test(lower)) return true;
+            if (/^question\s*\d*$/i.test(lower)) return true;
+            if (/^<question\s*\d*>$/i.test(lower)) return true;
+            if (/^<q\d+>$/i.test(lower)) return true;
+            if (/^\[question\s*\d*\]$/i.test(lower)) return true;
+            if (lower === 'q1' || lower === 'q2' || lower === 'q3') return true;
+            if (lower.includes('(short questions)') || lower.includes('(3 real') || lower.includes('(generate 3')) return true;
+            return false;
+        };
+
         if (match && match.index !== undefined) {
             cleanAnswer = rawAnswer.slice(0, match.index).trim();
             const trailing = match[1] || '';
-            const parts = trailing.split('|').map(s => s.trim().replace(/^["'*`\s]+|["'*`\s]+$/g, '')).filter(Boolean);
-            if (parts.length > 0) {
-                followups = parts.slice(0, 3);
-            }
+            const candidates = trailing.includes('|') ? trailing.split('|') : trailing.split(/\r?\n/);
+            const cleanCandidates = candidates
+                .map(s => s.trim().replace(/^[-*•\d.)\s]+|["'*`\s]+$/g, '').trim())
+                .filter(Boolean);
+
+            followups = cleanCandidates
+                .filter(q => !isPlaceholder(q))
+                .slice(0, 3);
         } else {
             const lines = rawAnswer.split(/\r?\n/);
             const cleanLines: string[] = [];
             for (const line of lines) {
                 const lineMatch = line.match(/^\s*FOLLOWUPS:\s*(.*)$/i);
                 if (lineMatch) {
-                    const parts = lineMatch[1].split('|').map(s => s.trim().replace(/^["'*`\s]+|["'*`\s]+$/g, '')).filter(Boolean);
-                    if (parts.length > 0) {
-                        followups = parts.slice(0, 3);
-                    }
+                    const parts = lineMatch[1]
+                        .split('|')
+                        .map(s => s.trim().replace(/^[-*•\d.)\s]+|["'*`\s]+$/g, '').trim())
+                        .filter(Boolean);
+                    followups = parts.filter(q => !isPlaceholder(q)).slice(0, 3);
                 } else {
                     cleanLines.push(line);
                 }
@@ -2145,7 +2174,7 @@ export function MainPanel({ className }: { className?: string }) {
 
             {/* Content */}
             <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6] min-h-0", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code' || activeTab === 'Impact' || activeTab === 'ChangeSet') && "flex flex-col")}>
-                <>
+                <ErrorBoundary key={activeTab} name={activeTab}>
                     {/* Overview Tab: hotspots list, composition bar */}
                     {activeTab === 'Overview' && (
                         <div className="space-y-4">
@@ -2160,14 +2189,14 @@ export function MainPanel({ className }: { className?: string }) {
                                             hotspotsList.map((h) => (
                                                 <div
                                                     key={h.id}
-                                                    onClick={() => selectFile(h.path)}
+                                                    onClick={() => h.path && selectFile(h.path)}
                                                     className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] last:border-0 text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
                                                 >
-                                                    <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path}>{h.name}</span>
+                                                    <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path || ''}>{h.name || (h.path ? h.path.split('/').pop() : 'unknown')}</span>
                                                     <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                        <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${h.risk.score}%` }} />
+                                                        <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${Math.min(100, Math.max(0, h.risk?.score || 0))}%` }} />
                                                     </div>
-                                                    <span className="text-[#8A918C] font-mono text-right">{h.risk.directDependents}</span>
+                                                    <span className="text-[#8A918C] font-mono text-right">{h.risk?.directDependents ?? 0}</span>
                                                 </div>
                                             ))
                                         )}
@@ -2185,8 +2214,8 @@ export function MainPanel({ className }: { className?: string }) {
                                                     <div
                                                         key={i}
                                                         className="h-full"
-                                                        style={{ width: `${c.percentage}%`, backgroundColor: c.color }}
-                                                        title={`${c.label}: ${c.percentage}%`}
+                                                        style={{ width: `${c.percentage || 0}%`, backgroundColor: c.color }}
+                                                        title={`${c.label || ''}: ${c.percentage || 0}%`}
                                                     />
                                                 ))}
                                             </div>
@@ -2808,7 +2837,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             <div className="flex items-center gap-2">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6]">Circular imports</h4>
                                                 <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
-                                                    {healthData.circularImports.length}
+                                                    {healthData.circularImports?.length || 0}
                                                 </span>
                                             </div>
                                             {openHealthSections.circular ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
@@ -2816,36 +2845,40 @@ export function MainPanel({ className }: { className?: string }) {
 
                                         {openHealthSections.circular && (
                                             <div className="pt-2 border-t border-white/[0.06] space-y-2">
-                                                {healthData.circularImports.length === 0 ? (
+                                                {(!healthData.circularImports || healthData.circularImports.length === 0) ? (
                                                     <div className="text-xs text-[#8A918C] py-1">None found</div>
                                                 ) : (
                                                     <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-custom pr-1">
-                                                        {healthData.circularImports.map((cycle, i) => (
+                                                        {(healthData.circularImports || []).map((cycle, i) => (
                                                             <div key={i} className="p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs space-y-1.5">
-                                                                <div className="text-[10px] text-[#8A918C] font-mono">Cycle #{i + 1} ({cycle.length} files)</div>
+                                                                <div className="text-[10px] text-[#8A918C] font-mono">Cycle #{i + 1} ({cycle?.length || 0} files)</div>
                                                                 <div className="flex items-center gap-1.5 flex-wrap">
-                                                                    {cycle.map((filePath, fIdx) => (
+                                                                    {(cycle || []).map((filePath, fIdx) => (
                                                                         <div key={fIdx} className="inline-flex items-center gap-1.5">
                                                                             <button
-                                                                                onClick={() => selectFile(filePath)}
+                                                                                onClick={() => filePath && selectFile(filePath)}
                                                                                 className="font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer underline-offset-2 hover:underline"
                                                                                 title={filePath}
                                                                             >
-                                                                                {filePath.split('/').pop()}
+                                                                                {filePath ? filePath.split('/').pop() : ''}
                                                                             </button>
-                                                                            {fIdx < cycle.length - 1 && (
+                                                                            {fIdx < (cycle?.length || 0) - 1 && (
                                                                                 <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
                                                                             )}
                                                                         </div>
                                                                     ))}
-                                                                    <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
-                                                                    <button
-                                                                        onClick={() => selectFile(cycle[0])}
-                                                                        className="font-mono text-xs text-[#8A918C] hover:text-[#4FD1B5] transition-colors cursor-pointer"
-                                                                        title={cycle[0]}
-                                                                    >
-                                                                        {cycle[0].split('/').pop()}
-                                                                    </button>
+                                                                    {cycle && cycle.length > 0 && cycle[0] && (
+                                                                        <>
+                                                                            <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
+                                                                            <button
+                                                                                onClick={() => selectFile(cycle[0])}
+                                                                                className="font-mono text-xs text-[#8A918C] hover:text-[#4FD1B5] transition-colors cursor-pointer"
+                                                                                title={cycle[0]}
+                                                                            >
+                                                                                {cycle[0].split('/').pop()}
+                                                                            </button>
+                                                                        </>
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         ))}
@@ -2864,7 +2897,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             <div className="flex items-center gap-2">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6]">Unused files</h4>
                                                 <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
-                                                    {healthData.unusedFiles.length}
+                                                    {healthData.unusedFiles?.length || 0}
                                                 </span>
                                             </div>
                                             {openHealthSections.unused ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
@@ -2873,18 +2906,18 @@ export function MainPanel({ className }: { className?: string }) {
 
                                         {openHealthSections.unused && (
                                             <div className="pt-2 border-t border-white/[0.06] space-y-2">
-                                                {healthData.unusedFiles.length === 0 ? (
+                                                {(!healthData.unusedFiles || healthData.unusedFiles.length === 0) ? (
                                                     <div className="text-xs text-[#8A918C] py-1">None found</div>
                                                 ) : (
                                                     <div className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-custom pr-1">
-                                                        {healthData.unusedFiles.map((filePath, i) => (
+                                                        {(healthData.unusedFiles || []).map((filePath, i) => (
                                                             <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
                                                                 <button
-                                                                    onClick={() => selectFile(filePath)}
+                                                                    onClick={() => filePath && selectFile(filePath)}
                                                                     className="font-mono text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer truncate text-left"
                                                                     title={filePath}
                                                                 >
-                                                                    {filePath.split('/').pop()}
+                                                                    {filePath ? filePath.split('/').pop() : ''}
                                                                 </button>
                                                                 <span className="text-[10px] font-mono text-[#8A918C]/60 truncate ml-2 max-w-[180px] hidden sm:inline" title={filePath}>
                                                                     {filePath}
@@ -2906,7 +2939,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             <div className="flex items-center gap-2">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6]">God files</h4>
                                                 <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
-                                                    {healthData.godFiles.length}
+                                                    {healthData.godFiles?.length || 0}
                                                 </span>
                                             </div>
                                             {openHealthSections.god ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
@@ -2914,24 +2947,24 @@ export function MainPanel({ className }: { className?: string }) {
 
                                         {openHealthSections.god && (
                                             <div className="pt-2 border-t border-white/[0.06] space-y-2">
-                                                {healthData.godFiles.length === 0 ? (
+                                                {(!healthData.godFiles || healthData.godFiles.length === 0) ? (
                                                     <div className="text-xs text-[#8A918C] py-1">None found</div>
                                                 ) : (
                                                     <div className="space-y-1.5 max-h-60 overflow-y-auto scrollbar-custom pr-1">
-                                                        {healthData.godFiles.map((gf, i) => (
+                                                        {(healthData.godFiles || []).map((gf, i) => (
                                                             <div key={i} className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs">
                                                                 <button
-                                                                    onClick={() => selectFile(gf.path)}
+                                                                    onClick={() => gf?.path && selectFile(gf.path)}
                                                                     className="font-mono text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer truncate text-left"
-                                                                    title={gf.path}
+                                                                    title={gf?.path}
                                                                 >
-                                                                    {gf.path.split('/').pop()}
+                                                                    {gf?.path ? gf.path.split('/').pop() : ''}
                                                                 </button>
                                                                 <div className="flex items-center gap-2">
-                                                                    <span className="text-[10px] font-mono text-[#8A918C]/60 truncate max-w-[140px] hidden sm:inline" title={gf.path}>
-                                                                        {gf.path}
+                                                                    <span className="text-[10px] font-mono text-[#8A918C]/60 truncate max-w-[140px] hidden sm:inline" title={gf?.path}>
+                                                                        {gf?.path}
                                                                     </span>
-                                                                    <Badge variant="amber">{gf.importCount} imports</Badge>
+                                                                    <Badge variant="amber">{gf?.importCount || 0} imports</Badge>
                                                                 </div>
                                                             </div>
                                                         ))}
@@ -3144,12 +3177,12 @@ export function MainPanel({ className }: { className?: string }) {
                                         <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col justify-between">
                                             <div className="flex items-center justify-between">
                                                 <span className="text-xs text-[#8A918C]">Combined risk</span>
-                                                <ShieldAlert size={14} className={changeSetResult.combinedRisk > 60 ? "text-red-400" : changeSetResult.combinedRisk > 30 ? "text-[#E3A04A]" : "text-[#4FD1B5]"} />
+                                                <ShieldAlert size={14} className={(changeSetResult?.combinedRisk || 0) > 60 ? "text-red-400" : (changeSetResult?.combinedRisk || 0) > 30 ? "text-[#E3A04A]" : "text-[#4FD1B5]"} />
                                             </div>
                                             <div className="my-2">
                                                 <div className="flex items-baseline gap-1.5">
                                                     <span className="text-2xl font-bold font-mono text-[#E8EAE6]">
-                                                        {changeSetResult.combinedRisk}
+                                                        {changeSetResult?.combinedRisk ?? 0}
                                                     </span>
                                                     <span className="text-xs text-[#8A918C] font-mono">/ 100</span>
                                                 </div>
@@ -3157,9 +3190,9 @@ export function MainPanel({ className }: { className?: string }) {
                                                     <div
                                                         className={cn(
                                                             "h-full rounded-full transition-all duration-300",
-                                                            changeSetResult.combinedRisk > 60 ? "bg-red-400" : changeSetResult.combinedRisk > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]"
+                                                            (changeSetResult?.combinedRisk || 0) > 60 ? "bg-red-400" : (changeSetResult?.combinedRisk || 0) > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]"
                                                         )}
-                                                        style={{ width: `${Math.min(100, Math.max(5, changeSetResult.combinedRisk))}%` }}
+                                                        style={{ width: `${Math.min(100, Math.max(5, changeSetResult?.combinedRisk || 0))}%` }}
                                                     />
                                                 </div>
                                             </div>
@@ -3176,7 +3209,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             </div>
                                             <div className="my-2">
                                                 <div className="text-2xl font-bold font-mono text-[#E8EAE6]">
-                                                    {changeSetResult.affectedFiles.length}
+                                                    {changeSetResult?.affectedFiles?.length || 0}
                                                 </div>
                                             </div>
                                             <span className="text-[11px] text-[#8A918C]/80">
@@ -3192,7 +3225,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             </div>
                                             <div className="my-2">
                                                 <div className="text-2xl font-bold font-mono text-[#E8EAE6]">
-                                                    {changeSetResult.tests.length}
+                                                    {changeSetResult?.tests?.length || 0}
                                                 </div>
                                             </div>
                                             <span className="text-[11px] text-[#8A918C]/80">
@@ -3208,21 +3241,21 @@ export function MainPanel({ className }: { className?: string }) {
                                             <div className="flex items-center justify-between mb-3">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
                                                     <Activity size={13} className="text-[#4FD1B5]" />
-                                                    Affected files ({changeSetResult.affectedFiles.length})
+                                                    Affected files ({changeSetResult?.affectedFiles?.length || 0})
                                                 </h4>
                                                 <span className="text-[10px] text-[#8A918C] font-mono">Ranked by risk</span>
                                             </div>
                                             <div className="space-y-1.5 max-h-[380px] overflow-y-auto scrollbar-custom pr-1">
-                                                {changeSetResult.affectedFiles.length === 0 ? (
+                                                {(!changeSetResult?.affectedFiles || changeSetResult.affectedFiles.length === 0) ? (
                                                     <div className="p-4 text-center text-xs text-[#8A918C]">
                                                         None found
                                                     </div>
                                                 ) : (
-                                                    changeSetResult.affectedFiles.map((f, i) => {
+                                                    (changeSetResult.affectedFiles || []).map((f, i) => {
                                                         const fileName = f.split('/').pop() || f;
                                                         // Find which input files affect this file
-                                                        const sources = Object.entries(changeSetResult.affectedByInput)
-                                                            .filter(([_, affected]) => affected.includes(f))
+                                                        const sources = Object.entries(changeSetResult?.affectedByInput || {})
+                                                            .filter(([_, affected]) => affected?.includes(f))
                                                             .map(([inp]) => inp.split('/').pop() || inp);
 
                                                         return (
@@ -3262,7 +3295,7 @@ export function MainPanel({ className }: { className?: string }) {
                                             </div>
                                             <div className="space-y-2 max-h-[380px] overflow-y-auto scrollbar-custom pr-1">
                                                 {changeSet.map((inputPath) => {
-                                                    const affected = changeSetResult.affectedByInput[inputPath] || [];
+                                                    const affected = (changeSetResult?.affectedByInput && changeSetResult.affectedByInput[inputPath]) || [];
                                                     const inputName = inputPath.split('/').pop() || inputPath;
                                                     return (
                                                         <div key={inputPath} className="p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] space-y-1.5">
@@ -3322,18 +3355,18 @@ export function MainPanel({ className }: { className?: string }) {
                                         <div className="flex items-center justify-between mb-3">
                                             <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
                                                 <Play size={13} className="text-[#E3A04A]" />
-                                                Tests to run ({changeSetResult.tests.length})
+                                                Tests to run ({changeSetResult?.tests?.length || 0})
                                             </h4>
                                             <span className="text-[10px] text-[#8A918C] font-mono">Suggested test suite</span>
                                         </div>
-                                        {changeSetResult.tests.length === 0 ? (
+                                        {(!changeSetResult?.tests || changeSetResult.tests.length === 0) ? (
                                             <div className="flex items-center gap-2 p-3 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs text-[#8A918C]">
                                                 <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" />
                                                 <span>No tests found for the selected change set.</span>
                                             </div>
                                         ) : (
                                             <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
-                                                {changeSetResult.tests.map((t, idx) => (
+                                                {(changeSetResult.tests || []).map((t, idx) => (
                                                     <div
                                                         key={idx}
                                                         onClick={() => selectFile(t)}
@@ -3363,7 +3396,7 @@ export function MainPanel({ className }: { className?: string }) {
                             Feature not yet implemented.
                         </div>
                     )}
-                </>
+                </ErrorBoundary>
             </div>
         </div>
     );

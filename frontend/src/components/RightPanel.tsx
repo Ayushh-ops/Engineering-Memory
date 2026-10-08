@@ -29,11 +29,6 @@ export function RightPanel({ className }: { className?: string }) {
         return new Set<string>(scored.slice(0, 5).map((f: any) => f.path));
     }, [graph, commits]);
 
-    // Repo-level tabs must not show Node details
-    if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
-        return null;
-    }
-
     useEffect(() => {
         let isMounted = true;
         if (!repoUrl || !selectedFile) {
@@ -69,6 +64,11 @@ export function RightPanel({ className }: { className?: string }) {
             isMounted = false;
         };
     }, [repoUrl, selectedFile, selectedSha]);
+
+    // Repo-level tabs must not show Node details
+    if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
+        return null;
+    }
 
     // Designed empty state
     const renderEmptyState = (message = "Select a node to see what depends on it") => (

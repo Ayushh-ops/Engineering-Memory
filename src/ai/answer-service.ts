@@ -163,8 +163,8 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
-            "Reply in the same language and script as the user's latest message. If the user writes Hindi in Roman script (Hinglish), reply in natural Hinglish. If Devanagari, reply in Hindi. If English, reply in English. Keep code, file names, identifiers and technical terms unchanged. Never mention this rule.",
-            "End with a line FOLLOWUPS: q1 | q2 | q3 (short questions)"
+            "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
+            "End with a line FOLLOWUPS: question 1 | question 2 | question 3 (3 real, specific follow-up questions in the user's language separated by |, never output placeholders like 'q1' or 'q2')"
         ];
 
         const providerRequest: LlmRequest = {
@@ -315,8 +315,8 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
-            "Reply in the same language and script as the user's latest message. If the user writes Hindi in Roman script (Hinglish), reply in natural Hinglish. If Devanagari, reply in Hindi. If English, reply in English. Keep code, file names, identifiers and technical terms unchanged. Never mention this rule.",
-            "End with a line FOLLOWUPS: q1 | q2 | q3 (short questions)"
+            "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
+            "End with a line FOLLOWUPS: question 1 | question 2 | question 3 (3 real, specific follow-up questions in the user's language separated by |, never output placeholders like 'q1' or 'q2')"
         ];
 
         const providerRequest: LlmRequest = {
