@@ -2815,35 +2815,6 @@ ${lastAssistant?.content || 'No response recorded.'}
                             </div>
                         </div>
                     </div>
-
-                    {/* File-level segmented tab bar */}
-                    <div className="flex items-center rounded-lg bg-white/[0.04] p-0.5 border border-white/[0.08] select-none w-fit overflow-x-auto scrollbar-none">
-                        {[
-                            { id: 'Graph', icon: Network, label: 'Graph' },
-                            { id: 'Impact', icon: Activity, label: 'Impact' },
-                            { id: 'Connections', icon: Network, label: 'Connections' },
-                            { id: 'Code', icon: Code2, label: 'Code' },
-                            { id: 'History', icon: Clock, label: 'History' },
-                            { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' }
-                        ].map(t => {
-                            const Icon = t.icon;
-                            const isActive = activeTab === t.id;
-                            return (
-                                <button
-                                    key={t.id} onClick={() => setActiveTab(t.id as any)}
-                                    className={cn(
-                                        "px-3 py-1 text-xs rounded-md font-medium transition-colors flex items-center gap-1.5 cursor-pointer select-none shrink-0",
-                                        isActive
-                                            ? "bg-[#4FD1B5] text-[#04100D] font-semibold shadow-sm"
-                                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04]"
-                                    )}
-                                >
-                                    <Icon size={13} className={isActive ? "text-[#04100D]" : "opacity-70"} />
-                                    <span>{t.label}</span>
-                                </button>
-                            );
-                        })}
-                    </div>
                 </div>
             )}
 

@@ -1,15 +1,34 @@
 import { useState } from 'react';
 import { useAppStore } from '../store';
 import { api } from '../api';
-import { GitBranch, X, Play, Share2, Activity, Clock, MessageSquare, Hexagon, ChevronLeft, ChevronRight } from 'lucide-react';
-import { Button, cn } from '../ui';
+import { GitBranch, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { cn } from '../ui';
 import { useNavigate } from 'react-router-dom';
 
 export function TopBar() {
-    const { repoUrl, setRepoUrl, setMeta, setCommits, activeTab, setActiveTab, setSelectedSha, setSelectedFile, setSelectedSymbol, setImpactResult, setGraph, setTreeFiles } = useAppStore();
+    const {
+        repoUrl,
+        setRepoUrl,
+        setMeta,
+        setCommits,
+        setSelectedSha,
+        setSelectedFile,
+        setSelectedSymbol,
+        setImpactResult,
+        setGraph,
+        setTreeFiles,
+        history,
+        historyIndex,
+        goBack,
+        goForward,
+        setCommandPaletteOpen
+    } = useAppStore();
     const [inputVal, setInputVal] = useState(repoUrl);
     const [loading, setLoading] = useState(false);
     const navigate = useNavigate();
+
+    const canBack = historyIndex > 0;
+    const canForward = historyIndex < history.length - 1;
 
     const handleHomeClick = () => {
         setRepoUrl('');
@@ -22,7 +41,7 @@ export function TopBar() {
         setMeta(null);
         setCommits([]);
         useAppStore.getState().clearHistory();
-        navigate('/')
+        navigate('/');
     };
 
     const handleAnalyze = async () => {
@@ -38,7 +57,6 @@ export function TopBar() {
                 meta = await api.repositories.getMeta(inputVal);
                 state.repoCache[inputVal] = { ...state.repoCache[inputVal], meta };
             }
-            console.log("getMeta done, meta:", meta);
 
             try {
                 const stored = localStorage.getItem('engineering_memory_history');
@@ -53,25 +71,18 @@ export function TopBar() {
                 commits = commitData.commits;
                 state.repoCache[inputVal] = { ...state.repoCache[inputVal], commits };
             }
-            console.log("getCommits done, commits:", commits?.length);
 
             let headSha = null;
             let treeFilesResult: string[] = [];
             if (commits && commits.length > 0) {
                 headSha = commits[0].sha;
-                console.log("sha resolved:", headSha);
-
                 let cachedTree = cache.trees?.[headSha];
                 if (!cachedTree) {
-                    console.log("getTree called with sha=", headSha);
                     const treeRes = await api.repositories.getTree(inputVal, headSha);
                     cachedTree = treeRes.files;
                     state.repoCache[inputVal] = { ...state.repoCache[inputVal], trees: { ...(state.repoCache[inputVal]?.trees || {}), [headSha]: cachedTree } };
                 }
-                console.log("getTree resolved with N files =", cachedTree?.length);
                 treeFilesResult = cachedTree;
-            } else {
-                console.log("No commits found");
             }
 
             setMeta(meta!);
@@ -82,80 +93,104 @@ export function TopBar() {
             setRepoUrl(inputVal);
         } catch (e: any) {
             console.error("Failed to fetch repo", e);
-            console.error("Error details:", e.message, e.missingData, e.status);
-            // real error handling could go here
         } finally {
             setLoading(false);
         }
     };
 
     return (
-        <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 bg-[#07090A] select-none relative z-50">
-            <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 cursor-pointer hover:opacity-85 transition-opacity" onClick={handleHomeClick}>
-                    <span className="w-4 h-4 border border-[#4FD1B5] rotate-45 rounded-[3px] relative flex items-center justify-center">
-                        <span className="w-1.5 h-1.5 bg-[#4FD1B5] rounded-[1px]" />
-                    </span>
-                    <span className="font-semibold text-xs tracking-tight text-[#E8EAE6]">Engineering Memory</span>
-                </div>
-
-                <div className="flex items-center gap-0.5 border-l border-white/10 pl-2.5 ml-1">
+        <div className="h-12 border-b border-white/[0.08] flex items-center justify-between px-3 bg-[#07090A] select-none relative z-50 gap-3">
+            {/* 1. Back and forward 32px filled buttons, then wordmark */}
+            <div className="flex items-center gap-3 shrink-0">
+                <div className="flex items-center gap-1.5">
                     <button
-                        onClick={() => useAppStore.getState().goBack()}
-                        disabled={!useAppStore.getState().canGoBack()}
-                        className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] disabled:opacity-20 disabled:hover:bg-transparent transition-colors cursor-pointer"
+                        onClick={goBack}
+                        disabled={!canBack}
+                        className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center transition-colors border",
+                            canBack
+                                ? "bg-[#15302A] border-[#2F6B5E] text-[#4FD1B5] hover:bg-[#1D4038] hover:border-[#4FD1B5] cursor-pointer"
+                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 cursor-not-allowed"
+                        )}
                         title="Back"
                     >
                         <ChevronLeft size={16} />
                     </button>
                     <button
-                        onClick={() => useAppStore.getState().goForward()}
-                        disabled={!useAppStore.getState().canGoForward()}
-                        className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] disabled:opacity-20 disabled:hover:bg-transparent transition-colors cursor-pointer"
+                        onClick={goForward}
+                        disabled={!canForward}
+                        className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center transition-colors border",
+                            canForward
+                                ? "bg-[#15302A] border-[#2F6B5E] text-[#4FD1B5] hover:bg-[#1D4038] hover:border-[#4FD1B5] cursor-pointer"
+                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 cursor-not-allowed"
+                        )}
                         title="Forward"
                     >
                         <ChevronRight size={16} />
                     </button>
                 </div>
-            </div>
 
-            <div className="flex-1 flex justify-center px-4 max-w-xl">
-                <div className="flex items-center w-full">
-                    <div className="relative flex-1 group">
-                        <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8A918C]" size={14} />
-                        <input
-                            value={inputVal}
-                            onChange={(e) => setInputVal(e.target.value)}
-                            onKeyDown={e => e.key === 'Enter' && handleAnalyze()}
-                            className="w-full bg-white/[0.03] border border-white/10 rounded-l-lg py-1.5 pl-8 pr-7 text-xs font-mono text-[#E8EAE6] focus:outline-none focus:border-[#4FD1B5]/50 transition-colors placeholder:text-[#8A918C]/60"
-                            placeholder="https://github.com/owner/repo"
-                        />
-                        {inputVal && (
-                            <button onClick={() => setInputVal('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer">
-                                <X size={13} />
-                            </button>
-                        )}
-                    </div>
-                    <Button onClick={handleAnalyze} disabled={loading} className="rounded-l-none text-xs py-1.5 px-3 min-w-[76px]">
-                        {loading ? 'Analyzing...' : 'Analyze'}
-                    </Button>
+                <div
+                    className="flex items-center gap-2 cursor-pointer hover:opacity-85 transition-opacity shrink-0"
+                    onClick={handleHomeClick}
+                >
+                    <span className="w-4 h-4 border border-[#4FD1B5] rotate-45 rounded-[3px] relative flex items-center justify-center shrink-0">
+                        <span className="w-1.5 h-1.5 bg-[#4FD1B5] rounded-[1px]" />
+                    </span>
+                    <span className="font-semibold text-xs tracking-tight text-[#E8EAE6] whitespace-nowrap">
+                        Engineering Memory
+                    </span>
                 </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs">
+            {/* 2. URL pill (mono, truncated) + Analyze (accent bg, on-accent text) */}
+            <div className="flex-1 flex items-center justify-center max-w-xl mx-2 min-w-0">
+                <div className="flex items-center gap-2 w-full">
+                    <div className="relative flex-1 flex items-center bg-white/[0.03] border border-white/[0.08] rounded-full px-3 py-1 focus-within:border-[#4FD1B5]/50 transition-colors min-w-0">
+                        <GitBranch className="text-[#8A918C] mr-2 shrink-0" size={13} />
+                        <input
+                            value={inputVal}
+                            onChange={(e) => setInputVal(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleAnalyze()}
+                            className="w-full bg-transparent text-xs font-mono text-[#E8EAE6] focus:outline-none placeholder:text-[#8A918C]/60 truncate"
+                            placeholder="https://github.com/owner/repo"
+                        />
+                        {inputVal && (
+                            <button
+                                onClick={() => setInputVal('')}
+                                className="text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer ml-1 shrink-0"
+                                title="Clear URL"
+                            >
+                                <X size={12} />
+                            </button>
+                        )}
+                    </div>
+                    <button
+                        onClick={handleAnalyze}
+                        disabled={loading || !inputVal}
+                        className="px-3.5 py-1 text-xs font-medium bg-[#4FD1B5] text-[#04100D] rounded-full hover:brightness-110 active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer whitespace-nowrap shrink-0 shadow-sm"
+                    >
+                        {loading ? 'Analyzing...' : 'Analyze'}
+                    </button>
+                </div>
+            </div>
+
+            {/* 3. "Search files" button with "Ctrl K" hint chip, Home */}
+            <div className="flex items-center gap-2 text-xs shrink-0">
                 <button
-                    onClick={() => useAppStore.getState().setCommandPaletteOpen(true)}
-                    className="flex items-center gap-2 px-2.5 py-1 rounded bg-white/[0.03] border border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer"
+                    onClick={() => setCommandPaletteOpen(true)}
+                    className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-white/[0.03] border border-white/[0.08] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer text-xs shrink-0"
                     title="Search files (Ctrl+K)"
                 >
                     <span>Search files</span>
-                    <kbd className="font-mono text-[10px] text-[#8A918C] bg-white/[0.06] px-1.5 py-0.5 rounded border border-white/10">
+                    <kbd className="font-mono text-[10px] text-[#8A918C] bg-white/[0.06] px-1.5 py-0.5 rounded border border-white/[0.08]">
                         Ctrl K
                     </kbd>
                 </button>
                 <button
                     onClick={handleHomeClick}
-                    className="text-[#8A918C] hover:text-[#E8EAE6] text-xs transition-colors cursor-pointer px-2 py-1 rounded hover:bg-white/[0.04]"
+                    className="text-[#8A918C] hover:text-[#E8EAE6] text-xs transition-colors cursor-pointer px-2.5 py-1 rounded-lg hover:bg-white/[0.04] shrink-0"
                 >
                     Home
                 </button>

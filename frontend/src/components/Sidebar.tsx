@@ -1,9 +1,9 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useAppStore } from '../store';
-import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers, Hexagon, HeartPulse } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers, Hexagon, HeartPulse, Network, Activity, Clock, MessageSquare, Code2 } from 'lucide-react';
 import { api } from '../api';
 import { cn } from '../ui';
-import { getPathsToAnalyze, isFileInGraph, isCodeFile } from '../analyze-helpers';
+import { getPathsToAnalyze, isCodeFile } from '../analyze-helpers';
 import { selectRepoStats } from '../graph-helpers';
 
 function buildTree(paths: string[]) {
@@ -32,8 +32,8 @@ function TreeFolder({ node, onSelect, selectedFile, depth = 0 }: any) {
         return (
             <div
                 onClick={() => onSelect(node.path)}
-                style={{ paddingLeft: `${depth * 12 + 6}px` }}
-                title={!isCode ? "Not analyzed" : undefined}
+                style={{ paddingLeft: `${depth * 10 + 6}px` }}
+                title={!isCode ? "Not analyzed" : node.path}
                 className={cn(
                     "flex items-center gap-1.5 py-1 text-xs cursor-pointer rounded-md mr-1 font-mono transition-colors",
                     isSelected
@@ -52,7 +52,7 @@ function TreeFolder({ node, onSelect, selectedFile, depth = 0 }: any) {
             {node.name && (
                 <div
                     onClick={() => setExpanded(!expanded)}
-                    style={{ paddingLeft: `${(depth - 1) * 12 + 6}px` }}
+                    style={{ paddingLeft: `${(depth - 1) * 10 + 6}px` }}
                     className="flex items-center gap-1.5 py-1 text-xs cursor-pointer text-[#8A918C] hover:text-[#E8EAE6] mr-1 rounded-md transition-colors"
                 >
                     {expanded ? <ChevronDown size={13} className="shrink-0 opacity-70" /> : <ChevronRight size={13} className="shrink-0 opacity-70" />}
@@ -83,14 +83,12 @@ export function Sidebar({ className }: { className?: string }) {
     const {
         repoUrl, meta, commits, selectedSha, setSelectedSha,
         treeFiles, setTreeFiles, graph, setGraph, selectedFile,
-        setSelectedFile, setSelectedSymbol, setImpactResult,
         changeSet, removeFromChangeSet, clearChangeSet,
         setChangeSetResult, changeSetLoading, setChangeSetLoading,
         activeTab, setActiveTab, repoCache, cacheShaAnalysis
     } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
-    const [analyzingFile, setAnalyzingFile] = useState(false);
 
     const handleAnalyzeChangeSet = async () => {
         if (!graph || changeSet.length === 0) return;
@@ -131,24 +129,15 @@ export function Sidebar({ className }: { className?: string }) {
     };
 
     const handleFileSelect = async (path: string) => {
-        setAnalyzingFile(true);
         try {
             await useAppStore.getState().selectFile(path);
             if (['Overview', 'ChangeSet', 'Health'].includes(useAppStore.getState().activeTab)) {
                 useAppStore.getState().setActiveTab('Graph');
             }
-        } finally {
-            setAnalyzingFile(false);
+        } catch (e) {
+            console.error('Failed to select file', e);
         }
     };
-
-    const stats = useMemo(() => {
-        if (repoUrl && selectedSha) {
-            const cachedStats = repoCache[repoUrl]?.shaAnalysis?.[selectedSha]?.stats;
-            if (cachedStats) return cachedStats;
-        }
-        return selectRepoStats({ graph, treeFiles, commits });
-    }, [repoUrl, selectedSha, repoCache, graph, treeFiles, commits]);
 
     const filteredTree = useMemo(() => {
         if (!search) return treeFiles;
@@ -158,14 +147,15 @@ export function Sidebar({ className }: { className?: string }) {
     const repoName = meta?.fullName || (repoUrl ? repoUrl.replace(/^https?:\/\/github\.com\//, '') : 'Repository');
 
     return (
-        <div className={cn("flex flex-col bg-[#07090A] border-r border-white/10 select-none", className)}>
-            <div className="p-3.5 border-b border-white/10">
+        <div className={cn("w-[210px] min-w-[210px] max-w-[210px] flex flex-col bg-[#07090A] border-r border-white/[0.08] select-none h-full overflow-hidden shrink-0", className)}>
+            {/* Top header: Repo name, branch & commit chips */}
+            <div className="p-3 border-b border-white/[0.08] shrink-0">
                 <div className="text-[13px] font-semibold text-[#E8EAE6] truncate" title={repoName}>
                     {repoName}
                 </div>
 
                 <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
+                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/[0.08] bg-white/[0.03] text-[#8A918C]">
                         main
                     </span>
                     {commits.length > 0 ? (
@@ -173,7 +163,7 @@ export function Sidebar({ className }: { className?: string }) {
                             title="Select commit"
                             value={selectedSha || ''}
                             onChange={(e) => handleShaChange(e.target.value)}
-                            className="bg-white/[0.03] border border-white/10 rounded-full px-2 py-0.5 text-[11px] font-mono text-[#8A918C] cursor-pointer outline-none hover:text-[#E8EAE6] hover:border-white/20 transition-colors"
+                            className="bg-white/[0.03] border border-white/[0.08] rounded-full px-2 py-0.5 text-[11px] font-mono text-[#8A918C] cursor-pointer outline-none hover:text-[#E8EAE6] hover:border-white/20 transition-colors"
                         >
                             {commits.map(c => (
                                 <option key={c.sha} value={c.sha} className="bg-[#07090A] text-[#E8EAE6]">
@@ -182,15 +172,18 @@ export function Sidebar({ className }: { className?: string }) {
                             ))}
                         </select>
                     ) : (
-                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#8A918C]">
+                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/[0.08] bg-white/[0.03] text-[#8A918C]">
                             {selectedSha ? selectedSha.substring(0, 7) : 'eeda9e2'}
                         </span>
                     )}
                 </div>
+            </div>
 
-                {/* Repository section */}
-                <div className="mt-3 pt-3 border-t border-white/[0.08]">
-                    <div className="text-[11px] font-semibold text-[#8A918C] px-1 mb-1.5">
+            {/* Navigation groups */}
+            <div className="p-2 border-b border-white/[0.08] shrink-0 space-y-3">
+                {/* Repository group */}
+                <div>
+                    <div className="text-[11px] font-medium text-[#8A918C] px-2 pb-1">
                         Repository
                     </div>
                     <div className="space-y-0.5">
@@ -206,10 +199,10 @@ export function Sidebar({ className }: { className?: string }) {
                                     key={item.id}
                                     onClick={() => setActiveTab(item.id as any)}
                                     className={cn(
-                                        "w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer text-left select-none",
+                                        "w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer text-left select-none relative",
                                         isActive
-                                            ? "bg-[#4FD1B5]/15 text-[#4FD1B5] border border-[#4FD1B5]/30 font-semibold"
-                                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] border border-transparent"
+                                            ? "text-[#E8EAE6] bg-white/[0.06] font-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:bg-[#4FD1B5] before:rounded-[2px]"
+                                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04]"
                                     )}
                                 >
                                     <Icon size={14} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
@@ -220,50 +213,90 @@ export function Sidebar({ className }: { className?: string }) {
                     </div>
                 </div>
 
-                {/* Quick stats in sidebar */}
-                <div className="mt-3 pt-3 border-t border-white/[0.08]">
-                    <div className="text-[10px] text-[#8A918C] mb-1.5 font-mono">
-                        {stats.analyzedFiles} of {stats.totalFiles} files analyzed
+                {/* This file group */}
+                <div>
+                    <div className="text-[11px] font-medium text-[#8A918C] px-2 pb-1">
+                        This file
                     </div>
-                    <div className="grid grid-cols-2 gap-1.5">
-                        {[
-                            { label: 'Files', val: stats.totalFiles.toString() },
-                            { label: 'Symbols', val: stats.symbols.toString() },
-                            { label: 'Links', val: stats.links.toString() },
-                            { label: 'Hotspots', val: stats.hotspots.toString() }
-                        ].map(s => (
-                            <div key={s.label} className="bg-white/[0.02] border border-white/[0.06] rounded-md px-2 py-1.5 flex flex-col">
-                                <span className="text-[10px] text-[#8A918C] font-normal">{s.label}</span>
-                                <span className="text-xs font-semibold text-[#E8EAE6] font-mono mt-0.5 min-h-[16px] flex items-center">
-                                    {analyzingFile || (loadingTree && stats.totalFiles === 0) ? (
-                                        <span className="inline-block w-8 h-3 rounded bg-white/[0.08] animate-pulse" />
-                                    ) : (
-                                        s.val
-                                    )}
-                                </span>
+                    {selectedFile ? (
+                        <div className="space-y-0.5">
+                            {[
+                                { id: 'Graph', icon: Network, label: 'Graph' },
+                                { id: 'Impact', icon: Activity, label: 'Impact' },
+                                { id: 'Connections', icon: Network, label: 'Connections' },
+                                { id: 'Code', icon: Code2, label: 'Code' },
+                                { id: 'History', icon: Clock, label: 'History' },
+                                { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' },
+                            ].map(item => {
+                                const Icon = item.icon;
+                                const isActive = activeTab === item.id;
+                                return (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => setActiveTab(item.id as any)}
+                                        className={cn(
+                                            "w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer text-left select-none relative",
+                                            isActive
+                                                ? "text-[#E8EAE6] bg-white/[0.06] font-medium before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[2px] before:bg-[#4FD1B5] before:rounded-[2px]"
+                                                : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04]"
+                                        )}
+                                    >
+                                        <Icon size={14} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
+                                        <span>{item.label}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div className="space-y-1">
+                            <div className="space-y-0.5 opacity-40 pointer-events-none select-none">
+                                {[
+                                    { id: 'Graph', icon: Network, label: 'Graph' },
+                                    { id: 'Impact', icon: Activity, label: 'Impact' },
+                                    { id: 'Connections', icon: Network, label: 'Connections' },
+                                    { id: 'Code', icon: Code2, label: 'Code' },
+                                    { id: 'History', icon: Clock, label: 'History' },
+                                    { id: 'AskAI', icon: MessageSquare, label: 'Ask AI' },
+                                ].map(item => {
+                                    const Icon = item.icon;
+                                    return (
+                                        <div
+                                            key={item.id}
+                                            className="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-[#8A918C]"
+                                        >
+                                            <Icon size={14} className="opacity-70" />
+                                            <span>{item.label}</span>
+                                        </div>
+                                    );
+                                })}
                             </div>
-                        ))}
-                    </div>
+                            <div className="text-[11px] text-[#8A918C]/80 px-2.5 py-1 italic leading-tight">
+                                Pick a file to unlock these.
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
-            <div className="flex-1 flex flex-col p-2.5 overflow-hidden">
+            {/* Files tree section */}
+            <div className="flex-1 flex flex-col p-2.5 min-h-0 overflow-hidden">
                 <div className="text-[11px] font-medium text-[#8A918C] px-1 mb-1.5">
                     Files
                 </div>
                 <div className="relative mb-2 shrink-0">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8A918C]" size={13} />
                     <input
-                        value={search} onChange={e => setSearch(e.target.value)}
+                        value={search}
+                        onChange={e => setSearch(e.target.value)}
                         placeholder="Search files..."
-                        className="w-full bg-white/[0.03] border border-white/10 rounded-md py-1 pl-7 pr-2 text-xs font-mono text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 transition-colors"
+                        className="w-full bg-white/[0.03] border border-white/[0.08] rounded-md py-1 pl-7 pr-2 text-xs font-mono text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 transition-colors"
                     />
                 </div>
-                <div className="flex-1 overflow-y-auto scrollbar-custom pt-1 pb-4">
+                <div className="flex-1 overflow-y-auto scrollbar-custom pt-0.5 pb-2">
                     {loadingTree ? (
                         <div className="text-xs p-4 text-[#8A918C] flex items-center justify-center gap-2">
                             <Loader2 size={14} className="animate-spin text-[#4FD1B5]" />
-                            Loading tree...
+                            <span>Loading tree...</span>
                         </div>
                     ) : (
                         renderTree(filteredTree, handleFileSelect, selectedFile)
@@ -272,11 +305,11 @@ export function Sidebar({ className }: { className?: string }) {
 
                 {/* Change Set Tray */}
                 {changeSet.length > 0 && (
-                    <div className="mt-2 pt-2.5 border-t border-white/10 shrink-0 flex flex-col gap-2">
+                    <div className="mt-2 pt-2 border-t border-white/[0.08] shrink-0 flex flex-col gap-1.5">
                         <div className="flex items-center justify-between px-1">
                             <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
                                 <Layers size={12} className="text-[#4FD1B5]" />
-                                Change set ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
+                                <span>Change set ({changeSet.length})</span>
                             </span>
                             <button
                                 onClick={clearChangeSet}
@@ -286,11 +319,11 @@ export function Sidebar({ className }: { className?: string }) {
                                 Clear
                             </button>
                         </div>
-                        <div className="max-h-28 overflow-y-auto scrollbar-custom space-y-1 pr-1">
+                        <div className="max-h-24 overflow-y-auto scrollbar-custom space-y-1 pr-1">
                             {changeSet.map((path) => (
                                 <div
                                     key={path}
-                                    className="flex items-center justify-between px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono group"
+                                    className="flex items-center justify-between px-2 py-0.5 rounded bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono group"
                                 >
                                     <span
                                         onClick={() => handleFileSelect(path)}

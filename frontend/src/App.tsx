@@ -19,11 +19,11 @@ export default function App() {
             {!repoUrl ? (
                 <LandingPage />
             ) : (
-                <div className="flex flex-col h-screen overflow-hidden text-sm bg-[#0a0a0b] text-gray-200">
+                <div className="flex flex-col h-screen overflow-hidden text-sm bg-[#07090A] text-[#E8EAE6]">
                     <TopBar />
                     <div className="flex flex-1 overflow-hidden">
-                        <Sidebar className="w-64 flex-shrink-0 border-r border-zinc-800" />
-                        <MainPanel className="flex-1 flex flex-col border-r border-zinc-800 overflow-hidden" />
+                        <Sidebar className="w-[210px] flex-shrink-0" />
+                        <MainPanel className="flex-1 flex flex-col overflow-hidden" />
                         <RightPanel className="w-80 flex-shrink-0" />
                     </div>
                 </div>

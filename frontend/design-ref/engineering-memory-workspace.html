@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Engineering Memory workspace</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--pg:#EEF0F2;--ink:#14171a}
+@media(prefers-color-scheme:dark){:root:not([data-theme=light]){--pg:#050607;--ink:#E6E8EA}}
+:root[data-theme=dark]{--pg:#050607;--ink:#E6E8EA}
+*,*:before,*:after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--pg);color:var(--ink);font:14px/1.5 'Bricolage Grotesque',system-ui,sans-serif;padding:14px}
+.ctl{max-width:1200px;margin:0 auto 10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}.ctl button{font:inherit;color:var(--ink);background:none;border:1px solid rgba(128,128,140,.4);border-radius:8px;padding:6px 12px;cursor:pointer}.ctl button.on{background:var(--ink);color:var(--pg)}.ctl span{font-size:13px;opacity:.7}
+#app{--bg:#07090A;--ln:rgba(255,255,255,.08);--l2:rgba(255,255,255,.16);--tx:#E8EAE6;--mu:#8A918C;--ac:#4FD1B5;--wm:#E3A04A;--on:#04100D;max-width:1200px;margin:0 auto;height:700px;position:relative;overflow:hidden;border-radius:14px;border:1px solid var(--ln);background:radial-gradient(ellipse at 70% -10%,rgba(79,209,181,.07),transparent 50%),var(--bg);color:var(--tx);display:flex;flex-direction:column}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+.tb{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--ln)}
+.nb{width:32px;height:32px;display:grid;place-items:center;border:1px solid #2F6B5E;border-radius:8px;background:#15302A;color:var(--ac);cursor:pointer;transition:background .2s,border-color .2s}.nb:hover{border-color:var(--ac);background:#1D4038}.nb[disabled]{background:#171D1E;border-color:var(--ln);color:#5C6663;cursor:default}.nb svg{width:16px;height:16px}
+.wm{display:flex;align-items:center;gap:9px;font-weight:600;margin-right:6px;white-space:nowrap}.mk{width:18px;height:18px;border:1.5px solid var(--ac);transform:rotate(45deg);border-radius:4px;position:relative}.mk:after{content:"";position:absolute;inset:3.5px;background:var(--ac);border-radius:1.5px}
+.url{flex:1;max-width:420px;margin:0 auto;padding:7px 12px;border:1px solid var(--ln);border-radius:8px;color:var(--mu);font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.btn{font:inherit;font-weight:500;border:0;border-radius:8px;padding:8px 15px;background:var(--ac);color:var(--on);cursor:pointer;transition:filter .2s}.btn:hover{filter:brightness(1.1)}
+.gh{font:inherit;background:none;border:1px solid var(--l2);color:var(--tx);border-radius:8px;padding:7px 12px;cursor:pointer}.gh:hover{border-color:var(--mu)}
+.kb{font-size:11px;border:1px solid var(--ln);border-radius:5px;padding:0 5px;color:var(--mu);margin-left:8px}
+.bd{flex:1;min-height:0;display:grid;position:relative}
+[data-l=a] .bd{grid-template-columns:210px minmax(0,1fr)}[data-l=b] .bd{grid-template-columns:210px minmax(0,1fr) 290px}
+.rail{border-right:1px solid var(--ln);padding:16px 14px;overflow:auto}
+.rp{font-weight:600;margin:0;word-break:break-all}.ch{display:inline-block;font-size:11px;border:1px solid var(--ln);border-radius:99px;padding:0 8px;margin:6px 4px 12px 0;color:var(--mu)}
+.gl{font-size:12px;color:var(--mu);margin:12px 0 4px}
+.nv{padding:6px 10px;color:var(--mu);border-radius:6px;position:relative;font-size:14px}.nv.on{color:var(--tx);background:rgba(255,255,255,.05)}.nv.on:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;background:var(--ac)}.nv.off{opacity:.4}
+.hint{font-size:12px;color:var(--mu);padding:2px 10px 0}
+.mn{overflow:auto;padding:30px 36px 34px;min-width:0}
+.ey{font-size:12px;color:var(--mu)}
+h1{font-size:36px;line-height:1.08;letter-spacing:-.03em;font-weight:600;margin:10px 0 10px;max-width:640px}
+h1 u{text-decoration:none;box-shadow:inset 0 -.18em 0 rgba(227,160,74,.45)}
+.sub{color:var(--mu);max-width:560px;margin:0 0 4px}.sub a{color:var(--ac);cursor:pointer;border-bottom:1px solid rgba(79,209,181,.4)}
+.st{display:grid;grid-template-columns:repeat(3,1fr);margin:26px 0 28px;border-top:1px solid var(--ln);border-bottom:1px solid var(--ln)}
+.st div{padding:16px 18px 16px 0;border-right:1px solid var(--ln);margin-right:18px}.st div:last-child{border:0;margin:0}
+.st b{display:block;font-size:34px;font-weight:600;letter-spacing:-.04em;color:var(--ac);line-height:1.1}.st span{font-size:13px;color:var(--mu)}
+.two{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:34px}
+h3{font-size:13px;font-weight:500;color:var(--mu);margin:0 0 6px}
+.rw{display:grid;grid-template-columns:28px minmax(0,1.1fr) minmax(0,1fr) 70px 26px;gap:12px;align-items:center;padding:11px 8px;border-bottom:1px solid var(--ln);cursor:pointer;transition:background .2s;font-size:13px}.rw:hover,.rw.on{background:rgba(255,255,255,.04)}
+.rw .n{color:var(--mu);font-size:12px}.rw .f{font-weight:500;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rw small{display:block;color:var(--mu);font-size:11px;font-weight:400}.rw .y{color:var(--mu);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:3px;background:var(--ln);position:relative}.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--wm)}.rw b{text-align:right;font-weight:500}
+.steps{display:grid;gap:0}.stp{display:grid;grid-template-columns:36px 1fr;gap:6px;padding:12px 0;border-bottom:1px solid var(--ln)}.stp i{font-style:normal;font-size:26px;font-weight:600;color:var(--ac);line-height:1;letter-spacing:-.04em}.stp b{display:block;font-weight:500}.stp span{color:var(--mu);font-size:13px}
+.hl{display:flex;gap:10px;align-items:baseline;padding:6px 0;font-size:13px;color:var(--mu)}.hl i{width:6px;height:6px;border-radius:50%;background:var(--ac);flex:none;transform:translateY(-1px)}.hl.w i{background:var(--wm)}.hl b{color:var(--tx);font-weight:500}
+svg.map{width:100%;height:150px;margin-top:6px}
+.insp{padding:20px 20px;overflow:auto;border-left:1px solid var(--ln);background:rgba(7,9,10,.92)}
+[data-l=a] .insp{position:absolute;right:0;top:0;bottom:0;width:330px;transform:translateX(102%);transition:transform .35s cubic-bezier(.22,1,.36,1);background:rgba(10,13,14,.96);backdrop-filter:blur(14px);z-index:3}[data-l=a] .insp.open{transform:none}
+.insp h4{margin:0;font-size:17px;font-weight:600;word-break:break-all}.insp .pth{color:var(--mu);font-size:12px;margin:2px 0 14px}
+.big{font-size:44px;font-weight:600;letter-spacing:-.05em;line-height:1;color:var(--wm)}.big small{font-size:14px;color:var(--mu);letter-spacing:0;font-weight:400}
+.kv{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--ln);font-size:13px;color:var(--mu)}.kv b{color:var(--tx);font-weight:500}
+.x{position:absolute;right:14px;top:14px}[data-l=b] .x{display:none}
+.emp{height:100%;display:grid;place-content:center;text-align:center;color:var(--mu);font-size:13px;gap:6px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:900px){#app{height:760px}[data-l=a] .bd,[data-l=b] .bd{grid-template-columns:1fr}.rail,[data-l=b] .insp{display:none}.mn{padding:22px 18px}.two{grid-template-columns:1fr}h1{font-size:28px}.rw{grid-template-columns:24px 1fr 60px}.rw .y,.rw .bar{display:none}.url{display:none}}
+</style></head><body>
+<div class="ctl" id="ct"></div>
+<div id="app" data-l="a"></div>
+<script>
+var $=function(i){return document.getElementById(i)};
+var F=[['client.js','web/src/api',71,'Imported by 4 files, reaches 15',['AdminDashboard.jsx','IssueDetail.jsx','MapView.jsx','TicketList.jsx'],'Ayushh-ops','2 commits'],['App.jsx','web/src',54,'Imported by 3 files, reaches 9',['main.jsx','Routes.jsx','Layout.jsx'],'Dhairya','6 commits'],['complaints.js','web/src/api',46,'Imported by 2 files, reaches 7',['ReportForm.jsx','MyIssues.jsx'],'Ayushh-ops','3 commits'],['Login.jsx','web/src/components',38,'Imported by 2 files, reaches 4',['App.jsx','RoleContext.jsx'],'Dhairya','4 commits'],['RoleContext.jsx','web/src/context',33,'Imported by 2 files, reaches 5',['App.jsx','Login.jsx'],'Dhairya','2 commits']];
+var S={l:'a',sel:null};
+var CH='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>';
+var CR='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>';
+function bar(){return '<div class="tb"><button class="nb" aria-label="Back">'+CH+'</button><button class="nb" aria-label="Forward">'+CR+'</button><span class="wm"><span class="mk"></span>Engineering Memory</span><span class="url mono">github.com/dhairyaya/ACTS_project</span><button class="btn">Analyze</button><button class="gh">Search files<span class="kb mono">Ctrl K</span></button><button class="gh">Home</button></div>'}
+function rail(){var R=['Overview','Change set','Health'],Fl=['Graph','Impact','Connections','Code','History','Ask AI'];return '<div class="rail"><p class="rp">dhairyaya/ACTS_project</p><span class="ch mono">main</span><span class="ch mono">eeda9e2</span><div class="gl">Repository</div>'+R.map(function(x,i){return '<div class="nv'+(i?'':' on')+'">'+x+'</div>'}).join('')+'<div class="gl">This file</div>'+Fl.map(function(x){return '<div class="nv'+(S.sel===null?' off':'')+'">'+x+'</div>'}).join('')+(S.sel===null?'<p class="hint">Pick a file to unlock these.</p>':'')+'</div>'}
+function map(){var P=[[30,80],[80,40],[90,110],[150,70,1],[200,30],[215,100],[270,60],[330,90],[370,40],[300,20],[120,130],[250,135]],E=[[0,1],[0,2],[1,3],[2,3],[3,4],[3,5],[4,6],[5,6],[6,7],[6,8],[4,9],[2,10],[5,11]],s='<svg class="map" viewBox="0 0 400 150" role="img"><title>Repository map</title><g stroke="rgba(255,255,255,.14)">'+E.map(function(e){return '<line x1="'+P[e[0]][0]+'" y1="'+P[e[0]][1]+'" x2="'+P[e[1]][0]+'" y2="'+P[e[1]][1]+'"/>'}).join('')+'</g>';P.forEach(function(p,i){var h=i==3||i==6||i==5;s+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(h?6:3.5)+'" fill="'+(h?'#E3A04A':'#4FD1B5')+'" opacity="'+(h?1:.7)+'"/>'});return s+'</svg>'}
+function main(){return '<div class="mn"><div class="ey mono">dhairyaya/ACTS_project</div><h1>Five files carry most of the risk. Start with <u>client.js</u>.</h1><p class="sub">52 of 218 files analyzed. <a>Analyze all files</a></p><div class="st"><div><b>52</b><span>files analyzed</span></div><div><b>154</b><span>symbols mapped</span></div><div><b>283</b><span>links between them</span></div></div><div class="two"><div><h3>Where a change is riskiest</h3>'+F.map(function(f,i){return '<div class="rw'+(S.sel===i?' on':'')+'" data-i="'+i+'"><span class="n mono">0'+(i+1)+'</span><span class="f mono">'+f[0]+'<small>'+f[1]+'</small></span><span class="y">'+f[3]+'</span><span class="bar"><i style="width:'+f[2]+'%"></i></span><b class="mono">'+f[2]+'</b></div>'}).join('')+'<p class="ey" style="margin:10px 8px 0">Sample data. Risk is a score out of 100.</p></div><div><h3>How to use this</h3><div class="steps"><div class="stp"><i>1</i><div><b>Pick a file</b><span>Press Ctrl K or choose one from the list.</span></div></div><div class="stp"><i>2</i><div><b>See what depends on it</b><span>Impact shows every file a change can reach.</span></div></div><div class="stp"><i>3</i><div><b>Ask why</b><span>Ask AI answers with the files as proof.</span></div></div></div><h3 style="margin-top:22px">Repository map</h3>'+map()+'<div class="hl"><i></i><span><b>0</b> circular imports</span></div><div class="hl w"><i></i><span><b>12</b> files nothing imports</span></div></div></div></div>'}
+function insp(){var f=F[S.sel];if(!f)return '<div class="insp" id="in"><div class="emp"><b style="color:var(--tx);font-weight:500">No file selected</b>Choose a file from the list to see what a change would touch.</div></div>';return '<div class="insp open" id="in"><button class="gh x" data-a="x">Close</button><h4 class="mono">'+f[0]+'</h4><div class="pth mono">'+f[1]+'/'+f[0]+'</div><div class="big">'+f[2]+'<small> / 100 risk</small></div><p class="sub" style="margin:8px 0 14px">'+f[3]+'.</p><h3>Imported by</h3>'+f[4].map(function(x){return '<div class="kv"><span class="mono">'+x+'</span></div>'}).join('')+'<div class="kv" style="margin-top:12px"><span>Main author</span><b>'+f[5]+'</b></div><div class="kv"><span>History</span><b>'+f[6]+'</b></div><div style="display:flex;gap:8px;margin-top:16px"><button class="btn">Open impact</button><button class="gh">Ask AI</button></div></div>'}
+function render(){var a=$('app');a.dataset.l=S.l;var i=insp();a.innerHTML=bar()+'<div class="bd">'+rail()+main()+i+'</div>';$('ct').innerHTML='<span>Click a file row to open its details.</span>'}
+document.addEventListener('click',function(e){var b=e.target.closest('[data-a]');if(b){if(b.dataset.a=='l'){S.l=b.dataset.v;S.sel=S.l=='b'&&S.sel===null?0:S.sel}else if(b.dataset.a=='x')S.sel=null;render();return}var r=e.target.closest('[data-i]');if(r){S.sel=+r.dataset.i;render()}});
+render();
+</script></body></html>
