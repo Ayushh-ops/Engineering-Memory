@@ -263,19 +263,19 @@ function FlowFitViewHandler({
     const { fitView } = useReactFlow();
     const prevFileRef = useRef<string | null>(selectedFile);
 
-    // Call fitView with padding 0.2, maxZoom 1.2, minZoom 0.3 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize.
+    // Call fitView with padding 0.2, maxZoom 1.2 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize.
     useEffect(() => {
         if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.2, maxZoom: 1.2, minZoom: 0.3, duration: prefersReducedMotion ? 0 : 300 });
+            fitView({ padding: 0.2, maxZoom: 1.2, duration: prefersReducedMotion ? 0 : 300 });
         }, 80);
         return () => clearTimeout(timer);
-    }, [nodes.length, simplify, focusConnected, focusDepth, resetTrigger, isExpanded, fitView]);
+    }, [nodes, edges, simplify, focusConnected, focusDepth, resetTrigger, isExpanded, fitView]);
 
     useEffect(() => {
         const handleResize = () => {
-            fitView({ padding: 0.2, maxZoom: 1.2, minZoom: 0.3, duration: 0 });
+            fitView({ padding: 0.2, maxZoom: 1.2, duration: 0 });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -311,7 +311,6 @@ function FlowFitViewHandler({
                 nodes: focusNodes,
                 padding: 0.2,
                 maxZoom: 1.2,
-                minZoom: 0.3,
                 duration: prefersReducedMotion ? 0 : 350
             });
         }
@@ -637,54 +636,15 @@ function ProseRenderer({ text }: { text: string }) {
 function CustomGraphNode({ data }: { data: any }) {
     return (
         <div style={data.style}>
-            {/* Handles on 4 sides for connecting to facing nodes */}
-            <Handle
-                type="source"
-                position={Position.Right}
-                id="source-right"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
-            <Handle
-                type="target"
-                position={Position.Right}
-                id="target-right"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
-            <Handle
-                type="source"
-                position={Position.Left}
-                id="source-left"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
             <Handle
                 type="target"
                 position={Position.Left}
-                id="target-left"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+                style={{ opacity: 0 }}
             />
             <Handle
                 type="source"
-                position={Position.Top}
-                id="source-top"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
-            <Handle
-                type="target"
-                position={Position.Top}
-                id="target-top"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
-            <Handle
-                type="source"
-                position={Position.Bottom}
-                id="source-bottom"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
-            />
-            <Handle
-                type="target"
-                position={Position.Bottom}
-                id="target-bottom"
-                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+                position={Position.Right}
+                style={{ opacity: 0 }}
             />
             {data.label}
         </div>
@@ -865,34 +825,7 @@ function OverviewGraph2D({
             const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
             const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
 
-            // Connect handles to the node side facing the other node
-            const posSource = positions.get(e.from) || { x: 0, y: 0 };
-            const posTarget = positions.get(e.to) || { x: 0, y: 0 };
-            const dx = posTarget.x - posSource.x;
-            const dy = posTarget.y - posSource.y;
-
-            let sourceHandle = 'source-right';
-            let targetHandle = 'target-left';
-
-            if (Math.abs(dx) >= Math.abs(dy)) {
-                if (dx >= 0) {
-                    sourceHandle = 'source-right';
-                    targetHandle = 'target-left';
-                } else {
-                    sourceHandle = 'source-left';
-                    targetHandle = 'target-right';
-                }
-            } else {
-                if (dy >= 0) {
-                    sourceHandle = 'source-bottom';
-                    targetHandle = 'target-top';
-                } else {
-                    sourceHandle = 'source-top';
-                    targetHandle = 'target-bottom';
-                }
-            }
-
-            // Stroke: imports #4FD1B5, imported by #E3A04A, strokeWidth 1.5, opacity 0.8
+            // Imports teal #4FD1B5, imported by amber #E3A04A, strokeWidth 1.5, opacity 0.8
             let stroke = '#4FD1B5';
             if (isIncoming) {
                 stroke = '#E3A04A'; // imported by amber
@@ -908,14 +841,11 @@ function OverviewGraph2D({
                 id: edgeId || `edge-${idx}`,
                 source: e.from,
                 target: e.to,
-                sourceHandle,
-                targetHandle,
-                type: 'straight',
+                type: 'smoothstep',
                 style: {
                     stroke,
                     strokeWidth: 1.5,
-                    opacity: 0.8,
-                    transition: 'opacity 0.2s ease, stroke 0.2s ease'
+                    opacity: 0.8
                 }
             };
         });
@@ -925,7 +855,7 @@ function OverviewGraph2D({
     }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
 
     return (
-        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__handle]:!opacity-0 [&_.react-flow__handle]:!pointer-events-none [&_.react-flow__handle]:!border-0">
+        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2]">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -935,8 +865,7 @@ function OverviewGraph2D({
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 fitView
-                fitViewOptions={{ padding: 0.2, maxZoom: 1.2, minZoom: 0.3 }}
-                minZoom={0.3}
+                fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
                 maxZoom={1.2}
                 proOptions={{ hideAttribution: true }}
             >
@@ -991,7 +920,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [showFunctions, setShowFunctions] = useState(false);
     const [focusConnected, setFocusConnected] = useState(true);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
-    const [showAllNodes, setShowAllNodes] = useState(false);
+    const [extraNodesCount, setExtraNodesCount] = useState(0);
     const [showLegend, setShowLegend] = useState(false);
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
     const moreMenuRef = useRef<HTMLDivElement>(null);
@@ -1013,10 +942,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [selectedFile]);
 
-    // Reset node expansion cap when selected file changes
+    // Reset node expansion cap when selection or depth/focus filters change
     useEffect(() => {
-        setShowAllNodes(false);
-    }, [selectedFile]);
+        setExtraNodesCount(0);
+    }, [selectedFile, focusConnected, focusDepth, simplify, showFunctions]);
 
     // Close "..." menu on click outside
     useEffect(() => {
@@ -1045,7 +974,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setFocusDepth(1);
         setSelectedFile(null);
         setSelectedSymbol(null);
-        setShowAllNodes(false);
+        setExtraNodesCount(0);
         setResetTrigger(prev => prev + 1);
         if (viewMode === '3D' && fgInstanceRef.current) {
             fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.4);
@@ -1083,13 +1012,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         });
     }, [graph, showFunctions, simplify]);
 
-    // Compute displayed nodes (capped at 30 with file selected, 20 with no file selected)
+    // Compute displayed nodes (capped at 30 with file selected, 20 with no file selected; max 60)
     const { displayNodes, totalCandidateCount, excessNodesCount } = useMemo(() => {
         if (baseNodes.length === 0) {
             return { displayNodes: [], totalCandidateCount: 0, excessNodesCount: 0 };
         }
 
-        // Case A: No file selected -> show top 20 files by connections
+        // Case A: No file selected -> show top files by connections (capped at 20 + extraNodesCount, max 60)
         if (!selectedFile) {
             const sorted = [...baseNodes].sort((a, b) => {
                 const connA = connectionCounts.get(a.id) || 0;
@@ -1097,17 +1026,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 return connB - connA;
             });
             const total = sorted.length;
-            if (!showAllNodes && total > 20) {
-                return {
-                    displayNodes: sorted.slice(0, 20),
-                    totalCandidateCount: total,
-                    excessNodesCount: total - 20
-                };
-            }
+            const maxAllowed = Math.min(60, total);
+            const currentLimit = Math.min(maxAllowed, 20 + extraNodesCount);
+            const displayed = sorted.slice(0, currentLimit);
+            const remaining = maxAllowed - displayed.length;
+            const excess = Math.min(20, remaining);
+
             return {
-                displayNodes: sorted,
+                displayNodes: displayed,
                 totalCandidateCount: total,
-                excessNodesCount: 0
+                excessNodesCount: excess
             };
         }
 
@@ -1130,87 +1058,63 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         if (!centerNode) {
             const sorted = [...baseNodes].sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
             const total = sorted.length;
-            if (!showAllNodes && total > 30) {
-                return {
-                    displayNodes: sorted.slice(0, 30),
-                    totalCandidateCount: total,
-                    excessNodesCount: total - 30
-                };
-            }
-            return { displayNodes: sorted, totalCandidateCount: total, excessNodesCount: 0 };
+            const maxAllowed = Math.min(60, total);
+            const currentLimit = Math.min(maxAllowed, 30 + extraNodesCount);
+            const displayed = sorted.slice(0, currentLimit);
+            const remaining = maxAllowed - displayed.length;
+            const excess = Math.min(20, remaining);
+            return { displayNodes: displayed, totalCandidateCount: total, excessNodesCount: excess };
         }
 
-        if (focusConnected) {
-            // Direct neighbors (depth 1)
-            const depth1Set = new Set<string>();
-            for (const e of graph.edges) {
-                if (e.from === centerNode.id && baseNodeMap.has(e.to)) depth1Set.add(e.to);
-                if (e.to === centerNode.id && baseNodeMap.has(e.from)) depth1Set.add(e.from);
-            }
-            depth1Set.delete(centerNode.id);
+        // Focus on = only selected + direct neighbors (depth 1), off = depth setting applies (focusDepth)
+        const effectiveDepth = focusConnected ? 1 : focusDepth;
 
-            // Depth 2 neighbors if requested
-            const depth2Set = new Set<string>();
-            if (focusDepth === 2) {
-                for (const e of graph.edges) {
-                    if (depth1Set.has(e.from) && baseNodeMap.has(e.to) && !depth1Set.has(e.to) && e.to !== centerNode.id) {
-                        depth2Set.add(e.to);
-                    }
-                    if (depth1Set.has(e.to) && baseNodeMap.has(e.from) && !depth1Set.has(e.from) && e.from !== centerNode.id) {
-                        depth2Set.add(e.from);
-                    }
+        // Direct neighbors (depth 1)
+        const depth1Set = new Set<string>();
+        for (const e of graph.edges) {
+            if (e.from === centerNode.id && baseNodeMap.has(e.to)) depth1Set.add(e.to);
+            if (e.to === centerNode.id && baseNodeMap.has(e.from)) depth1Set.add(e.from);
+        }
+        depth1Set.delete(centerNode.id);
+
+        // Depth 2 neighbors if requested
+        const depth2Set = new Set<string>();
+        if (effectiveDepth === 2) {
+            for (const e of graph.edges) {
+                if (depth1Set.has(e.from) && baseNodeMap.has(e.to) && !depth1Set.has(e.to) && e.to !== centerNode.id) {
+                    depth2Set.add(e.to);
+                }
+                if (depth1Set.has(e.to) && baseNodeMap.has(e.from) && !depth1Set.has(e.from) && e.from !== centerNode.id) {
+                    depth2Set.add(e.from);
                 }
             }
-
-            const depth1Nodes = Array.from(depth1Set)
-                .map(id => baseNodeMap.get(id))
-                .filter(Boolean)
-                .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
-
-            const depth2Nodes = Array.from(depth2Set)
-                .map(id => baseNodeMap.get(id))
-                .filter(Boolean)
-                .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
-
-            const allCandidates = [centerNode, ...depth1Nodes, ...depth2Nodes];
-            const total = allCandidates.length;
-
-            if (!showAllNodes && total > 30) {
-                const capped = [centerNode, ...depth1Nodes, ...depth2Nodes].slice(0, 30);
-                return {
-                    displayNodes: capped,
-                    totalCandidateCount: total,
-                    excessNodesCount: total - 30
-                };
-            }
-
-            return {
-                displayNodes: allCandidates,
-                totalCandidateCount: total,
-                excessNodesCount: 0
-            };
-        } else {
-            // Unfocused view with selection: center node + top connected
-            const otherNodes = baseNodes.filter(n => n.id !== centerNode!.id)
-                .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
-            const allCandidates = [centerNode, ...otherNodes];
-            const total = allCandidates.length;
-
-            if (!showAllNodes && total > 30) {
-                return {
-                    displayNodes: allCandidates.slice(0, 30),
-                    totalCandidateCount: total,
-                    excessNodesCount: total - 30
-                };
-            }
-
-            return {
-                displayNodes: allCandidates,
-                totalCandidateCount: total,
-                excessNodesCount: 0
-            };
         }
-    }, [baseNodes, selectedFile, selectedSymbol, focusConnected, focusDepth, showAllNodes, connectionCounts, graph]);
+
+        const depth1Nodes = Array.from(depth1Set)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
+
+        const depth2Nodes = Array.from(depth2Set)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
+
+        // Visible nodes = selected + neighbors up to chosen depth only
+        const allCandidates = [centerNode, ...depth1Nodes, ...depth2Nodes];
+        const total = allCandidates.length;
+        const maxAllowed = Math.min(60, total);
+        const currentLimit = Math.min(maxAllowed, 30 + extraNodesCount);
+        const displayed = allCandidates.slice(0, currentLimit);
+        const remaining = maxAllowed - displayed.length;
+        const excess = Math.min(20, remaining);
+
+        return {
+            displayNodes: displayed,
+            totalCandidateCount: total,
+            excessNodesCount: excess
+        };
+    }, [baseNodes, selectedFile, selectedSymbol, focusConnected, focusDepth, extraNodesCount, connectionCounts, graph]);
 
     // Active subgraph with visible nodes & edges
     const displayGraph = useMemo(() => {
@@ -1466,16 +1370,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
     // Keep 3D graphData in sync with displayGraph - only visible nodes, no hidden nodes
     useEffect(() => {
-        const visible3DNodes = displayGraph.nodes.filter((n: any) => {
-            if (!neighborInfo.hasSelection) return true;
-            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
-            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
-            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
-            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
-            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
-            const isRepo = n.type === 'repository';
-            return isSelected || isCallee || isDependent || isHovered || isRepo;
-        });
+        const visible3DNodes = displayGraph.nodes;
         const visibleIdSet = new Set(visible3DNodes.map(n => n.id));
 
         const nodeConnMap = new Map<string, number>();
@@ -1719,16 +1614,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 {/* Show N more / Show fewer when capped */}
                 {excessNodesCount > 0 && (
                     <button
-                        onClick={() => setShowAllNodes(true)}
+                        onClick={() => setExtraNodesCount(prev => prev + 20)}
                         className="px-2 py-0.5 text-xs rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5] hover:bg-[#4FD1B5]/20 transition-colors cursor-pointer whitespace-nowrap"
                         title={`Show ${excessNodesCount} additional connected nodes`}
                     >
                         Show {excessNodesCount} more
                     </button>
                 )}
-                {showAllNodes && totalCandidateCount > (selectedFile ? 30 : 20) && (
+                {extraNodesCount > 0 && (
                     <button
-                        onClick={() => setShowAllNodes(false)}
+                        onClick={() => setExtraNodesCount(0)}
                         className="px-2 py-0.5 text-xs rounded border border-white/10 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer whitespace-nowrap"
                         title="Show fewer nodes"
                     >
