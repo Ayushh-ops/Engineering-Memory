@@ -207,7 +207,7 @@
 
     .overview-rw {
         display: grid;
-        grid-template-columns: 28px minmax(0, 1.1fr) minmax(0, 1fr) 70px 26px;
+        grid-template-columns: 28px minmax(0, 1fr) 70px 28px;
         gap: 12px;
         align-items: center;
         padding: 11px 8px;
@@ -297,9 +297,8 @@
             grid-template-columns: 1fr;
         }
         .overview-rw {
-            grid-template-columns: 24px 1fr 60px;
+            grid-template-columns: 24px 1fr 28px;
         }
-        .overview-rw .overview-reason,
         .overview-rw .overview-bar {
             display: none;
         }

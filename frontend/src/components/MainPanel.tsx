@@ -2214,6 +2214,15 @@ export function MainPanel({ className }: { className?: string }) {
             .slice(0, 7);
     }, [graph, commits, isHotspotSourceFile]);
 
+    const hotspotNameCounts = useMemo(() => {
+        const counts = new Map<string, number>();
+        hotspotsList.forEach((h: any) => {
+            const raw = h.name || (h.path ? h.path.split('/').pop() : 'unknown');
+            counts.set(raw, (counts.get(raw) || 0) + 1);
+        });
+        return counts;
+    }, [hotspotsList]);
+
     const compositionData = useMemo(() => {
         const fileList: string[] = [];
         if (graph?.nodes) {
@@ -3429,8 +3438,22 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 <div className="text-xs text-[#8A918C] py-3">No risky files found in the analyzed set.</div>
                                             ) : (
                                                 hotspotsList.map((h, i) => {
-                                                    const fileName = h.name || (h.path ? h.path.split('/').pop() : 'unknown');
-                                                    const folder = h.path && h.path.includes('/') ? h.path.substring(0, h.path.lastIndexOf('/')) : '';
+                                                    const rawFileName = h.name || (h.path ? h.path.split('/').pop() : 'unknown');
+                                                    const hasDuplicate = (hotspotNameCounts.get(rawFileName) || 0) > 1;
+                                                    let line1FileName = rawFileName;
+                                                    let line2Folder = '';
+
+                                                    if (h.path) {
+                                                        const segments = h.path.split('/').filter(Boolean);
+                                                        if (hasDuplicate && segments.length >= 2) {
+                                                            line1FileName = segments.slice(-2).join('/');
+                                                            line2Folder = segments.length > 2 ? segments.slice(0, -2).join('/') : '';
+                                                        } else {
+                                                            line1FileName = rawFileName;
+                                                            line2Folder = segments.length > 1 ? segments.slice(0, -1).join('/') : '';
+                                                        }
+                                                    }
+
                                                     const reach = (h.risk?.directDependents || 0) + (h.risk?.transitiveDependents || 0);
                                                     const reasonText = (h.risk?.directDependents || 0) > 0
                                                         ? `Imported by ${h.risk.directDependents} file${h.risk.directDependents === 1 ? '' : 's'}, reaches ${reach}`
@@ -3446,13 +3469,14 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             <span className="font-mono text-xs text-[#8A918C]">
                                                                 {String(i + 1).padStart(2, '0')}
                                                             </span>
-                                                            <span className="font-mono font-medium text-sm text-[#E8EAE6] truncate">
-                                                                {fileName}
-                                                                {folder && <small className="block text-[#8A918C] text-[11px] font-normal truncate">{folder}</small>}
-                                                            </span>
-                                                            <span className="overview-reason text-[#8A918C] text-xs truncate" title={reasonText}>
-                                                                {reasonText}
-                                                            </span>
+                                                            <div className="min-w-0 pr-2">
+                                                                <div className="font-mono font-bold text-sm text-[#E8EAE6] break-words">
+                                                                    {line1FileName}
+                                                                </div>
+                                                                <div className="text-xs text-[#8A918C] leading-relaxed break-words mt-0.5">
+                                                                    {line2Folder ? `${line2Folder} · ${reasonText}` : reasonText}
+                                                                </div>
+                                                            </div>
                                                             <span className="overview-bar">
                                                                 <i style={{ width: `${Math.min(100, Math.max(0, h.risk?.score || 0))}%` }} />
                                                             </span>
@@ -4598,21 +4622,16 @@ ${lastAssistant?.content || 'No response recorded.'}
                                 extraMenuItems={changeSet.length > 0 ? [{ label: 'Clear all files', onClick: clearChangeSet }] : []}
                             />
 
-                            {/* Empty or loading states */}
-                            {changeSet.length === 0 ? (
-                                <div className="flex-1 text-center py-16 border border-dashed border-white/10 rounded-xl glass-surface p-8 flex flex-col items-center justify-center gap-6 max-w-xl mx-auto my-auto w-full">
-                                    <div className="flex flex-col items-center gap-2">
-                                        <div className="w-10 h-10 rounded-full bg-[#4FD1B5]/10 border border-[#4FD1B5]/20 flex items-center justify-center text-[#4FD1B5]">
-                                            <Layers size={20} />
-                                        </div>
-                                        <div className="text-sm font-semibold text-[#E8EAE6]">Planning to edit more than one file?</div>
-                                        <p className="text-xs text-[#8A918C] max-w-md">
-                                            Add the files you plan to edit. You get one combined risk, every file that could break, and the tests to run.
-                                        </p>
-                                    </div>
-
+                            {/* Empty, building plan, or loading states */}
+                            {changeSetLoading ? (
+                                <div className="py-20 flex flex-col items-center justify-center gap-3 text-[#8A918C]">
+                                    <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
+                                    <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'}...</span>
+                                </div>
+                            ) : !changeSetResult ? (
+                                <div className="space-y-4">
                                     {/* 3 short steps */}
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full text-left">
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                                         <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
                                             <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">01</div>
                                             <div className="text-xs text-[#E8EAE6] font-medium">Open a file</div>
@@ -4630,49 +4649,90 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         </div>
                                     </div>
 
-                                    {/* button "Add <current file>" */}
-                                    {selectedFile ? (
-                                        <button
-                                            onClick={() => addToChangeSet(selectedFile)}
-                                            className="px-4 py-2 rounded-lg text-xs font-mono bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] transition-colors font-medium flex items-center gap-1.5 cursor-pointer shadow-sm"
-                                        >
-                                            <Plus size={14} />
-                                            <span>Add {selectedFile.split('/').pop()}</span>
-                                        </button>
-                                    ) : (
-                                        <div className="text-[11px] text-[#8A918C] font-mono">
-                                            Pick a file in the sidebar to add it to your plan.
+                                    {/* Files in your plan */}
+                                    <div className="glass-surface p-4 rounded-xl border border-white/10 space-y-3">
+                                        <div className="flex items-center justify-between">
+                                            <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                                                <Layers size={13} className="text-[#4FD1B5]" />
+                                                <span>Files in your plan</span>
+                                                <span className="text-[10px] font-mono text-[#8A918C] font-normal">
+                                                    ({changeSet.length})
+                                                </span>
+                                            </h3>
+                                            {selectedFile && !changeSet.includes(selectedFile) && (
+                                                <button
+                                                    onClick={() => addToChangeSet(selectedFile)}
+                                                    className="text-xs font-mono text-[#4FD1B5] hover:underline flex items-center gap-1 cursor-pointer"
+                                                >
+                                                    <Plus size={12} />
+                                                    Add {selectedFile.split('/').pop()}
+                                                </button>
+                                            )}
                                         </div>
-                                    )}
-                                </div>
-                            ) : changeSetLoading ? (
-                                <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
-                                    <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
-                                    <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'}...</span>
-                                </div>
-                            ) : !changeSetResult ? (
-                                <div className="flex-1 text-center py-16 border border-white/10 rounded-xl glass-surface p-6 flex flex-col items-center justify-center gap-3">
-                                    <div className="text-xs text-[#8A918C]">
-                                        {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'} ready in your plan.
+
+                                        {changeSet.length === 0 ? (
+                                            <div className="py-6 text-center text-xs text-[#8A918C] font-mono border border-dashed border-white/[0.08] rounded-lg">
+                                                No files in your plan yet.
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-1.5 max-h-64 overflow-y-auto scrollbar-custom pr-1">
+                                                {changeSet.map((path) => {
+                                                    const fileName = path.split('/').pop() || path;
+                                                    const folder = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+                                                    return (
+                                                        <div
+                                                            key={path}
+                                                            className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] transition-colors group"
+                                                        >
+                                                            <div className="flex items-center gap-2 min-w-0">
+                                                                <FileCode size={13} className="text-[#4FD1B5] shrink-0" />
+                                                                <span
+                                                                    onClick={() => selectFile(path)}
+                                                                    className="font-mono text-xs font-medium text-[#E8EAE6] group-hover:text-[#4FD1B5] cursor-pointer"
+                                                                    title={path}
+                                                                >
+                                                                    {fileName}
+                                                                </span>
+                                                                {folder && (
+                                                                    <span className="text-[11px] text-[#8A918C] truncate" title={folder}>
+                                                                        {folder}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <button
+                                                                onClick={() => {
+                                                                    removeFromChangeSet(path);
+                                                                    if (changeSet.length <= 1) {
+                                                                        setChangeSetResult(null);
+                                                                    }
+                                                                }}
+                                                                className="text-[#8A918C] hover:text-red-400 p-1 rounded cursor-pointer transition-colors shrink-0"
+                                                                title="Remove from plan"
+                                                            >
+                                                                <X size={13} />
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        {/* Hint */}
+                                        <div className="text-[11px] text-[#8A918C] flex items-center justify-between pt-1 border-t border-white/[0.06]">
+                                            <span>Add more files with Ctrl K or the Add to plan button</span>
+                                            {changeSet.length > 0 && (
+                                                <button
+                                                    onClick={() => {
+                                                        clearChangeSet();
+                                                        setChangeSetResult(null);
+                                                    }}
+                                                    className="text-[10px] text-[#8A918C] hover:text-red-400 cursor-pointer"
+                                                >
+                                                    Clear plan
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
-                                    <Button
-                                        onClick={async () => {
-                                            if (!graph || changeSet.length === 0) return;
-                                            setChangeSetLoading(true);
-                                            try {
-                                                const res = await api.graph.impactBatch(graph, changeSet);
-                                                setChangeSetResult(res);
-                                            } catch (err) {
-                                                console.error("Batch impact failed", err);
-                                            } finally {
-                                                setChangeSetLoading(false);
-                                            }
-                                        }}
-                                        disabled={!graph}
-                                        className="px-4 py-1.5 text-xs font-mono"
-                                    >
-                                        Analyze plan now
-                                    </Button>
                                 </div>
                             ) : (
                                 /* Results view */
