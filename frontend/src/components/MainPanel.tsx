@@ -2,7 +2,7 @@ import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position } from '@xyflow/react';
+import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
 import SpriteText from 'three-spritetext';
 import * as THREE from 'three';
@@ -634,6 +634,67 @@ function ProseRenderer({ text }: { text: string }) {
     return <>{elements}</>;
 }
 
+function CustomGraphNode({ data }: { data: any }) {
+    return (
+        <div style={data.style}>
+            {/* Handles on 4 sides for connecting to facing nodes */}
+            <Handle
+                type="source"
+                position={Position.Right}
+                id="source-right"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="target"
+                position={Position.Right}
+                id="target-right"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="source"
+                position={Position.Left}
+                id="source-left"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="target"
+                position={Position.Left}
+                id="target-left"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="source"
+                position={Position.Top}
+                id="source-top"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="target"
+                position={Position.Top}
+                id="target-top"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="source"
+                position={Position.Bottom}
+                id="source-bottom"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            <Handle
+                type="target"
+                position={Position.Bottom}
+                id="target-bottom"
+                style={{ opacity: 0, width: 1, height: 1, border: 0, pointerEvents: 'none' }}
+            />
+            {data.label}
+        </div>
+    );
+}
+
+const customNodeTypes = {
+    custom: CustomGraphNode
+};
+
 function OverviewGraph2D({
     graph,
     simplify,
@@ -663,47 +724,17 @@ function OverviewGraph2D({
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
 
     useEffect(() => {
-        // Filter out stray / commit / symbol-change nodes, and remove repo node unless nothing else is connected
-        const nonRepoNodes = graph.nodes.filter((n: any) => {
-            if (simplify && n.type !== 'file') {
-                return false;
-            }
-            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') {
-                return false;
-            }
-            return Boolean(n.id);
-        });
-        const includeRepo = nonRepoNodes.length === 0;
-
-        const validNodes = graph.nodes.filter((n: any) => {
-            if (n.type === 'repository') {
-                return includeRepo;
-            }
-            if (simplify && n.type !== 'file') {
-                return false;
-            }
-            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') {
-                return false;
-            }
-            return Boolean(n.id);
-        });
-
-        const validNodeIds = new Set(validNodes.map(n => n.id));
-
-        const validEdges = graph.edges.filter(e => {
-            if (!validNodeIds.has(e.from) || !validNodeIds.has(e.to)) return false;
-            if (simplify) {
-                return e.type === 'imports';
-            }
-            return true;
-        });
+        // Use the same visible-node set for edges and nodes
+        const visibleNodes = (graph?.nodes || []).filter((n: any) => Boolean(n && n.id));
+        const visibleNodeIds = new Set(visibleNodes.map((n: any) => n.id));
+        const validEdges = (graph?.edges || []).filter((e: any) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to));
 
         const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
 
         // Find center node ID if focused
         let centerId: string | null = null;
         if (selectedFile) {
-            for (const n of validNodes) {
+            for (const n of visibleNodes) {
                 const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
                 if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && (n as any).name === selectedFile)) {
                     if (selectedSymbol) {
@@ -721,17 +752,6 @@ function OverviewGraph2D({
                 centerId = Array.from(neighborInfo.selectedNodeIds)[0];
             }
         }
-
-        const visibleNodes = validNodes.filter((n: any) => {
-            if (!neighborInfo.hasSelection) return true;
-            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
-            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
-            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
-            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
-            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
-            const isRepo = n.type === 'repository';
-            return isSelected || isCallee || isDependent || isHovered || isRepo;
-        });
 
         const positions = compute2DLayout(visibleNodes, validEdges, {
             centerId,
@@ -788,11 +808,29 @@ function OverviewGraph2D({
                 boxShadow = isRepo ? '0 0 12px rgba(232, 234, 230, 0.4)' : '0 0 12px rgba(79, 209, 181, 0.45)';
             }
 
+            const nodeStyle = {
+                background: bg,
+                border,
+                borderRadius: isRepo ? '9999px' : '6px',
+                height: '28px',
+                minHeight: '28px',
+                boxSizing: 'border-box' as const,
+                display: 'flex',
+                alignItems: 'center',
+                padding: '0 8px',
+                boxShadow,
+                opacity: 1,
+                color: '#E8EAE6',
+                fontSize: '12px',
+                cursor: 'pointer',
+                transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+                position: 'relative' as const
+            };
+
             return {
                 id: n.id,
+                type: 'custom',
                 position: pos,
-                sourcePosition: Position.Right,
-                targetPosition: Position.Left,
                 data: {
                     label: (
                         <div
@@ -816,72 +854,82 @@ function OverviewGraph2D({
                             </span>
                         </div>
                     ),
+                    style: nodeStyle,
                     rawNode: n
-                },
-                style: {
-                    background: bg,
-                    border,
-                    borderRadius: isRepo ? '9999px' : '6px',
-                    height: '28px',
-                    minHeight: '28px',
-                    boxSizing: 'border-box',
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '0 8px',
-                    boxShadow,
-                    opacity: 1,
-                    color: '#E8EAE6',
-                    fontSize: '12px',
-                    cursor: 'pointer',
-                    transition: 'border-color 0.2s ease, box-shadow 0.2s ease'
                 }
             };
         });
 
-        const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
-        const layoutEdges = validEdges
-            .filter(e => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to))
-            .map((e: any, idx: number) => {
-                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-                const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
-                const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
+        const layoutEdges = validEdges.map((e: any, idx: number) => {
+            const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+            const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
+            const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
 
-                // Straight thin edges (imports teal, imported by amber, opacity 0.6)
-                let stroke = '#4FD1B5';
-                if (isIncoming) {
-                    stroke = '#E3A04A'; // imported by amber
-                } else if (isOutgoing) {
-                    stroke = '#4FD1B5'; // imports teal
-                } else if (e.type === 'contains') {
-                    stroke = 'rgba(138, 145, 140, 0.4)';
+            // Connect handles to the node side facing the other node
+            const posSource = positions.get(e.from) || { x: 0, y: 0 };
+            const posTarget = positions.get(e.to) || { x: 0, y: 0 };
+            const dx = posTarget.x - posSource.x;
+            const dy = posTarget.y - posSource.y;
+
+            let sourceHandle = 'source-right';
+            let targetHandle = 'target-left';
+
+            if (Math.abs(dx) >= Math.abs(dy)) {
+                if (dx >= 0) {
+                    sourceHandle = 'source-right';
+                    targetHandle = 'target-left';
                 } else {
-                    stroke = '#4FD1B5';
+                    sourceHandle = 'source-left';
+                    targetHandle = 'target-right';
                 }
+            } else {
+                if (dy >= 0) {
+                    sourceHandle = 'source-bottom';
+                    targetHandle = 'target-top';
+                } else {
+                    sourceHandle = 'source-top';
+                    targetHandle = 'target-bottom';
+                }
+            }
 
-                return {
-                    id: edgeId || `edge-${idx}`,
-                    source: e.from,
-                    target: e.to,
-                    type: 'straight',
-                    zIndex: 5,
-                    style: {
-                        stroke,
-                        strokeWidth: 1,
-                        opacity: 0.6,
-                        transition: 'opacity 0.2s ease, stroke 0.2s ease'
-                    }
-                };
-            });
+            // Stroke: imports #4FD1B5, imported by #E3A04A, strokeWidth 1.5, opacity 0.8
+            let stroke = '#4FD1B5';
+            if (isIncoming) {
+                stroke = '#E3A04A'; // imported by amber
+            } else if (isOutgoing) {
+                stroke = '#4FD1B5'; // imports teal
+            } else if (e.type === 'contains') {
+                stroke = '#8A918C';
+            } else {
+                stroke = '#4FD1B5';
+            }
+
+            return {
+                id: edgeId || `edge-${idx}`,
+                source: e.from,
+                target: e.to,
+                sourceHandle,
+                targetHandle,
+                type: 'straight',
+                style: {
+                    stroke,
+                    strokeWidth: 1.5,
+                    opacity: 0.8,
+                    transition: 'opacity 0.2s ease, stroke 0.2s ease'
+                }
+            };
+        });
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
     }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
 
     return (
-        <div className="w-full h-full relative [&_.react-flow__handle]:!opacity-0 [&_.react-flow__handle]:!pointer-events-none [&_.react-flow__handle]:!border-0 [&_.react-flow__edges]:!z-[5]">
+        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__handle]:!opacity-0 [&_.react-flow__handle]:!pointer-events-none [&_.react-flow__handle]:!border-0">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
+                nodeTypes={customNodeTypes}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
@@ -935,7 +983,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [isExpanded, setIsExpanded] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const fgInstanceRef = useRef<any>(null);
+    const fitCameraToVisibleNodesRef = useRef<any>(null);
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+    const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
 
     const [simplify, setSimplify] = useState(false);
     const [showFunctions, setShowFunctions] = useState(false);
@@ -997,11 +1047,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setSelectedSymbol(null);
         setShowAllNodes(false);
         setResetTrigger(prev => prev + 1);
-        if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 140);
+        if (viewMode === '3D' && fgInstanceRef.current) {
+            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.4);
         }
-    }, [setSelectedFile, setSelectedSymbol, viewMode]);
+    }, [setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
 
     // Track full graph connection counts
     const connectionCounts = useMemo(() => {
@@ -1254,9 +1303,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [isExpanded]);
 
-    // On expanded toggle: resize and fit to view (2D via FlowFitViewHandler, 3D via zoomToFit)
+    // On expanded toggle: resize and fit to view (2D via FlowFitViewHandler, 3D via fitCameraToVisibleNodes)
     useEffect(() => {
-        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
             if (containerRef.current) {
                 setDimensions({
@@ -1264,12 +1312,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     height: containerRef.current.clientHeight
                 });
             }
-            if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 350, 140);
+            if (viewMode === '3D' && fgInstanceRef.current) {
+                fitCameraToVisibleNodes(graphData.nodes, 0.4);
             }
         }, 100);
         return () => clearTimeout(timer);
-    }, [isExpanded, viewMode]);
+    }, [isExpanded, viewMode, graphData.nodes]);
 
     // Node click selects node and refits view to neighborhood
     const handleSelectNode = useCallback(async (node: any) => {
@@ -1295,17 +1343,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         setResetTrigger(prev => prev + 1);
 
-        if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (viewMode === '3D' && fgInstanceRef.current) {
             setTimeout(() => {
-                if (fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                    fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 140, (n: any) => {
-                        return n.id === node.id || node.neighbors?.has(n.id);
-                    });
-                }
+                fitCameraToVisibleNodes(graphData.nodes, 0.4);
             }, 100);
         }
-    }, [selectedFile, setSelectedFile, setSelectedSymbol, viewMode]);
+    }, [selectedFile, setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
 
     const handleDoubleClickNode = useCallback(async (node: any) => {
         if (!node) return;
@@ -1321,9 +1364,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         handleSelectNode(node);
     }, [handleSelectNode]);
 
-    const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
-
-    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.6) => {
+    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.4) => {
         const fg = fgInstanceRef.current;
         if (!fg || !targetNodes || targetNodes.length === 0) return;
         const camera = typeof fg.camera === 'function' ? fg.camera() : null;
@@ -1352,13 +1393,40 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         const centerY = (minY + maxY) / 2;
         const centerZ = (minZ + maxZ) / 2;
 
-        const sizeX = Math.max(maxX - minX, 20);
-        const sizeY = Math.max(maxY - minY, 20);
-        const sizeZ = Math.max(maxZ - minZ, 20);
-        const maxDim = Math.max(sizeX, sizeY, sizeZ);
-
         const fovRad = ((camera.fov || 45) * Math.PI) / 180;
-        const distance = maxDim / (2 * Math.tan(fovRad / 2) * fillFraction);
+        const domHeight = (typeof fg.renderer === 'function' && fg.renderer()?.domElement?.clientHeight) || dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
+
+        let distance: number;
+
+        if (count === 1) {
+            // With 1 node, show a small node (radius about 8px on screen) in the center, not a huge sphere
+            // Screen radius r_screen = (nodeRadiusWorld / (2 * distance * tan(fov/2))) * domHeight = 8px
+            // distance = (nodeRadiusWorld * domHeight) / (16 * tan(fov/2))
+            const nodeRadiusWorld = 2.8;
+            distance = (nodeRadiusWorld * domHeight) / (16 * Math.tan(fovRad / 2));
+        } else {
+            // Compute bounding sphere radius from center
+            let maxDistSq = 0;
+            for (const n of targetNodes) {
+                if (typeof n.x === 'number' && typeof n.y === 'number' && typeof n.z === 'number') {
+                    const distSq = (n.x - centerX) ** 2 + (n.y - centerY) ** 2 + (n.z - centerZ) ** 2;
+                    if (distSq > maxDistSq) maxDistSq = distSq;
+                }
+            }
+            const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 4, 15);
+            // Clamp camera distance to a minimum so the bounding sphere fills at most 40% (fillFraction) of canvas height:
+            // (2 * sphereRadius) / (2 * distance * tan(fovRad / 2)) <= fillFraction
+            // distance >= sphereRadius / (fillFraction * tan(fovRad / 2))
+            const minDistanceForSphere = sphereRadius / (fillFraction * Math.tan(fovRad / 2));
+
+            const sizeX = Math.max(maxX - minX, 20);
+            const sizeY = Math.max(maxY - minY, 20);
+            const sizeZ = Math.max(maxZ - minZ, 20);
+            const maxDim = Math.max(sizeX, sizeY, sizeZ);
+            const boxDistance = maxDim / (2 * Math.tan(fovRad / 2) * fillFraction);
+
+            distance = Math.max(boxDistance, minDistanceForSphere);
+        }
 
         const currentPos = camera.position;
         const dir = new THREE.Vector3().subVectors(currentPos, new THREE.Vector3(centerX, centerY, centerZ)).normalize();
@@ -1377,7 +1445,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fg.cameraPosition(targetPos, lookAt, prefersReducedMotion ? 0 : 350);
         }
-    }, []);
+    }, [dimensions.height]);
+
+    fitCameraToVisibleNodesRef.current = fitCameraToVisibleNodes;
 
     const fgRef = useCallback((fg: any) => {
         if (fg) {
@@ -1389,7 +1459,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
             setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.6);
+                fitCameraToVisibleNodes(graphData.nodes, 0.4);
             }, 350);
         }
     }, [graphData.nodes, fitCameraToVisibleNodes]);
@@ -1456,14 +1526,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             .filter((e: any) => visibleIdSet.has(e.from) && visibleIdSet.has(e.to))
             .map((e: any) => {
                 const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-                let color = 'rgba(138, 145, 140, 0.4)';
+                let color = '#8A918C';
                 if (neighborInfo.hasSelection) {
                     if (neighborInfo.incomingEdgeIds.has(edgeId)) color = '#E3A04A';
                     else if (neighborInfo.outgoingEdgeIds.has(edgeId)) color = '#4FD1B5';
-                    else if (e.type === 'contains') color = 'rgba(138, 145, 140, 0.4)';
+                    else if (e.type === 'contains') color = '#8A918C';
                     else color = '#4FD1B5';
                 } else {
-                    if (e.type === 'contains') color = 'rgba(138, 145, 140, 0.4)';
+                    if (e.type === 'contains') color = '#8A918C';
                     else if (e.type === 'imports' || e.type === 'calls') color = '#4FD1B5';
                 }
 
@@ -1480,16 +1550,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setGraphData({ nodes, links });
     }, [displayGraph, neighborInfo, hoveredGraphNode]);
 
-    // Center 3D camera on visible nodes bounding box (~60% of canvas) when selectedFile changes
+    // Center 3D camera on visible nodes bounding box (~40% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
         const timer = setTimeout(() => {
-            fitCameraToVisibleNodes(graphData.nodes, 0.6);
+            fitCameraToVisibleNodes(graphData.nodes, 0.4);
         }, 200);
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData, fitCameraToVisibleNodes]);
 
-    // Keep 3D sprite labels constant screen size and hide overlapping ones (priority: selected > hovered > neighbors)
+    // Keep 3D sprite labels constant screen size (fixed 12px font) and hide overlapping ones (priority: selected > hovered > neighbors)
     useEffect(() => {
         if (viewMode !== '3D') return;
         let animId: number;
@@ -1509,8 +1579,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         if (obj.isSprite && obj.textHeight !== undefined && obj.userData?.priority !== undefined) {
                             const dist = camera.position.distanceTo(obj.getWorldPosition(tmpVec));
                             const fovRad = ((camera.fov || 45) * Math.PI) / 180;
-                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (13 / Math.max(1, h));
-                            obj.textHeight = Math.max(1, targetHeight);
+                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (12 / Math.max(1, h));
+                            obj.textHeight = Math.max(0.1, targetHeight);
 
                             const screenPos = tmpVec.clone().project(camera);
                             const screenX = (screenPos.x + 1) * w / 2;
@@ -1823,31 +1893,36 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         if (neighborInfo.hasSelection) {
                             if (neighborInfo.incomingEdgeIds.has(edgeId)) return '#E3A04A'; // imported by amber
                             if (neighborInfo.outgoingEdgeIds.has(edgeId)) return '#4FD1B5'; // imports teal
-                            if (link.type === 'contains') return 'rgba(138, 145, 140, 0.6)'; // contains grey
+                            if (link.type === 'contains') return '#8A918C'; // contains grey
                             return '#4FD1B5';
                         }
-                        if (link.type === 'contains') return 'rgba(138, 145, 140, 0.6)';
+                        if (link.type === 'contains') return '#8A918C';
                         if (link.type === 'imports' || link.type === 'calls') return '#4FD1B5';
-                        return 'rgba(138, 145, 140, 0.6)';
+                        return '#8A918C';
                     }}
-                    linkWidth={1}
+                    linkWidth={1.5}
+                    linkOpacity={0.7}
                     linkDirectionalParticles={0}
                     backgroundColor="#07090A"
                     onNodeClick={handleNodeClick3D}
-                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.6)}
+                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.4)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
                         const isSelected = neighborInfo.selectedNodeIds.has(node.id);
                         const isCallee = neighborInfo.calleeNeighborIds.has(node.id);
                         const isDependent = neighborInfo.dependentNeighborIds.has(node.id);
                         const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
-                        const isDirectNeighbor = isCallee || isDependent;
+                        const isDirectNeighbor = isCallee || isDependent || neighborInfo.directNeighborIds.has(node.id);
                         const isRepo = node.type === 'repository';
 
                         const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
 
-                        // Labels only for selected node and hovered node (neighbors get a small dot, no label)
-                        if (!isSelected && !isHovered) {
+                        // Labels: show base-name labels for selected node and direct neighbors when direct neighbors <= 8. Above 8, only selected and hovered.
+                        const directNeighborCount = neighborInfo.directNeighborIds.size;
+                        const showNeighborLabels = directNeighborCount <= 8;
+                        const shouldShowLabel = isSelected || isHovered || (isDirectNeighbor && showNeighborLabels);
+
+                        if (!shouldShowLabel) {
                             const dotGeometry = new THREE.SphereGeometry(1.8, 12, 12);
                             const dotMaterial = new THREE.MeshLambertMaterial({
                                 color: baseColor,
@@ -1857,7 +1932,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             return new THREE.Mesh(dotGeometry, dotMaterial);
                         }
 
-                        // Selected or hovered node: smaller node with label
+                        // Selected, hovered, or eligible neighbor: node sphere + pill label
                         const radius = isSelected ? 3.5 : 2.8;
                         const group = new THREE.Group();
 
@@ -1874,7 +1949,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 16), material));
                         }
 
-                        // Labels only for selected and hovered node, base name only
+                        // Labels: base name only
                         const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
                         const baseName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
 
@@ -1890,8 +1965,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         sprite.position.y = radius + 3.5;
                         sprite.renderOrder = 999;
                         sprite.material.depthTest = false;
+                        // Priority: selected (3) > hovered (2) > neighbors (1)
+                        const priority = isSelected ? 3 : isHovered ? 2 : 1;
                         (sprite as any).userData = {
-                            priority: isSelected ? 3 : 2
+                            priority
                         };
                         group.add(sprite);
 
