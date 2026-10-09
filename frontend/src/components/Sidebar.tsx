@@ -86,7 +86,7 @@ export function Sidebar({ className }: { className?: string }) {
         setSelectedFile, setSelectedSymbol, setImpactResult,
         changeSet, removeFromChangeSet, clearChangeSet,
         setChangeSetResult, changeSetLoading, setChangeSetLoading,
-        activeTab, setActiveTab
+        activeTab, setActiveTab, repoCache, cacheShaAnalysis
     } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
@@ -113,6 +113,16 @@ export function Sidebar({ className }: { className?: string }) {
         try {
             const treeRes = await api.repositories.getTree(repoUrl, newSha);
             setTreeFiles(treeRes.files);
+            const cached = repoCache[repoUrl]?.shaAnalysis?.[newSha];
+            if (cached) {
+                setGraph(cached.graph);
+            } else {
+                const paths = getPathsToAnalyze(treeRes.files);
+                const data = await api.repositories.analyze(repoUrl, newSha, paths);
+                const newStats = selectRepoStats({ graph: data.graph, treeFiles: treeRes.files, commits });
+                cacheShaAnalysis(repoUrl, newSha, data.graph, newStats);
+                setGraph(data.graph);
+            }
         } catch (e) {
             console.error(e);
         } finally {
@@ -133,8 +143,12 @@ export function Sidebar({ className }: { className?: string }) {
     };
 
     const stats = useMemo(() => {
+        if (repoUrl && selectedSha) {
+            const cachedStats = repoCache[repoUrl]?.shaAnalysis?.[selectedSha]?.stats;
+            if (cachedStats) return cachedStats;
+        }
         return selectRepoStats({ graph, treeFiles, commits });
-    }, [graph, treeFiles, commits]);
+    }, [repoUrl, selectedSha, repoCache, graph, treeFiles, commits]);
 
     const filteredTree = useMemo(() => {
         if (!search) return treeFiles;

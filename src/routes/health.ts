@@ -17,12 +17,24 @@ export interface HealthSummaryResult {
     godFiles: Array<{ path: string; importCount: number }>;
 }
 
+const SOURCE_EXTENSIONS = new Set([
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".go", ".rs", ".java", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp",
+    ".cs", ".rb", ".php", ".swift", ".kt", ".scala"
+]);
+
+function isSourceFile(path: string): boolean {
+    const extMatch = path.match(/\.([a-zA-Z0-9]+)$/);
+    if (!extMatch) return false;
+    return SOURCE_EXTENSIONS.has("." + extMatch[1].toLowerCase());
+}
+
 function isTestPath(path: string): boolean {
-    const normalized = path.replace(/\\/g, "/");
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
     const parts = normalized.split("/");
     const fileName = parts[parts.length - 1];
     const hasTestDir = parts.slice(0, -1).some((p) => p === "test" || p === "tests" || p === "__tests__");
-    const matchesPattern = /\.(test|spec)\.[^.]+$/.test(fileName);
+    const matchesPattern = /\.(test|spec)\.[^.]+$/.test(fileName) || fileName.startsWith("test_") || fileName.endsWith("_test.py") || fileName.endsWith("_test.go");
     return hasTestDir || matchesPattern;
 }
 
@@ -37,6 +49,37 @@ function isConfigPath(path: string): boolean {
     if (fileName.includes("tsconfig") || fileName.includes("package.json") || fileName.includes("package-lock.json")) return true;
     if (fileName.endsWith(".lock") || fileName === "yarn.lock" || fileName === "pnpm-lock.yaml") return true;
     if (/\.(json|yaml|yml|toml|ini|env|config)$/.test(fileName)) return true;
+    return false;
+}
+
+function isDocPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    const parts = normalized.split("/");
+    const fileName = parts[parts.length - 1];
+    if (parts.some((p) => p === "docs" || p === "doc" || p === "documentation")) return true;
+    if (/\.(md|markdown|rst|txt|doc|docx|pdf)$/.test(fileName)) return true;
+    return false;
+}
+
+function isExcludedFrameworkOrMigration(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/");
+    const lower = normalized.toLowerCase();
+    const parts = lower.split("/");
+    const fileName = parts[parts.length - 1];
+
+    // Exclude migrations/**
+    if (parts.includes("migrations")) return true;
+
+    // Exclude management/commands
+    if (parts.includes("management") || parts.includes("commands")) return true;
+
+    // Exclude admin.py, apps.py, models.py, views.py, serializers.py, urls.py, settings.py, __init__.py, wsgi.py, asgi.py, manage.py
+    const djangoExcluded = [
+        "admin.py", "apps.py", "models.py", "views.py", "serializers.py",
+        "urls.py", "settings.py", "__init__.py", "wsgi.py", "asgi.py", "manage.py"
+    ];
+    if (djangoExcluded.includes(fileName)) return true;
+
     return false;
 }
 
@@ -139,14 +182,17 @@ export function computeGraphHealth(graph: RepositoryGraph): HealthSummaryResult 
         }
     }
 
-    // (b) Unused files: no dependents (inDegree === 0), excluding entry files, test files, config files
+    // (b) Unused files: only source files not imported anywhere, excluding entry files, test files, config files, framework/migrations, and docs
     const unusedFiles: string[] = [];
     for (const f of fileNodes) {
         const depCount = inDegree.get(f.path) || 0;
         if (depCount === 0) {
+            if (!isSourceFile(f.path)) continue;
             if (isEntryPath(f.path)) continue;
             if (isTestPath(f.path)) continue;
             if (isConfigPath(f.path)) continue;
+            if (isDocPath(f.path)) continue;
+            if (isExcludedFrameworkOrMigration(f.path)) continue;
             unusedFiles.push(f.path);
         }
     }

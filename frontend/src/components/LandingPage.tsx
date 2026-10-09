@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../api';
 import { useAppStore } from '../store';
+import { selectRepoStats } from '../graph-helpers';
 
 const LOADING_STEPS = [
     'Cloning repository',
@@ -473,6 +474,8 @@ export function LandingPage() {
                     }
                     if (cachedGraph) {
                         useAppStore.getState().setGraph(cachedGraph);
+                        const stats = selectRepoStats({ graph: cachedGraph, treeFiles: treeFilesResult, commits });
+                        useAppStore.getState().cacheShaAnalysis(repoUrlToAnalyze, headSha, cachedGraph, stats);
                     }
                 }
             }

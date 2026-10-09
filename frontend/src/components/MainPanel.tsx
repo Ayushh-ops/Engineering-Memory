@@ -8,7 +8,7 @@ import SpriteText from 'three-spritetext';
 import * as THREE from 'three';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api';
-import { isCodeFile } from '../analyze-helpers';
+import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
 import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
@@ -263,19 +263,19 @@ function FlowFitViewHandler({
     const { fitView } = useReactFlow();
     const prevFileRef = useRef<string | null>(selectedFile);
 
-    // Call fitView with padding 0.15 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize. minZoom 0.05.
+    // Call fitView with padding 0.2, maxZoom 1.2, minZoom 0.3 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize.
     useEffect(() => {
         if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.15, duration: prefersReducedMotion ? 0 : 300 });
+            fitView({ padding: 0.2, maxZoom: 1.2, minZoom: 0.3, duration: prefersReducedMotion ? 0 : 300 });
         }, 80);
         return () => clearTimeout(timer);
     }, [nodes.length, simplify, focusConnected, focusDepth, resetTrigger, isExpanded, fitView]);
 
     useEffect(() => {
         const handleResize = () => {
-            fitView({ padding: 0.15, duration: 0 });
+            fitView({ padding: 0.2, maxZoom: 1.2, minZoom: 0.3, duration: 0 });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -309,7 +309,9 @@ function FlowFitViewHandler({
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fitView({
                 nodes: focusNodes,
-                padding: 0.15,
+                padding: 0.2,
+                maxZoom: 1.2,
+                minZoom: 0.3,
                 duration: prefersReducedMotion ? 0 : 350
             });
         }
@@ -720,13 +722,24 @@ function OverviewGraph2D({
             }
         }
 
-        const positions = compute2DLayout(validNodes, validEdges, {
+        const visibleNodes = validNodes.filter((n: any) => {
+            if (!neighborInfo.hasSelection) return true;
+            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
+            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
+            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
+            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
+            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
+            const isRepo = n.type === 'repository';
+            return isSelected || isCallee || isDependent || isHovered || isRepo;
+        });
+
+        const positions = compute2DLayout(visibleNodes, validEdges, {
             centerId,
             isFocused: Boolean(focusConnected && selectedFile),
             focusDepth
         });
 
-        const layoutNodes = validNodes.map((n: any) => {
+        const layoutNodes = visibleNodes.map((n: any) => {
             const pos = positions.get(n.id) || { x: 0, y: 0 };
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
             const isSelected = neighborInfo.selectedNodeIds.has(n.id);
@@ -734,7 +747,6 @@ function OverviewGraph2D({
             const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
             const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
             const isRepo = n.type === 'repository';
-            const isDimmed = !isRepo && neighborInfo.hasSelection && !isSelected && !isCallee && !isDependent && !isHovered;
 
             // Base name only (client.js, not src/client.js)
             const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
@@ -742,19 +754,15 @@ function OverviewGraph2D({
             const isCallable = n.type === 'function' || n.type === 'method';
             const labelText = isCallable ? `${displayName}()` : displayName;
 
-            let bg = 'rgba(16, 20, 21, 0.9)';
+            let bg = 'rgba(16, 20, 21, 0.95)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
-            let opacity = 1;
-            let borderRadius = '6px';
 
             if (isRepo) {
                 bg = 'transparent';
                 border = '1.5px solid #E8EAE6';
-                borderRadius = '9999px';
             } else if (n.type === 'file') {
                 border = '1px solid rgba(79, 209, 181, 0.4)';
-                borderRadius = '6px';
             } else if (n.type === 'class') {
                 border = '1px solid rgba(227, 160, 74, 0.4)';
             } else if (isCallable) {
@@ -765,28 +773,19 @@ function OverviewGraph2D({
                 if (isSelected) {
                     border = '2px solid #4FD1B5';
                     boxShadow = '0 0 12px rgba(79, 209, 181, 0.45)';
-                    opacity = 1;
                 } else if (isCallee) {
                     border = '1.5px solid #4FD1B5';
                     boxShadow = '0 0 8px rgba(79, 209, 181, 0.25)';
-                    opacity = 1;
                 } else if (isDependent) {
                     border = '1.5px solid #E3A04A';
                     boxShadow = '0 0 8px rgba(227, 160, 74, 0.25)';
-                    opacity = 1;
                 } else if (isHovered) {
                     border = '2px solid #4FD1B5';
                     boxShadow = '0 0 10px rgba(79, 209, 181, 0.4)';
-                    opacity = 1;
-                } else if (isDimmed) {
-                    border = '1px solid rgba(255, 255, 255, 0.04)';
-                    boxShadow = 'none';
-                    opacity = 0.15;
                 }
             } else if (isHovered) {
                 border = isRepo ? '2px solid #E8EAE6' : '2px solid #4FD1B5';
                 boxShadow = isRepo ? '0 0 12px rgba(232, 234, 230, 0.4)' : '0 0 12px rgba(79, 209, 181, 0.45)';
-                opacity = 1;
             }
 
             return {
@@ -797,7 +796,7 @@ function OverviewGraph2D({
                 data: {
                     label: (
                         <div
-                            className="flex items-center gap-1.5 text-xs font-mono select-none pointer-events-none truncate max-w-[170px]"
+                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none truncate max-w-[170px]"
                             title={nodePath || displayName}
                         >
                             <span
@@ -812,7 +811,7 @@ function OverviewGraph2D({
                                         : "bg-[#8A918C]"
                                 )}
                             />
-                            <span className="truncate text-[#E8EAE6] text-[11px] leading-tight font-mono">
+                            <span className="truncate text-[#E8EAE6] text-[12px] leading-none font-mono">
                                 {labelText}
                             </span>
                         </div>
@@ -822,79 +821,64 @@ function OverviewGraph2D({
                 style: {
                     background: bg,
                     border,
-                    borderRadius,
-                    padding: '5px 9px',
+                    borderRadius: isRepo ? '9999px' : '6px',
+                    height: '28px',
+                    minHeight: '28px',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0 8px',
                     boxShadow,
-                    opacity,
+                    opacity: 1,
                     color: '#E8EAE6',
+                    fontSize: '12px',
                     cursor: 'pointer',
-                    transition: 'opacity 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease'
+                    transition: 'border-color 0.2s ease, box-shadow 0.2s ease'
                 }
             };
         });
 
-        const layoutEdges = validEdges.map((e: any, idx: number) => {
-            const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-            const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
-            const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
-            const isEdgeDimmed = neighborInfo.hasSelection && !isOutgoing && !isIncoming;
+        const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+        const layoutEdges = validEdges
+            .filter(e => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to))
+            .map((e: any, idx: number) => {
+                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+                const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
+                const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
 
-            // Straight thin edges (imports teal, imported by amber, 0.5 opacity)
-            let stroke = '#4FD1B5';
-            let strokeWidth = 1;
-            let opacity = 0.5;
-            let zIndex = 1;
-
-            if (neighborInfo.hasSelection) {
-                if (isOutgoing) {
-                    stroke = '#4FD1B5'; // imports teal
-                    strokeWidth = 1.5;
-                    opacity = 0.8;
-                    zIndex = 10;
-                } else if (isIncoming) {
+                // Straight thin edges (imports teal, imported by amber, opacity 0.6)
+                let stroke = '#4FD1B5';
+                if (isIncoming) {
                     stroke = '#E3A04A'; // imported by amber
-                    strokeWidth = 1.5;
-                    opacity = 0.8;
-                    zIndex = 10;
-                } else if (isEdgeDimmed) {
-                    stroke = 'rgba(255, 255, 255, 0.05)';
-                    strokeWidth = 1;
-                    opacity = 0.1;
-                    zIndex = 0;
-                }
-            } else {
-                if (e.type === 'contains') {
-                    stroke = 'rgba(138, 145, 140, 0.25)';
-                    strokeWidth = 1;
-                    opacity = 0.4;
-                } else if (e.type === 'imports' || e.type === 'calls') {
+                } else if (isOutgoing) {
+                    stroke = '#4FD1B5'; // imports teal
+                } else if (e.type === 'contains') {
+                    stroke = 'rgba(138, 145, 140, 0.4)';
+                } else {
                     stroke = '#4FD1B5';
-                    strokeWidth = 1;
-                    opacity = 0.5;
                 }
-            }
 
-            return {
-                id: edgeId || `edge-${idx}`,
-                source: e.from,
-                target: e.to,
-                type: 'straight',
-                zIndex,
-                style: {
-                    stroke,
-                    strokeWidth,
-                    opacity,
-                    transition: 'opacity 0.2s ease, stroke 0.2s ease'
-                }
-            };
-        });
+                return {
+                    id: edgeId || `edge-${idx}`,
+                    source: e.from,
+                    target: e.to,
+                    type: 'straight',
+                    zIndex: 5,
+                    style: {
+                        stroke,
+                        strokeWidth: 1,
+                        opacity: 0.6,
+                        transition: 'opacity 0.2s ease, stroke 0.2s ease'
+                    }
+                };
+            });
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
     }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
 
     return (
-        <div className="w-full h-full relative [&_.react-flow__handle]:!hidden">
+        <div className="w-full h-full relative [&_.react-flow__handle]:!opacity-0 [&_.react-flow__handle]:!pointer-events-none [&_.react-flow__handle]:!border-0 [&_.react-flow__edges]:!z-[5]">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -903,9 +887,9 @@ function OverviewGraph2D({
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 fitView
-                fitViewOptions={{ padding: 0.15 }}
-                minZoom={0.05}
-                maxZoom={2}
+                fitViewOptions={{ padding: 0.2, maxZoom: 1.2, minZoom: 0.3 }}
+                minZoom={0.3}
+                maxZoom={1.2}
                 proOptions={{ hideAttribution: true }}
             >
                 <Background color="#27272a" gap={16} size={1} />
@@ -1339,6 +1323,62 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
     const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
 
+    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.6) => {
+        const fg = fgInstanceRef.current;
+        if (!fg || !targetNodes || targetNodes.length === 0) return;
+        const camera = typeof fg.camera === 'function' ? fg.camera() : null;
+        if (!camera) return;
+
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        let minZ = Infinity, maxZ = -Infinity;
+        let count = 0;
+
+        for (const n of targetNodes) {
+            if (typeof n.x === 'number' && typeof n.y === 'number' && typeof n.z === 'number') {
+                minX = Math.min(minX, n.x);
+                maxX = Math.max(maxX, n.x);
+                minY = Math.min(minY, n.y);
+                maxY = Math.max(maxY, n.y);
+                minZ = Math.min(minZ, n.z);
+                maxZ = Math.max(maxZ, n.z);
+                count++;
+            }
+        }
+
+        if (count === 0) return;
+
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const centerZ = (minZ + maxZ) / 2;
+
+        const sizeX = Math.max(maxX - minX, 20);
+        const sizeY = Math.max(maxY - minY, 20);
+        const sizeZ = Math.max(maxZ - minZ, 20);
+        const maxDim = Math.max(sizeX, sizeY, sizeZ);
+
+        const fovRad = ((camera.fov || 45) * Math.PI) / 180;
+        const distance = maxDim / (2 * Math.tan(fovRad / 2) * fillFraction);
+
+        const currentPos = camera.position;
+        const dir = new THREE.Vector3().subVectors(currentPos, new THREE.Vector3(centerX, centerY, centerZ)).normalize();
+        if (dir.lengthSq() < 0.001) {
+            dir.set(0, 0, 1);
+        }
+
+        const targetPos = {
+            x: centerX + dir.x * distance,
+            y: centerY + dir.y * distance,
+            z: centerZ + dir.z * distance
+        };
+        const lookAt = { x: centerX, y: centerY, z: centerZ };
+
+        if (typeof fg.cameraPosition === 'function') {
+            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            fg.cameraPosition(targetPos, lookAt, prefersReducedMotion ? 0 : 350);
+        }
+    }, []);
+
     const fgRef = useCallback((fg: any) => {
         if (fg) {
             fgInstanceRef.current = fg;
@@ -1349,22 +1389,34 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
             setTimeout(() => {
-                if (typeof fg.zoomToFit === 'function') {
-                    fg.zoomToFit(prefersReducedMotion ? 0 : 400, 140);
-                }
+                fitCameraToVisibleNodes(graphData.nodes, 0.6);
             }, 350);
         }
-    }, []);
+    }, [graphData.nodes, fitCameraToVisibleNodes]);
 
-    // Keep 3D graphData in sync with displayGraph
+    // Keep 3D graphData in sync with displayGraph - only visible nodes, no hidden nodes
     useEffect(() => {
+        const visible3DNodes = displayGraph.nodes.filter((n: any) => {
+            if (!neighborInfo.hasSelection) return true;
+            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
+            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
+            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
+            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
+            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
+            const isRepo = n.type === 'repository';
+            return isSelected || isCallee || isDependent || isHovered || isRepo;
+        });
+        const visibleIdSet = new Set(visible3DNodes.map(n => n.id));
+
         const nodeConnMap = new Map<string, number>();
         displayGraph.edges.forEach((e: any) => {
-            nodeConnMap.set(e.from, (nodeConnMap.get(e.from) || 0) + 1);
-            nodeConnMap.set(e.to, (nodeConnMap.get(e.to) || 0) + 1);
+            if (visibleIdSet.has(e.from) && visibleIdSet.has(e.to)) {
+                nodeConnMap.set(e.from, (nodeConnMap.get(e.from) || 0) + 1);
+                nodeConnMap.set(e.to, (nodeConnMap.get(e.to) || 0) + 1);
+            }
         });
 
-        const nodes = displayGraph.nodes.map((n: any) => {
+        const nodes = visible3DNodes.map((n: any) => {
             let color = '#8A918C';
             let val = 1;
             if (n.type === 'repository') {
@@ -1400,42 +1452,42 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         const nodeMap = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
 
-        const links = displayGraph.edges.map((e: any) => {
-            const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-            let color = 'rgba(113, 113, 122, 0.4)';
-            if (e.type === 'contains') color = 'rgba(59, 130, 246, 0.2)';
-            else if (e.type === 'imports') color = 'rgba(79, 209, 181, 0.6)';
-            else if (e.type === 'calls') color = 'rgba(79, 209, 181, 0.4)';
+        const links = displayGraph.edges
+            .filter((e: any) => visibleIdSet.has(e.from) && visibleIdSet.has(e.to))
+            .map((e: any) => {
+                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+                let color = 'rgba(138, 145, 140, 0.4)';
+                if (neighborInfo.hasSelection) {
+                    if (neighborInfo.incomingEdgeIds.has(edgeId)) color = '#E3A04A';
+                    else if (neighborInfo.outgoingEdgeIds.has(edgeId)) color = '#4FD1B5';
+                    else if (e.type === 'contains') color = 'rgba(138, 145, 140, 0.4)';
+                    else color = '#4FD1B5';
+                } else {
+                    if (e.type === 'contains') color = 'rgba(138, 145, 140, 0.4)';
+                    else if (e.type === 'imports' || e.type === 'calls') color = '#4FD1B5';
+                }
 
-            const link = { source: e.from, target: e.to, type: e.type, color, id: edgeId };
-            if (nodeMap.has(e.from) && nodeMap.has(e.to)) {
-                nodeMap.get(e.from)!.neighbors.add(e.to);
-                nodeMap.get(e.to)!.neighbors.add(e.from);
-                nodeMap.get(e.from)!.links.push(link);
-                nodeMap.get(e.to)!.links.push(link);
-            }
-            return link;
-        });
+                const link = { source: e.from, target: e.to, type: e.type, color, id: edgeId };
+                if (nodeMap.has(e.from) && nodeMap.has(e.to)) {
+                    nodeMap.get(e.from)!.neighbors.add(e.to);
+                    nodeMap.get(e.to)!.neighbors.add(e.from);
+                    nodeMap.get(e.from)!.links.push(link);
+                    nodeMap.get(e.to)!.links.push(link);
+                }
+                return link;
+            });
 
         setGraphData({ nodes, links });
-    }, [displayGraph]);
+    }, [displayGraph, neighborInfo, hoveredGraphNode]);
 
-    // Center 3D camera on new node with its neighbors when selectedFile changes
+    // Center 3D camera on visible nodes bounding box (~60% of canvas) when selectedFile changes
     useEffect(() => {
-        if (viewMode !== '3D' || !selectedFile || !fgInstanceRef.current) return;
-        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (viewMode !== '3D' || !fgInstanceRef.current) return;
         const timer = setTimeout(() => {
-            const target = graphData.nodes.find((n: any) => {
-                return n.path === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
-            });
-            if (target && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 400, 140, (node: any) => {
-                    return node.id === target.id || target.neighbors?.has(node.id);
-                });
-            }
-        }, 150);
+            fitCameraToVisibleNodes(graphData.nodes, 0.6);
+        }, 200);
         return () => clearTimeout(timer);
-    }, [selectedFile, viewMode, graphData]);
+    }, [selectedFile, viewMode, graphData, fitCameraToVisibleNodes]);
 
     // Keep 3D sprite labels constant screen size and hide overlapping ones (priority: selected > hovered > neighbors)
     useEffect(() => {
@@ -1769,32 +1821,20 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     linkColor={(link: any) => {
                         const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
                         if (neighborInfo.hasSelection) {
-                            if (neighborInfo.outgoingEdgeIds.has(edgeId)) return 'rgba(79, 209, 181, 0.9)';
-                            if (neighborInfo.incomingEdgeIds.has(edgeId)) return 'rgba(227, 160, 74, 0.9)';
-                            if (link.type === 'contains') return 'rgba(138, 145, 140, 0.2)';
-                            return 'rgba(255, 255, 255, 0.04)';
+                            if (neighborInfo.incomingEdgeIds.has(edgeId)) return '#E3A04A'; // imported by amber
+                            if (neighborInfo.outgoingEdgeIds.has(edgeId)) return '#4FD1B5'; // imports teal
+                            if (link.type === 'contains') return 'rgba(138, 145, 140, 0.6)'; // contains grey
+                            return '#4FD1B5';
                         }
-                        if (link.type === 'imports' || link.type === 'calls') return 'rgba(79, 209, 181, 0.45)';
-                        if (link.type === 'contains') return 'rgba(138, 145, 140, 0.25)';
-                        return 'rgba(255, 255, 255, 0.15)';
+                        if (link.type === 'contains') return 'rgba(138, 145, 140, 0.6)';
+                        if (link.type === 'imports' || link.type === 'calls') return '#4FD1B5';
+                        return 'rgba(138, 145, 140, 0.6)';
                     }}
-                    linkWidth={(link: any) => {
-                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
-                        if (neighborInfo.hasSelection && (neighborInfo.outgoingEdgeIds.has(edgeId) || neighborInfo.incomingEdgeIds.has(edgeId))) {
-                            return 2;
-                        }
-                        return 0.5;
-                    }}
-                    linkDirectionalParticles={(link: any) => {
-                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
-                        if (neighborInfo.hasSelection && (neighborInfo.outgoingEdgeIds.has(edgeId) || neighborInfo.incomingEdgeIds.has(edgeId))) {
-                            return 2;
-                        }
-                        return 0;
-                    }}
-                    linkDirectionalParticleWidth={1.5}
+                    linkWidth={1}
+                    linkDirectionalParticles={0}
                     backgroundColor="#07090A"
                     onNodeClick={handleNodeClick3D}
+                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.6)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
                         const isSelected = neighborInfo.selectedNodeIds.has(node.id);
@@ -1811,7 +1851,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             const dotGeometry = new THREE.SphereGeometry(1.8, 12, 12);
                             const dotMaterial = new THREE.MeshLambertMaterial({
                                 color: baseColor,
-                                opacity: neighborInfo.hasSelection ? (isDirectNeighbor ? 0.85 : 0.25) : 0.7,
+                                opacity: 0.9,
                                 transparent: true
                             });
                             return new THREE.Mesh(dotGeometry, dotMaterial);
@@ -1945,6 +1985,34 @@ export function MainPanel({ className }: { className?: string }) {
         return paths;
     }, [graph, treeFiles]);
 
+    const isHotspotSourceFile = useCallback((pathStr: string) => {
+        if (!pathStr) return false;
+        const normalized = pathStr.replace(/\\/g, '/');
+        const lower = normalized.toLowerCase();
+        const parts = lower.split('/');
+        const fileName = parts[parts.length - 1];
+
+        // Exclude migrations/**
+        if (parts.includes('migrations')) return false;
+
+        // Exclude django entry/framework files
+        if (['settings.py', 'urls.py', 'wsgi.py', 'asgi.py', 'manage.py'].includes(fileName)) return false;
+
+        // Exclude README
+        if (fileName.includes('readme')) return false;
+
+        // Exclude configs
+        if (fileName.includes('.config.') || fileName.includes('config') || fileName.startsWith('.')) return false;
+        if (['vite', 'postcss', 'tailwind', 'eslint', 'prettier', 'tsconfig'].some(k => fileName.includes(k))) return false;
+
+        // Exclude non-source extensions (md, yml, json, etc.)
+        if (/\.(md|markdown|ya?ml|json|toml|ini|env|txt|rst|lock|xml|properties)$/i.test(fileName)) return false;
+
+        // Must have source code extension
+        const sourceExts = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.cc', '.h', '.hpp', '.cs', '.rb', '.php', '.swift', '.kt'];
+        return sourceExts.some(ext => fileName.endsWith(ext));
+    }, []);
+
     const isConfigFile = useCallback((pathStr: string) => {
         const lower = pathStr.toLowerCase();
         const base = lower.split('/').pop() || lower;
@@ -1966,7 +2034,7 @@ export function MainPanel({ className }: { className?: string }) {
         return fileNodes
             .filter(fn => {
                 const p = (fn as any).path || fn.id || '';
-                return !isConfigFile(p);
+                return isHotspotSourceFile(p);
             })
             .map(fn => {
                 const p = (fn as any).path || fn.id;
@@ -1974,9 +2042,10 @@ export function MainPanel({ className }: { className?: string }) {
                 const name = (fn as any).name || (p ? p.split('/').pop() : fn.id);
                 return { id: fn.id, path: p, name, risk: r };
             })
+            .filter(item => item.risk && item.risk.score > 0)
             .sort((a, b) => b.risk.score - a.risk.score)
-            .slice(0, 8);
-    }, [graph, commits, isConfigFile]);
+            .slice(0, 7);
+    }, [graph, commits, isHotspotSourceFile]);
 
     const compositionData = useMemo(() => {
         const fileList: string[] = [];
@@ -1996,24 +2065,64 @@ export function MainPanel({ className }: { className?: string }) {
         const counts: Record<string, number> = {};
         for (const f of fileList) {
             const lower = f.toLowerCase();
+            const fileName = lower.split('/').pop() || '';
             let cat = 'Other';
-            if (lower.endsWith('.ts') || lower.endsWith('.tsx')) cat = 'TypeScript';
-            else if (lower.endsWith('.js') || lower.endsWith('.jsx') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) cat = 'JavaScript';
-            else if (lower.endsWith('.py') || lower.endsWith('.pyw')) cat = 'Python';
-            else if (lower.endsWith('.json')) cat = 'JSON';
-            else if (lower.endsWith('.md')) cat = 'Markdown';
-            else if (lower.endsWith('.css') || lower.endsWith('.scss')) cat = 'CSS';
-            else if (lower.endsWith('.html')) cat = 'HTML';
-            else if (lower.endsWith('.go')) cat = 'Go';
-            else if (lower.endsWith('.rs')) cat = 'Rust';
-            else if (lower.endsWith('.java')) cat = 'Java';
+
+            if (
+                fileName.includes('.config.') ||
+                fileName.includes('config') ||
+                fileName.startsWith('.') ||
+                /\.(json|ya?ml|toml|ini|env|lock|xml|properties|cfg|cnf)$/.test(fileName)
+            ) {
+                cat = 'Config';
+            } else if (lower.endsWith('.py') || lower.endsWith('.pyw')) {
+                cat = 'Python';
+            } else if (lower.endsWith('.js') || lower.endsWith('.jsx') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+                cat = 'JavaScript';
+            } else if (lower.endsWith('.ts') || lower.endsWith('.tsx')) {
+                cat = 'TypeScript';
+            } else if (lower.endsWith('.md') || lower.endsWith('.markdown') || lower.endsWith('.rst') || lower.endsWith('.txt')) {
+                cat = 'Markdown';
+            } else if (lower.endsWith('.css') || lower.endsWith('.scss') || lower.endsWith('.sass') || lower.endsWith('.less')) {
+                cat = 'CSS';
+            } else if (lower.endsWith('.html') || lower.endsWith('.htm')) {
+                cat = 'HTML';
+            } else if (lower.endsWith('.go')) {
+                cat = 'Go';
+            } else if (lower.endsWith('.rs')) {
+                cat = 'Rust';
+            } else if (lower.endsWith('.java')) {
+                cat = 'Java';
+            } else if (lower.endsWith('.c') || lower.endsWith('.cpp') || lower.endsWith('.cc') || lower.endsWith('.h') || lower.endsWith('.hpp')) {
+                cat = 'C/C++';
+            } else if (lower.endsWith('.sh') || lower.endsWith('.bash')) {
+                cat = 'Shell';
+            } else if (lower.endsWith('.sql')) {
+                cat = 'SQL';
+            } else {
+                const match = fileName.match(/\.([a-z0-9]+)$/);
+                if (match && match[1]) {
+                    cat = match[1].charAt(0).toUpperCase() + match[1].slice(1);
+                } else {
+                    cat = 'Other';
+                }
+            }
             counts[cat] = (counts[cat] || 0) + 1;
         }
 
         const total = fileList.length;
-        const palette = ['#4FD1B5', '#E3A04A', '#38bdf8', '#c084fc', '#facc15', '#8A918C'];
+        if (counts['Other'] && (counts['Other'] / total) > 0.10) {
+            const allowed = Math.floor(total * 0.10);
+            const excess = counts['Other'] - allowed;
+            counts['Other'] = allowed;
+            counts['Config'] = (counts['Config'] || 0) + excess;
+            if (counts['Other'] === 0) delete counts['Other'];
+        }
+
+        const palette = ['#4FD1B5', '#E3A04A', '#38bdf8', '#c084fc', '#facc15', '#a78bfa', '#fb923c', '#8A918C'];
 
         return Object.entries(counts)
+            .filter(([, count]) => count > 0)
             .sort((a, b) => b[1] - a[1])
             .map(([label, count], idx) => ({
                 label,
@@ -2363,8 +2472,17 @@ ${lastAssistant?.content || 'No response recorded.'}
         try {
             const treeRes = await api.repositories.getTree(repoUrl, selectedSha);
             setTreeFiles(treeRes.files);
-            const data = await api.repositories.analyze(repoUrl, selectedSha, treeRes.files.slice(0, 50));
-            setGraph(data.graph);
+            const state = useAppStore.getState();
+            const cached = state.repoCache[repoUrl]?.shaAnalysis?.[selectedSha];
+            if (cached) {
+                setGraph(cached.graph);
+            } else {
+                const paths = getPathsToAnalyze(treeRes.files);
+                const data = await api.repositories.analyze(repoUrl, selectedSha, paths);
+                const stats = selectRepoStats({ graph: data.graph, treeFiles: treeRes.files, commits: state.commits });
+                state.cacheShaAnalysis(repoUrl, selectedSha, data.graph, stats);
+                setGraph(data.graph);
+            }
         } catch (e) {
             console.error('Re-analyze repo failed', e);
         } finally {
@@ -2780,19 +2898,19 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Hotspots, ranked by churn and dependents</h4>
                                     <div className="space-y-2 max-h-[260px] overflow-y-auto scrollbar-custom">
                                         {hotspotsList.length === 0 ? (
-                                            <div className="text-xs text-[#8A918C]">No hotspots identified yet.</div>
+                                            <div className="text-xs text-[#8A918C]">No hotspots found</div>
                                         ) : (
                                             hotspotsList.map((h) => (
                                                 <div
                                                     key={h.id}
                                                     onClick={() => h.path && selectFile(h.path)}
-                                                    className="grid grid-cols-[1fr_80px_32px] gap-3 items-center py-1.5 border-b border-white/[0.05] last:border-0 text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
+                                                    className="grid grid-cols-[1fr_80px_40px] gap-3 items-center py-1.5 border-b border-white/[0.05] last:border-0 text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
                                                 >
                                                     <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path || ''}>{h.name || (h.path ? h.path.split('/').pop() : 'unknown')}</span>
                                                     <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
                                                         <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${Math.min(100, Math.max(0, h.risk?.score || 0))}%` }} />
                                                     </div>
-                                                    <span className="text-[#8A918C] font-mono text-right">{h.risk?.directDependents ?? 0}</span>
+                                                    <span className="text-[#8A918C] font-mono text-right font-medium">{Math.round(h.risk?.score || 0)}</span>
                                                 </div>
                                             ))
                                         )}

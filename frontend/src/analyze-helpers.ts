@@ -11,7 +11,9 @@ export function isCodeFile(path: string): boolean {
 
 export function getPathsToAnalyze(treeFiles: string[], targetFile?: string): string[] {
     const maxFiles = ANALYSIS_MAX_FILES;
-    const codeFiles = treeFiles.filter(f => isCodeFile(f));
+    const codeFiles = [...treeFiles]
+        .filter(f => isCodeFile(f))
+        .sort((a, b) => a.localeCompare(b));
     if (targetFile && isCodeFile(targetFile)) {
         const withoutTarget = codeFiles.filter(f => f !== targetFile);
         return [targetFile, ...withoutTarget].slice(0, maxFiles);

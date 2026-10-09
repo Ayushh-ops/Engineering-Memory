@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { RepositoryGraph, RepositoryMetadata, CommitMetadata, ImpactTarget } from './api';
 import { api } from './api';
 import { getPathsToAnalyze, isFileInGraph, isCodeFile } from './analyze-helpers';
+import type { RepoStats } from './graph-helpers';
 
 export interface AppState {
     // Repository Input state
@@ -68,7 +69,14 @@ export interface AppState {
     selectFile: (path: string) => Promise<void>;
 
     // Cache to prevent redundant fetching
-    repoCache: Record<string, { meta?: RepositoryMetadata, commits?: CommitMetadata[], trees?: Record<string, string[]>, graphs?: Record<string, RepositoryGraph> }>;
+    repoCache: Record<string, {
+        meta?: RepositoryMetadata;
+        commits?: CommitMetadata[];
+        trees?: Record<string, string[]>;
+        graphs?: Record<string, RepositoryGraph>;
+        shaAnalysis?: Record<string, { graph: RepositoryGraph; stats: RepoStats }>;
+    }>;
+    cacheShaAnalysis: (url: string, sha: string, graph: RepositoryGraph, stats: RepoStats) => void;
 
     // Custom History Navigation
     history: { url: string, sha: string | null, file: string | null, tab: string }[];
@@ -167,6 +175,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     },
 
     repoCache: {},
+    cacheShaAnalysis: (url: string, sha: string, graph: RepositoryGraph, stats: RepoStats) => set((state) => {
+        const existing = state.repoCache[url] || {};
+        return {
+            repoCache: {
+                ...state.repoCache,
+                [url]: {
+                    ...existing,
+                    shaAnalysis: {
+                        ...(existing.shaAnalysis || {}),
+                        [sha]: { graph, stats }
+                    }
+                }
+            }
+        };
+    }),
 
     history: [],
     historyIndex: -1,
