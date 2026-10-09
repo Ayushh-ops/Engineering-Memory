@@ -318,7 +318,17 @@ export function RightPanel({ className }: { className?: string }) {
     return (
         <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
             <div className="p-3.5 border-b border-white/10">
-                <h3 className="text-xs font-semibold text-[#E8EAE6]">Node details</h3>
+                <div className="flex items-center justify-between">
+                    <h3 className="font-mono text-xs font-semibold text-[#E8EAE6] truncate" title={nodeName}>
+                        {nodeName}{selectedSymbol?.type === 'function' || selectedSymbol?.type === 'method' ? '()' : ''}
+                    </h3>
+                    <Badge variant="default">{nodeType}</Badge>
+                </div>
+                {selectedFile && (
+                    <div className="text-[11px] text-[#8A918C] font-mono truncate mt-0.5" title={selectedFile}>
+                        {selectedFile}
+                    </div>
+                )}
             </div>
 
             <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">

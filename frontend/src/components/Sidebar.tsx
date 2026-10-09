@@ -292,7 +292,7 @@ export function Sidebar({ className }: { className?: string }) {
                         className="w-full bg-white/[0.03] border border-white/[0.08] rounded-md py-1 pl-7 pr-2 text-xs font-mono text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 transition-colors"
                     />
                 </div>
-                <div className="flex-1 overflow-y-auto scrollbar-custom pt-0.5 pb-2">
+                <div className="flex-1 min-h-[220px] overflow-y-auto scrollbar-custom pt-0.5 pb-2">
                     {loadingTree ? (
                         <div className="text-xs p-4 text-[#8A918C] flex items-center justify-center gap-2">
                             <Loader2 size={14} className="animate-spin text-[#4FD1B5]" />
@@ -305,61 +305,88 @@ export function Sidebar({ className }: { className?: string }) {
 
                 {/* Change Set Tray */}
                 {changeSet.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-white/[0.08] shrink-0 flex flex-col gap-1.5">
-                        <div className="flex items-center justify-between px-1">
-                            <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
-                                <Layers size={12} className="text-[#4FD1B5]" />
-                                <span>Change set ({changeSet.length})</span>
-                            </span>
-                            <button
-                                onClick={clearChangeSet}
-                                className="text-[10px] text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
-                                title="Clear change set"
-                            >
-                                Clear
-                            </button>
-                        </div>
-                        <div className="max-h-24 overflow-y-auto scrollbar-custom space-y-1 pr-1">
-                            {changeSet.map((path) => (
-                                <div
-                                    key={path}
-                                    className="flex items-center justify-between px-2 py-0.5 rounded bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono group"
-                                >
-                                    <span
-                                        onClick={() => handleFileSelect(path)}
-                                        className="truncate text-[#E8EAE6] hover:text-[#4FD1B5] cursor-pointer flex-1"
-                                        title={path}
-                                    >
-                                        {path.split('/').pop()}
-                                    </span>
+                    changeSet.length > 3 ? (
+                        <div className="mt-2 pt-2 border-t border-white/[0.08] shrink-0">
+                            <div className="flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-xs font-mono">
+                                <span className="text-[11px] text-[#8A918C] flex items-center gap-1.5 truncate">
+                                    <Layers size={12} className="text-[#4FD1B5] shrink-0" />
+                                    <span className="truncate">Change set ({changeSet.length})</span>
+                                </span>
+                                <div className="flex items-center gap-1.5 shrink-0">
                                     <button
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            removeFromChangeSet(path);
-                                        }}
-                                        className="text-[#8A918C] hover:text-red-400 p-0.5 rounded cursor-pointer transition-colors shrink-0 ml-1"
-                                        title="Remove file"
+                                        onClick={handleAnalyzeChangeSet}
+                                        disabled={changeSetLoading || !graph}
+                                        className="px-2 py-0.5 rounded text-[10px] font-medium bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] disabled:opacity-50 cursor-pointer transition-colors"
+                                    >
+                                        {changeSetLoading ? 'Analyzing...' : 'Analyze'}
+                                    </button>
+                                    <button
+                                        onClick={clearChangeSet}
+                                        className="text-[#8A918C] hover:text-red-400 p-0.5 cursor-pointer transition-colors"
+                                        title="Clear change set"
                                     >
                                         <X size={11} />
                                     </button>
                                 </div>
-                            ))}
+                            </div>
                         </div>
-                        <button
-                            onClick={handleAnalyzeChangeSet}
-                            disabled={changeSetLoading || !graph}
-                            className="w-full py-1.5 px-3 rounded-lg text-xs font-medium font-mono bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-sm"
-                        >
-                            {changeSetLoading ? (
-                                <>
-                                    <Loader2 size={12} className="animate-spin" />
-                                    <span>Analyzing...</span>
-                                </>
-                            ) : (
-                                <span>Analyze change set</span>
-                            )}
-                        </button>
-                    </div>
+                    ) : (
+                        <div className="mt-2 pt-2 border-t border-white/[0.08] shrink-0 flex flex-col gap-1.5">
+                            <div className="flex items-center justify-between px-1">
+                                <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
+                                    <Layers size={12} className="text-[#4FD1B5]" />
+                                    <span>Change set ({changeSet.length})</span>
+                                </span>
+                                <button
+                                    onClick={clearChangeSet}
+                                    className="text-[10px] text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                                    title="Clear change set"
+                                >
+                                    Clear
+                                </button>
+                            </div>
+                            <div className="max-h-24 overflow-y-auto scrollbar-custom space-y-1 pr-1">
+                                {changeSet.map((path) => (
+                                    <div
+                                        key={path}
+                                        className="flex items-center justify-between px-2 py-0.5 rounded bg-white/[0.03] border border-white/[0.06] text-[11px] font-mono group"
+                                    >
+                                        <span
+                                            onClick={() => handleFileSelect(path)}
+                                            className="truncate text-[#E8EAE6] hover:text-[#4FD1B5] cursor-pointer flex-1"
+                                            title={path}
+                                        >
+                                            {path.split('/').pop()}
+                                        </span>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                removeFromChangeSet(path);
+                                            }}
+                                            className="text-[#8A918C] hover:text-red-400 p-0.5 rounded cursor-pointer transition-colors shrink-0 ml-1"
+                                            title="Remove file"
+                                        >
+                                            <X size={11} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                            <button
+                                onClick={handleAnalyzeChangeSet}
+                                disabled={changeSetLoading || !graph}
+                                className="w-full py-1.5 px-3 rounded-lg text-xs font-medium font-mono bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+                            >
+                                {changeSetLoading ? (
+                                    <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        <span>Analyzing...</span>
+                                    </>
+                                ) : (
+                                    <span>Analyze change set</span>
+                                )}
+                            </button>
+                        </div>
+                    )
                 )}
             </div>
         </div>
