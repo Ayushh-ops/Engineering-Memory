@@ -464,145 +464,160 @@ export function compute2DLayout(
     const positions = new Map<string, { x: number; y: number }>();
     if (nodes.length === 0) return positions;
 
-    // 1. If in focused mode with a selected node, use clean radial layout
-    if (options?.isFocused && options.centerId) {
+    const rowHeight = 54;
+    const colSpacing = 280;
+
+    // 1. Layered left-to-right layout with selected node in the center column
+    if (options?.centerId) {
         const centerId = options.centerId;
-        positions.set(centerId, { x: 0, y: 0 });
 
-        const depth1 = nodes.filter(n =>
-            n.id !== centerId &&
-            edges.some(e => (e.from === centerId && e.to === n.id) || (e.to === centerId && e.from === n.id))
-        );
-        const depth1Ids = new Set(depth1.map(n => n.id));
-        const depth2 = nodes.filter(n => n.id !== centerId && !depth1Ids.has(n.id));
+        // Incoming edges: importers of center (e.to === centerId) -> left side
+        // Outgoing edges: imports of center (e.from === centerId) -> right side
+        const depth1Importers = new Set<string>();
+        const depth1Imports = new Set<string>();
 
-        const r1 = Math.max(220, depth1.length * 34);
-        depth1.forEach((n, i) => {
-            const angle = (2 * Math.PI * i) / Math.max(1, depth1.length);
-            positions.set(n.id, {
-                x: Math.round(Math.cos(angle) * r1),
-                y: Math.round(Math.sin(angle) * r1)
+        for (const e of edges) {
+            if (e.to === centerId && e.from !== centerId) {
+                depth1Importers.add(e.from);
+            }
+            if (e.from === centerId && e.to !== centerId) {
+                depth1Imports.add(e.to);
+            }
+        }
+
+        // Depth 2 if present
+        const depth2Importers = new Set<string>();
+        const depth2Imports = new Set<string>();
+
+        if (options.focusDepth === 2) {
+            for (const e of edges) {
+                if (depth1Importers.has(e.to) && e.from !== centerId && !depth1Importers.has(e.from) && !depth1Imports.has(e.from)) {
+                    depth2Importers.add(e.from);
+                }
+                if (depth1Imports.has(e.from) && e.to !== centerId && !depth1Imports.has(e.to) && !depth1Importers.has(e.to)) {
+                    depth2Imports.add(e.to);
+                }
+            }
+        }
+
+        const columns = new Map<number, string[]>();
+        const assigned = new Set<string>();
+
+        columns.set(0, [centerId]);
+        assigned.add(centerId);
+
+        const colNeg1: string[] = [];
+        for (const n of nodes) {
+            if (depth1Importers.has(n.id) && !assigned.has(n.id)) {
+                colNeg1.push(n.id);
+                assigned.add(n.id);
+            }
+        }
+        columns.set(-1, colNeg1);
+
+        const colPos1: string[] = [];
+        for (const n of nodes) {
+            if (depth1Imports.has(n.id) && !assigned.has(n.id)) {
+                colPos1.push(n.id);
+                assigned.add(n.id);
+            }
+        }
+        columns.set(1, colPos1);
+
+        const colNeg2: string[] = [];
+        for (const n of nodes) {
+            if (depth2Importers.has(n.id) && !assigned.has(n.id)) {
+                colNeg2.push(n.id);
+                assigned.add(n.id);
+            }
+        }
+        if (colNeg2.length > 0) columns.set(-2, colNeg2);
+
+        const colPos2: string[] = [];
+        for (const n of nodes) {
+            if (depth2Imports.has(n.id) && !assigned.has(n.id)) {
+                colPos2.push(n.id);
+                assigned.add(n.id);
+            }
+        }
+        if (colPos2.length > 0) columns.set(2, colPos2);
+
+        // Any remaining visible nodes: distribute them to importers/imports columns
+        const remaining: string[] = [];
+        for (const n of nodes) {
+            if (!assigned.has(n.id)) {
+                remaining.push(n.id);
+                assigned.add(n.id);
+            }
+        }
+        if (remaining.length > 0) {
+            remaining.forEach((id, idx) => {
+                const targetCol = idx % 2 === 0 ? -1 : 1;
+                const existing = columns.get(targetCol) || [];
+                existing.push(id);
+                columns.set(targetCol, existing);
             });
-        });
+        }
 
-        if (depth2.length > 0) {
-            const r2 = r1 + Math.max(200, depth2.length * 26);
-            depth2.forEach((n, i) => {
-                const angle = (2 * Math.PI * i) / Math.max(1, depth2.length) + 0.3;
-                positions.set(n.id, {
-                    x: Math.round(Math.cos(angle) * r2),
-                    y: Math.round(Math.sin(angle) * r2)
-                });
+        // Layout each column vertically centered around y = 0
+        for (const [colIndex, nodeIds] of columns.entries()) {
+            const x = colIndex * colSpacing;
+            const count = nodeIds.length;
+            const totalHeight = (count - 1) * rowHeight;
+            nodeIds.forEach((id, idx) => {
+                const y = Math.round(-totalHeight / 2 + idx * rowHeight);
+                positions.set(id, { x, y });
             });
         }
 
         return positions;
     }
 
-    // 2. Auto force-directed layout for full graph or simplified graph
-    interface SimNode {
-        id: string;
-        x: number;
-        y: number;
-        vx: number;
-        vy: number;
-    }
-
-    const simNodes: SimNode[] = [];
-    const simMap = new Map<string, SimNode>();
-
-    nodes.forEach((n, idx) => {
-        if (n.type === 'repository') {
-            const sn: SimNode = { id: n.id, x: 0, y: 0, vx: 0, vy: 0 };
-            simNodes.push(sn);
-            simMap.set(n.id, sn);
-            return;
-        }
-        const theta = idx * 2.399963; // golden angle
-        const r = 90 + Math.sqrt(idx) * 80;
-        const sn: SimNode = {
-            id: n.id,
-            x: Math.cos(theta) * r,
-            y: Math.sin(theta) * r * 0.7,
-            vx: 0,
-            vy: 0
-        };
-        simNodes.push(sn);
-        simMap.set(n.id, sn);
+    // 2. Layered left-to-right layout when no node is selected
+    const inDegrees = new Map<string, number>();
+    const outDegrees = new Map<string, number>();
+    nodes.forEach(n => {
+        inDegrees.set(n.id, 0);
+        outDegrees.set(n.id, 0);
     });
-
-    const edgePairs: Array<[SimNode, SimNode]> = [];
     edges.forEach(e => {
-        const u = simMap.get(e.from);
-        const v = simMap.get(e.to);
-        if (u && v && u !== v) {
-            edgePairs.push([u, v]);
+        if (outDegrees.has(e.from)) outDegrees.set(e.from, (outDegrees.get(e.from) || 0) + 1);
+        if (inDegrees.has(e.to)) inDegrees.set(e.to, (inDegrees.get(e.to) || 0) + 1);
+    });
+
+    const sortedNodes = [...nodes].sort((a, b) => {
+        const flowA = (outDegrees.get(a.id) || 0) - (inDegrees.get(a.id) || 0);
+        const flowB = (outDegrees.get(b.id) || 0) - (inDegrees.get(b.id) || 0);
+        return flowB - flowA;
+    });
+
+    const leftCol: string[] = [];
+    const centerCol: string[] = [];
+    const rightCol: string[] = [];
+
+    const perCol = Math.max(1, Math.ceil(sortedNodes.length / 3));
+    sortedNodes.forEach((n, idx) => {
+        if (idx < perCol) {
+            leftCol.push(n.id);
+        } else if (idx < perCol * 2) {
+            centerCol.push(n.id);
+        } else {
+            rightCol.push(n.id);
         }
     });
 
-    const k = 190;
-    const k2 = k * k;
-    const iterations = 100;
+    const cols: Array<{ x: number; ids: string[] }> = [
+        { x: -colSpacing, ids: leftCol },
+        { x: 0, ids: centerCol },
+        { x: colSpacing, ids: rightCol }
+    ];
 
-    for (let step = 0; step < iterations; step++) {
-        const temp = Math.max(1, 30 * (1 - step / iterations));
-
-        for (let i = 0; i < simNodes.length; i++) {
-            const u = simNodes[i];
-            for (let j = i + 1; j < simNodes.length; j++) {
-                const v = simNodes[j];
-                const dx = u.x - v.x;
-                const dy = (u.y - v.y) * 1.5;
-                const dist2 = dx * dx + dy * dy + 1;
-                const dist = Math.sqrt(dist2);
-                if (dist < 600) {
-                    const force = k2 / dist;
-                    const fx = (dx / dist) * force;
-                    const fy = (dy / dist) * force;
-                    u.vx += fx;
-                    u.vy += fy;
-                    v.vx -= fx;
-                    v.vy -= fy;
-                }
-            }
-        }
-
-        for (let e = 0; e < edgePairs.length; e++) {
-            const [u, v] = edgePairs[e];
-            const dx = v.x - u.x;
-            const dy = v.y - u.y;
-            const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
-            const force = (dist * dist) / k * 0.04;
-            const fx = (dx / dist) * force;
-            const fy = (dy / dist) * force;
-            u.vx += fx;
-            u.vy += fy;
-            v.vx -= fx;
-            v.vy -= fy;
-        }
-
-        for (let i = 0; i < simNodes.length; i++) {
-            const u = simNodes[i];
-            u.vx -= u.x * 0.025;
-            u.vy -= u.y * 0.025;
-        }
-
-        for (let i = 0; i < simNodes.length; i++) {
-            const u = simNodes[i];
-            const vel = Math.sqrt(u.vx * u.vx + u.vy * u.vy);
-            if (vel > temp) {
-                u.vx = (u.vx / vel) * temp;
-                u.vy = (u.vy / vel) * temp;
-            }
-            u.x += u.vx;
-            u.y += u.vy;
-            u.vx *= 0.45;
-            u.vy *= 0.45;
-        }
-    }
-
-    simNodes.forEach(sn => {
-        positions.set(sn.id, { x: Math.round(sn.x), y: Math.round(sn.y) });
+    cols.forEach(col => {
+        const totalHeight = (col.ids.length - 1) * rowHeight;
+        col.ids.forEach((id, idx) => {
+            const y = Math.round(-totalHeight / 2 + idx * rowHeight);
+            positions.set(id, { x: col.x, y });
+        });
     });
 
     return positions;

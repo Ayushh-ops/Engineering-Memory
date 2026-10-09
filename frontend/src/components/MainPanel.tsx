@@ -2,7 +2,7 @@ import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
+import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
 import SpriteText from 'three-spritetext';
 import * as THREE from 'three';
@@ -349,8 +349,8 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 export function extractValidEvidence(text: string, analyzedPaths: Set<string>): string[] {
     if (!text || analyzedPaths.size === 0) return [];
 
-    const validChips: string[] = [];
-    const seen = new Set<string>();
+    const pathToFirstLine = new Map<string, string | undefined>();
+    const orderedPaths: string[] = [];
 
     const tokenRegex = /(?:^|[\s`(\[<"'])((?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(\d+))?(?:$|[\s`\)\]>"',;:?.])/g;
     let match: RegExpExecArray | null;
@@ -387,15 +387,19 @@ export function extractValidEvidence(text: string, analyzedPaths: Set<string>): 
         }
 
         if (matchedPath) {
-            const chip = lineStr ? `${matchedPath}:${lineStr}` : matchedPath;
-            if (!seen.has(chip)) {
-                seen.add(chip);
-                validChips.push(chip);
+            if (!pathToFirstLine.has(matchedPath)) {
+                pathToFirstLine.set(matchedPath, lineStr || undefined);
+                orderedPaths.push(matchedPath);
+            } else if (!pathToFirstLine.get(matchedPath) && lineStr) {
+                pathToFirstLine.set(matchedPath, lineStr);
             }
         }
     }
 
-    return validChips;
+    return orderedPaths.map(p => {
+        const line = pathToFirstLine.get(p);
+        return line ? `${p}:${line}` : p;
+    });
 }
 
 function renderInlineMarkdown(text: string): React.ReactNode[] {
@@ -657,12 +661,26 @@ function OverviewGraph2D({
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
 
     useEffect(() => {
-        // Filter out stray / commit / symbol-change nodes
-        const validNodes = graph.nodes.filter((n: any) => {
-            if (simplify && n.type !== 'file' && n.type !== 'repository') {
+        // Filter out stray / commit / symbol-change nodes, and remove repo node unless nothing else is connected
+        const nonRepoNodes = graph.nodes.filter((n: any) => {
+            if (simplify && n.type !== 'file') {
                 return false;
             }
-            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method' && n.type !== 'repository') {
+            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') {
+                return false;
+            }
+            return Boolean(n.id);
+        });
+        const includeRepo = nonRepoNodes.length === 0;
+
+        const validNodes = graph.nodes.filter((n: any) => {
+            if (n.type === 'repository') {
+                return includeRepo;
+            }
+            if (simplify && n.type !== 'file') {
+                return false;
+            }
+            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') {
                 return false;
             }
             return Boolean(n.id);
@@ -774,6 +792,8 @@ function OverviewGraph2D({
             return {
                 id: n.id,
                 position: pos,
+                sourcePosition: Position.Right,
+                targetPosition: Position.Left,
                 data: {
                     label: (
                         <div
@@ -819,25 +839,22 @@ function OverviewGraph2D({
             const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
             const isEdgeDimmed = neighborInfo.hasSelection && !isOutgoing && !isIncoming;
 
-            let stroke = 'rgba(255, 255, 255, 0.12)';
-            let strokeDasharray: string | undefined = undefined;
-            let animated = false;
+            // Straight thin edges (imports teal, imported by amber, 0.5 opacity)
+            let stroke = '#4FD1B5';
             let strokeWidth = 1;
             let opacity = 0.5;
             let zIndex = 1;
 
             if (neighborInfo.hasSelection) {
                 if (isOutgoing) {
-                    stroke = '#4FD1B5';
-                    strokeWidth = 2;
-                    animated = true;
-                    opacity = 0.95;
+                    stroke = '#4FD1B5'; // imports teal
+                    strokeWidth = 1.5;
+                    opacity = 0.8;
                     zIndex = 10;
                 } else if (isIncoming) {
-                    stroke = '#E3A04A';
-                    strokeWidth = 2;
-                    animated = true;
-                    opacity = 0.95;
+                    stroke = '#E3A04A'; // imported by amber
+                    strokeWidth = 1.5;
+                    opacity = 0.8;
                     zIndex = 10;
                 } else if (isEdgeDimmed) {
                     stroke = 'rgba(255, 255, 255, 0.05)';
@@ -848,17 +865,12 @@ function OverviewGraph2D({
             } else {
                 if (e.type === 'contains') {
                     stroke = 'rgba(138, 145, 140, 0.25)';
-                    strokeDasharray = '3 3';
                     strokeWidth = 1;
                     opacity = 0.4;
-                } else if (e.type === 'imports') {
-                    stroke = 'rgba(79, 209, 181, 0.3)';
+                } else if (e.type === 'imports' || e.type === 'calls') {
+                    stroke = '#4FD1B5';
                     strokeWidth = 1;
-                    opacity = 0.6;
-                } else if (e.type === 'calls') {
-                    stroke = 'rgba(79, 209, 181, 0.3)';
-                    strokeWidth = 1;
-                    opacity = 0.6;
+                    opacity = 0.5;
                 }
             }
 
@@ -866,12 +878,11 @@ function OverviewGraph2D({
                 id: edgeId || `edge-${idx}`,
                 source: e.from,
                 target: e.to,
-                animated,
+                type: 'straight',
                 zIndex,
                 style: {
                     stroke,
                     strokeWidth,
-                    strokeDasharray,
                     opacity,
                     transition: 'opacity 0.2s ease, stroke 0.2s ease'
                 }
@@ -883,7 +894,7 @@ function OverviewGraph2D({
     }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
 
     return (
-        <div className="w-full h-full relative">
+        <div className="w-full h-full relative [&_.react-flow__handle]:!hidden">
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -1019,19 +1030,22 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return counts;
     }, [graph]);
 
-    // Base candidate pool: files only by default, functions/classes hidden unless showFunctions is enabled
+    // Base candidate pool: files only by default, functions/classes hidden unless showFunctions is enabled, repo node removed unless nothing else exists
     const baseNodes = useMemo(() => {
         if (!graph?.nodes) return [];
+        const nonRepoNodes = graph.nodes.filter((n: any) => {
+            if (!showFunctions && n.type !== 'file') return false;
+            if (simplify && n.type !== 'file') return false;
+            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') return false;
+            return Boolean(n.id);
+        });
+        const includeRepo = nonRepoNodes.length === 0;
+
         return graph.nodes.filter((n: any) => {
-            if (!showFunctions && n.type !== 'file' && n.type !== 'repository') {
-                return false;
-            }
-            if (simplify && n.type !== 'file' && n.type !== 'repository') {
-                return false;
-            }
-            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method' && n.type !== 'repository') {
-                return false;
-            }
+            if (n.type === 'repository') return includeRepo;
+            if (!showFunctions && n.type !== 'file') return false;
+            if (simplify && n.type !== 'file') return false;
+            if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') return false;
             return Boolean(n.id);
         });
     }, [graph, showFunctions, simplify]);
@@ -1267,7 +1281,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 });
             }
             if (viewMode === '3D' && fgInstanceRef.current && typeof fgInstanceRef.current.zoomToFit === 'function') {
-                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 350, 40);
+                fgInstanceRef.current.zoomToFit(prefersReducedMotion ? 0 : 350, 140);
             }
         }, 100);
         return () => clearTimeout(timer);
@@ -1740,7 +1754,18 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     height={dimensions.height > 0 ? dimensions.height : undefined}
                     nodeRelSize={4}
                     nodeVal={(node: any) => node.val}
-                    nodeLabel={(node: any) => node.path || node.name || node.id}
+                    nodeLabel={(node: any) => {
+                        const nodePath = node.path || (node.type === 'file' ? node.id : '');
+                        const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
+                        const baseName = node.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
+                        const hasPath = Boolean(nodePath && nodePath !== baseName);
+                        return `
+                            <div style="background: rgba(16, 20, 21, 0.95); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 4px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 1.3; color: #E8EAE6; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); pointer-events: none;">
+                                <div style="font-weight: 600; color: #4FD1B5;">${baseName}</div>
+                                ${hasPath ? `<div style="font-size: 10px; color: #8A918C; margin-top: 1px;">${nodePath}</div>` : ''}
+                            </div>
+                        `;
+                    }}
                     linkColor={(link: any) => {
                         const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
                         if (neighborInfo.hasSelection) {
@@ -1781,52 +1806,52 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                         const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
 
-                        // Non-selected & non-direct neighbors: plain small dots without labels
-                        if (!isSelected && !isDirectNeighbor && !isHovered) {
-                            const dotGeometry = new THREE.SphereGeometry(2.5, 12, 12);
+                        // Labels only for selected node and hovered node (neighbors get a small dot, no label)
+                        if (!isSelected && !isHovered) {
+                            const dotGeometry = new THREE.SphereGeometry(1.8, 12, 12);
                             const dotMaterial = new THREE.MeshLambertMaterial({
                                 color: baseColor,
-                                opacity: neighborInfo.hasSelection ? 0.3 : 0.75,
+                                opacity: neighborInfo.hasSelection ? (isDirectNeighbor ? 0.85 : 0.25) : 0.7,
                                 transparent: true
                             });
                             return new THREE.Mesh(dotGeometry, dotMaterial);
                         }
 
-                        // Selected and direct neighbors: larger node with labels
-                        const radius = isSelected ? 6 : 4;
+                        // Selected or hovered node: smaller node with label
+                        const radius = isSelected ? 3.5 : 2.8;
                         const group = new THREE.Group();
 
                         if (isRepo) {
-                            const ringGeo = new THREE.TorusGeometry(4, 0.45, 16, 32);
+                            const ringGeo = new THREE.TorusGeometry(3.5, 0.4, 16, 32);
                             const ringMat = new THREE.MeshBasicMaterial({ color: 0xE8EAE6 });
                             group.add(new THREE.Mesh(ringGeo, ringMat));
                         } else {
                             const material = new THREE.MeshLambertMaterial({
                                 color: baseColor,
                                 emissive: isSelected ? baseColor : 0x000000,
-                                emissiveIntensity: isSelected ? 0.4 : 0
+                                emissiveIntensity: isSelected ? 0.4 : 0.2
                             });
                             group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 16), material));
                         }
 
-                        // Labels only for selected and direct neighbors, base name only, collision avoidance
+                        // Labels only for selected and hovered node, base name only
                         const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
                         const baseName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
 
                         const sprite = new SpriteText(baseName);
                         sprite.fontFace = 'IBM Plex Mono';
-                        sprite.textHeight = 3.5;
+                        sprite.textHeight = 3.2;
                         sprite.color = '#E8EAE6';
-                        sprite.backgroundColor = 'rgba(16, 20, 21, 0.85)';
+                        sprite.backgroundColor = 'rgba(16, 20, 21, 0.9)';
                         sprite.borderRadius = 4;
                         sprite.padding = [4, 2];
                         sprite.borderColor = 'rgba(255, 255, 255, 0.1)';
                         sprite.borderWidth = 0.5;
-                        sprite.position.y = radius + 4.5;
+                        sprite.position.y = radius + 3.5;
                         sprite.renderOrder = 999;
                         sprite.material.depthTest = false;
                         (sprite as any).userData = {
-                            priority: isSelected ? 3 : isHovered ? 2 : 1
+                            priority: isSelected ? 3 : 2
                         };
                         group.add(sprite);
 
@@ -2398,9 +2423,6 @@ ${lastAssistant?.content || 'No response recorded.'}
     const parseAnswerFollowups = (rawAnswer: string): { cleanAnswer: string; followups: string[] } => {
         if (!rawAnswer) return { cleanAnswer: '', followups: [] };
 
-        const followupRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*([\s\S]*)$/i;
-        const match = rawAnswer.match(followupRegex);
-
         let cleanAnswer = rawAnswer;
         let followups: string[] = [];
 
@@ -2417,33 +2439,44 @@ ${lastAssistant?.content || 'No response recorded.'}
             return false;
         };
 
-        if (match && match.index !== undefined) {
-            cleanAnswer = rawAnswer.slice(0, match.index).trim();
-            const trailing = match[1] || '';
-            const candidates = trailing.includes('|') ? trailing.split('|') : trailing.split(/\r?\n/);
-            const cleanCandidates = candidates
-                .map(s => s.trim().replace(/^[-*•\d.)\s]+|["'*`\s]+$/g, '').trim())
-                .filter(Boolean);
+        const delimitedRegex = /<<<FOLLOWUPS>>>([\s\S]*?)(?:<<<END_FOLLOWUPS>>>|$)/i;
+        const delimitedMatch = rawAnswer.match(delimitedRegex);
 
-            followups = cleanCandidates
-                .filter(q => !isPlaceholder(q))
-                .slice(0, 3);
+        if (delimitedMatch && delimitedMatch.index !== undefined) {
+            cleanAnswer = rawAnswer.slice(0, delimitedMatch.index).trim();
+            let rawBlock = (delimitedMatch[1] || '').trim();
+            if (rawBlock.startsWith('```')) {
+                rawBlock = rawBlock.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+            }
+            try {
+                const parsed = JSON.parse(rawBlock);
+                if (Array.isArray(parsed)) {
+                    followups = parsed
+                        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
+                        .map(item => item.trim())
+                        .slice(0, 3);
+                }
+            } catch {
+                followups = [];
+            }
         } else {
-            const lines = rawAnswer.split(/\r?\n/);
-            const cleanLines: string[] = [];
-            for (const line of lines) {
-                const lineMatch = line.match(/^\s*FOLLOWUPS:\s*(.*)$/i);
-                if (lineMatch) {
-                    const parts = lineMatch[1]
-                        .split('|')
-                        .map(s => s.trim().replace(/^[-*•\d.)\s]+|["'*`\s]+$/g, '').trim())
-                        .filter(Boolean);
-                    followups = parts.filter(q => !isPlaceholder(q)).slice(0, 3);
-                } else {
-                    cleanLines.push(line);
+            const legacyRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*([\s\S]*)$/i;
+            const legacyMatch = rawAnswer.match(legacyRegex);
+            if (legacyMatch && legacyMatch.index !== undefined) {
+                cleanAnswer = rawAnswer.slice(0, legacyMatch.index).trim();
+                const trailing = (legacyMatch[1] || '').trim();
+                try {
+                    const parsed = JSON.parse(trailing);
+                    if (Array.isArray(parsed)) {
+                        followups = parsed
+                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
+                            .map(item => item.trim())
+                            .slice(0, 3);
+                    }
+                } catch {
+                    followups = [];
                 }
             }
-            cleanAnswer = cleanLines.join('\n').trim();
         }
 
         return {

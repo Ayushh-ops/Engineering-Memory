@@ -7,7 +7,7 @@ import { ConnectedFilesList } from './ConnectedFilesList';
 import { computeRisk } from '../graph-helpers';
 
 export function RightPanel({ className }: { className?: string }) {
-    const { selectedSymbol, impactResult, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit, aiCitations, setCodeHighlightLine } = useAppStore();
+    const { selectedSymbol, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit, aiCitations, setCodeHighlightLine } = useAppStore();
     const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
     const [ownersLoading, setOwnersLoading] = useState(false);
     const [rateLimited, setRateLimited] = useState(false);
@@ -165,8 +165,36 @@ export function RightPanel({ className }: { className?: string }) {
         );
     }
 
-    // 2. Ask AI Tab: evidence list (no blast block)
+    // 2. Ask AI Tab: evidence list
     if (activeTab === 'AskAI') {
+        if (!selectedFile) {
+            return (
+                <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+                    <div className="p-3.5 border-b border-white/10">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                                <MessageSquare size={13} className="text-[#4FD1B5]" />
+                                <span>Evidence list</span>
+                            </h3>
+                            <Badge variant="default">0 cited</Badge>
+                        </div>
+                        <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
+                            No file selected
+                        </div>
+                    </div>
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[#8A918C]">
+                        <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
+                            <MessageSquare size={18} />
+                        </div>
+                        <div className="text-xs font-medium text-[#E8EAE6] mb-1">No file selected</div>
+                        <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">
+                            Select a file to inspect its cited evidence and sources.
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
         const citations = aiCitations || [];
         return (
             <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
@@ -282,92 +310,7 @@ export function RightPanel({ className }: { className?: string }) {
         );
     }
 
-    // 4. Impact Tab: blast summary with real numbers
-    if (activeTab === 'Impact') {
-        if (!selectedSymbol && !selectedFile) {
-            return renderEmptyState("Select a file or symbol to view its blast radius summary");
-        }
-        const hasImpactData = Boolean(impactResult && (impactResult.directCallers.length > 0 || impactResult.transitiveConsumers.length > 0 || (impactResult.paths && impactResult.paths.length > 0)));
-
-        return (
-            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                <div className="p-3.5 border-b border-white/10">
-                    <div className="flex items-center justify-between">
-                        <h3 className="font-mono text-xs font-semibold truncate text-[#E8EAE6]" title={nodeName}>
-                            {nodeName}{selectedSymbol?.type === 'function' || selectedSymbol?.type === 'method' ? '()' : ''}
-                        </h3>
-                        <Badge variant={nodeType === 'file' ? 'default' : (nodeType === 'class' ? 'amber' : 'emerald')}>
-                            {nodeType}
-                        </Badge>
-                    </div>
-                    <div className="text-[11px] text-[#8A918C] truncate mt-1 font-mono">
-                        Blast summary
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                    {hasImpactData && impactResult ? (
-                        <>
-                            <div>
-                                <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Blast radius</div>
-                                <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
-                                    <div className="flex items-center gap-2.5">
-                                        <div className="w-6 h-6 rounded-full bg-[#E3A04A]/10 border border-[#E3A04A]/20 flex items-center justify-center text-[#E3A04A]">
-                                            <Activity size={12} />
-                                        </div>
-                                        <span className="text-xs text-[#E8EAE6]">Affected consumers</span>
-                                    </div>
-                                    <span className="font-mono text-sm font-semibold text-[#4FD1B5]">
-                                        {impactResult.directCallers.length + impactResult.transitiveConsumers.length}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
-                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                    <span>Direct callers</span>
-                                    <b className="text-[#E8EAE6] font-mono">{impactResult.directCallers.length}</b>
-                                </div>
-                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                    <span>Transitive consumers</span>
-                                    <b className="text-[#E8EAE6] font-mono">{impactResult.transitiveConsumers.length}</b>
-                                </div>
-                                <div className="flex justify-between py-1 text-[#8A918C]">
-                                    <span>Paths mapped</span>
-                                    <b className="text-[#E8EAE6] font-mono">{impactResult.paths?.length || 0}</b>
-                                </div>
-                            </div>
-
-                            {impactResult.directCallers.length > 0 && (
-                                <div className="pt-2">
-                                    <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Direct callers ({impactResult.directCallers.length})</div>
-                                    <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
-                                        {impactResult.directCallers.map((dc, i) => (
-                                            <div key={i} className="glass-surface p-2 rounded-md border-white/5 flex justify-between items-center text-xs">
-                                                <span className="font-mono text-[#E8EAE6] truncate">{dc.symbol.name}</span>
-                                                <Badge variant="default">
-                                                    {(dc.symbol.type as string) === 'file' ? 'file' : (dc.symbol.type === 'function' || dc.symbol.type === 'method' ? 'function' : dc.symbol.type)}
-                                                </Badge>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-                        </>
-                    ) : (
-                        <div className="space-y-3">
-                            <div className="text-[11px] text-[#8A918C] font-normal">Impact analysis</div>
-                            <div className="text-[#8A918C] text-xs leading-relaxed">
-                                No impact data found for this selection.
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    }
-
-    // 5. Default for Overview and Graph tabs: Node Details
+    // 4. Default for Impact, Graph, and Overview tabs: Node Details
     if (!selectedSymbol && !selectedFile) {
         return renderEmptyState();
     }

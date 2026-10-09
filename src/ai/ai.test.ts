@@ -766,9 +766,21 @@ async function main(): Promise<void> {
         "Expected automatic language instruction in provider call"
     );
     assert.ok(
-        lastInstructions?.some((inst) => inst.includes("End with a line FOLLOWUPS:")),
+        lastInstructions?.some((inst) => inst.includes("<<<FOLLOWUPS>>>") || inst.includes("FOLLOWUPS")),
         "Expected FOLLOWUPS instruction in provider call"
     );
+
+    // Test greeting and small talk intercept
+    const greetingResult = await new AiAnswerService(autoLangProvider).answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "hi",
+        graph,
+        allowInsufficientContext: true
+    });
+    assert.equal(greetingResult.status, "ok");
+    assert.ok(greetingResult.answer.toLowerCase().includes("hello") || greetingResult.answer.toLowerCase().includes("how can i help"));
+    assert.deepEqual(greetingResult.citations, []);
 
     // Test pronoun grounding: "this", "ye", "yeh", "is file"
     assert.equal(isGroundedQuestion("explain this file", { type: "file", path: "src/auth.ts" }), true);
