@@ -782,6 +782,18 @@ async function main(): Promise<void> {
     assert.ok(greetingResult.answer.toLowerCase().includes("hello") || greetingResult.answer.toLowerCase().includes("how can i help"));
     assert.deepEqual(greetingResult.citations, []);
 
+    // Test capability questions
+    const capabilityResult = await new AiAnswerService(autoLangProvider).answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "tum kya kya kar sakte ho",
+        graph,
+        allowInsufficientContext: true
+    });
+    assert.equal(capabilityResult.status, "ok");
+    assert.ok(capabilityResult.answer.toLowerCase().includes("files") || capabilityResult.answer.includes("explain"));
+    assert.deepEqual(capabilityResult.citations, []);
+
     // Test detectLang
     assert.equal(detectLang("hi"), "en");
     assert.equal(detectLang("hii"), "en");

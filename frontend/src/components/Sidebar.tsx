@@ -189,7 +189,7 @@ export function Sidebar({ className }: { className?: string }) {
                     <div className="space-y-0.5">
                         {[
                             { id: 'Overview', icon: Hexagon, label: 'Overview' },
-                            { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length})` : ''}` },
+                            { id: 'ChangeSet', icon: Layers, label: `Plan a change${changeSet.length > 0 ? ` (${changeSet.length})` : ''}` },
                             { id: 'Health', icon: HeartPulse, label: 'Health' },
                         ].map(item => {
                             const Icon = item.icon;
@@ -310,7 +310,7 @@ export function Sidebar({ className }: { className?: string }) {
                             <div className="flex items-center justify-between gap-1.5 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-xs font-mono">
                                 <span className="text-[11px] text-[#8A918C] flex items-center gap-1.5 truncate">
                                     <Layers size={12} className="text-[#4FD1B5] shrink-0" />
-                                    <span className="truncate">Change set ({changeSet.length})</span>
+                                    <span className="truncate">Files in your plan ({changeSet.length})</span>
                                 </span>
                                 <div className="flex items-center gap-1.5 shrink-0">
                                     <button
@@ -323,7 +323,7 @@ export function Sidebar({ className }: { className?: string }) {
                                     <button
                                         onClick={clearChangeSet}
                                         className="text-[#8A918C] hover:text-red-400 p-0.5 cursor-pointer transition-colors"
-                                        title="Clear change set"
+                                        title="Clear plan"
                                     >
                                         <X size={11} />
                                     </button>
@@ -335,12 +335,12 @@ export function Sidebar({ className }: { className?: string }) {
                             <div className="flex items-center justify-between px-1">
                                 <span className="text-[11px] font-medium text-[#8A918C] flex items-center gap-1.5">
                                     <Layers size={12} className="text-[#4FD1B5]" />
-                                    <span>Change set ({changeSet.length})</span>
+                                    <span>Files in your plan ({changeSet.length})</span>
                                 </span>
                                 <button
                                     onClick={clearChangeSet}
                                     className="text-[10px] text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
-                                    title="Clear change set"
+                                    title="Clear plan"
                                 >
                                     Clear
                                 </button>
@@ -382,7 +382,7 @@ export function Sidebar({ className }: { className?: string }) {
                                         <span>Analyzing...</span>
                                     </>
                                 ) : (
-                                    <span>Analyze change set</span>
+                                    <span>Analyze plan</span>
                                 )}
                             </button>
                         </div>

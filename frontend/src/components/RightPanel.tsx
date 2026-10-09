@@ -88,7 +88,7 @@ export function RightPanel({ className }: { className?: string }) {
     if (activeTab === 'History') {
         const currentCommit = selectedHistoryCommit || commits.find(c => c.sha === selectedSha) || commits[0];
         if (!currentCommit) {
-            return renderEmptyState("Select a commit from the sidebar to inspect its details");
+            return renderEmptyState("Select a commit to inspect its details");
         }
         const isHotspot = Boolean(
             (currentCommit.files && currentCommit.files.some((f: any) => hotspotFiles.has(f.filename || f.path))) ||
@@ -128,20 +128,22 @@ export function RightPanel({ className }: { className?: string }) {
                             <span>Hash</span>
                             <span className="text-[#4FD1B5] font-mono">{currentCommit.sha ? currentCommit.sha.substring(0, 10) : '-'}</span>
                         </div>
-                        {currentCommit.authorDate && (
+                        {(currentCommit.authorDate || currentCommit.commit?.author?.date) && (
                             <div className="flex justify-between py-1 text-[#8A918C]">
                                 <span>Committed</span>
-                                <span className="text-[#E8EAE6] font-mono">{new Date(currentCommit.authorDate).toLocaleDateString()}</span>
+                                <span className="text-[#E8EAE6] font-mono">{new Date(currentCommit.authorDate || currentCommit.commit?.author?.date).toLocaleDateString()}</span>
                             </div>
                         )}
                     </div>
 
-                    {currentCommit.files && currentCommit.files.length > 0 && (
-                        <div className="border-t border-white/[0.08] pt-3">
-                            <div className="text-[11px] text-[#8A918C] mb-2 font-normal">Files changed ({currentCommit.files.length})</div>
-                            <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
-                                {currentCommit.files.map((f: any, idx: number) => {
-                                    const fname = f.filename || f.path || '';
+                    <div className="border-t border-white/[0.08] pt-3">
+                        <div className="text-[11px] text-[#8A918C] mb-2 font-normal">
+                            Files changed ({currentCommit.files?.length || (selectedFile ? 1 : 0)})
+                        </div>
+                        <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
+                            {currentCommit.files && currentCommit.files.length > 0 ? (
+                                currentCommit.files.map((f: any, idx: number) => {
+                                    const fname = f.filename || f.path || (typeof f === 'string' ? f : '');
                                     const isHot = hotspotFiles.has(fname);
                                     return (
                                         <div key={idx} className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
@@ -156,10 +158,17 @@ export function RightPanel({ className }: { className?: string }) {
                                             )}
                                         </div>
                                     );
-                                })}
-                            </div>
+                                })
+                            ) : selectedFile ? (
+                                <div className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
+                                    <div className="flex items-center gap-1.5 truncate min-w-0">
+                                        {hotspotFiles.has(selectedFile) && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
+                                        <span className="font-mono text-[#E8EAE6] truncate" title={selectedFile}>{selectedFile.split('/').pop()}</span>
+                                    </div>
+                                </div>
+                            ) : null}
                         </div>
-                    )}
+                    </div>
                 </div>
             </div>
         );
@@ -215,8 +224,12 @@ export function RightPanel({ className }: { className?: string }) {
                     {citations.length > 0 ? (
                         citations.map((c: string, idx: number) => {
                             const lastColon = c.lastIndexOf(':');
-                            const filePath = lastColon !== -1 ? c.substring(0, lastColon) : c;
-                            const lineNum = lastColon !== -1 ? parseInt(c.substring(lastColon + 1), 10) : NaN;
+                            const hasColon = lastColon !== -1;
+                            const linePart = hasColon ? c.substring(lastColon + 1) : '';
+                            const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
+                            const filePath = hasLine ? c.substring(0, lastColon) : c;
+                            const lineRange = hasLine ? linePart : '';
+                            const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
                             const fileName = filePath.split('/').pop() || filePath;
 
                             return (
@@ -226,8 +239,8 @@ export function RightPanel({ className }: { className?: string }) {
                                         if (selectFile) {
                                             selectFile(filePath);
                                         }
-                                        if (!isNaN(lineNum)) {
-                                            setCodeHighlightLine(lineNum);
+                                        if (!isNaN(startLine)) {
+                                            setCodeHighlightLine(startLine);
                                         }
                                         setActiveTab('Code');
                                     }}
@@ -236,7 +249,7 @@ export function RightPanel({ className }: { className?: string }) {
                                 >
                                     <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
                                         <span className="truncate">{fileName}</span>
-                                        {!isNaN(lineNum) && <span>line {lineNum}</span>}
+                                        {lineRange && <span>{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
                                     </div>
                                     <div className="text-[10px] text-[#8A918C] font-mono truncate">
                                         {filePath}

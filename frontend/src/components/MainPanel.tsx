@@ -312,54 +312,94 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     );
 }
 
+export function cleanAnswerMarkers(text: string): string {
+    if (!text) return '';
+    return text
+        // Clean 【file:path:14-46】 or 【path:14-46】 or 【file:path】 or 【path】 markers
+        .replace(/【(?:file:)?([^】]+)】/g, '')
+        // Clean (file:path:14-46) or (file:path) markers
+        .replace(/\(file:[^\)]+\)/gi, '')
+        // Clean [file:path:14-46] or [file:path] markers
+        .replace(/\[file:[^\]]+\]/gi, '')
+        // Clean any extra spaces before punctuation or duplicate spaces
+        .replace(/[ \t]+([.,;?!])/g, '$1')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+}
+
 export function extractValidEvidence(text: string, analyzedPaths: Set<string>): string[] {
-    if (!text || analyzedPaths.size === 0) return [];
+    if (!text) return [];
 
     const pathToFirstLine = new Map<string, string | undefined>();
     const orderedPaths: string[] = [];
 
-    const tokenRegex = /(?:^|[\s`(\[<"'])((?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(\d+))?(?:$|[\s`\)\]>"',;:?.])/g;
-    let match: RegExpExecArray | null;
-
-    while ((match = tokenRegex.exec(text)) !== null) {
-        const fullToken = match[0];
-        const rawPath = match[1];
-        const lineStr = match[2];
-
+    const registerPath = (rawPath: string, lineStr?: string) => {
+        if (!rawPath) return;
         // Never treat URLs or host:port as evidence
         if (
             rawPath.includes("http") ||
             rawPath.includes("localhost") ||
             rawPath.includes("127.0.0.1") ||
-            fullToken.includes("://")
+            rawPath.includes("://")
         ) {
-            continue;
+            return;
         }
 
-        const cleanPath = rawPath.replace(/^\.\//, "");
+        const cleanPath = rawPath.replace(/^file:/i, "").replace(/^\.\//, "").trim();
         let matchedPath: string | null = null;
 
         if (analyzedPaths.has(cleanPath)) {
             matchedPath = cleanPath;
         } else if (analyzedPaths.has(rawPath)) {
             matchedPath = rawPath;
-        } else {
+        } else if (analyzedPaths.size > 0) {
             for (const ap of analyzedPaths) {
                 if (ap.endsWith("/" + cleanPath) || ap === cleanPath) {
                     matchedPath = ap;
                     break;
                 }
             }
+        } else if (/\.[a-zA-Z0-9]+$/.test(cleanPath)) {
+            matchedPath = cleanPath;
         }
 
         if (matchedPath) {
+            const cleanLine = lineStr ? lineStr.replace(/^L/i, "").trim() : undefined;
             if (!pathToFirstLine.has(matchedPath)) {
-                pathToFirstLine.set(matchedPath, lineStr || undefined);
+                pathToFirstLine.set(matchedPath, cleanLine || undefined);
                 orderedPaths.push(matchedPath);
-            } else if (!pathToFirstLine.get(matchedPath) && lineStr) {
-                pathToFirstLine.set(matchedPath, lineStr);
+            } else if (!pathToFirstLine.get(matchedPath) && cleanLine) {
+                pathToFirstLine.set(matchedPath, cleanLine);
             }
         }
+    };
+
+    // 1. Chinese/Japanese brackets: 【file:path:14-46】 or 【path:14-46】
+    const marker1Regex = /【(?:file:)?([^】:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?】/gi;
+    let m1: RegExpExecArray | null;
+    while ((m1 = marker1Regex.exec(text)) !== null) {
+        registerPath(m1[1], m1[2]);
+    }
+
+    // 2. Parentheses with file prefix: (file:path:14-46) or (file:path)
+    const marker2Regex = /\(file:([^\)\s:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?\)/gi;
+    let m2: RegExpExecArray | null;
+    while ((m2 = marker2Regex.exec(text)) !== null) {
+        registerPath(m2[1], m2[2]);
+    }
+
+    // 3. Square brackets with file prefix: [file:path:14-46] or [file:path]
+    const marker3Regex = /\[file:([^\]\s:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?\]/gi;
+    let m3: RegExpExecArray | null;
+    while ((m3 = marker3Regex.exec(text)) !== null) {
+        registerPath(m3[1], m3[2]);
+    }
+
+    // 4. Standard path:line tokens e.g. src/auth.ts:14-46 or auth.ts:14
+    const tokenRegex = /(?:^|[\s`(\[<"'])((?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?(?:$|[\s`\)\]>"',;:?.])/g;
+    let match: RegExpExecArray | null;
+    while ((match = tokenRegex.exec(text)) !== null) {
+        registerPath(match[1], match[2]);
     }
 
     return orderedPaths.map(p => {
@@ -2836,12 +2876,19 @@ ${lastAssistant?.content || 'No response recorded.'}
         setHistoryData(null);
         try {
             const res = await api.repositories.getCommits(repoUrl, selectedSha || undefined, selectedFile);
-            setHistoryData(res.commits || []);
+            const commitsList = res.commits || [];
+            setHistoryData(commitsList);
+            if (commitsList.length > 0) {
+                setSelectedHistoryCommit(commitsList[0]);
+            } else {
+                setSelectedHistoryCommit(null);
+            }
         } catch (e) {
             console.error(e);
             setHistoryData([]);
+            setSelectedHistoryCommit(null);
         }
-    }, [repoUrl, selectedSha, selectedFile]);
+    }, [repoUrl, selectedSha, selectedFile, setSelectedHistoryCommit]);
 
     useEffect(() => {
         if (activeTab === 'History') fetchHistory();
@@ -3115,10 +3162,10 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/40 text-[#4FD1B5] cursor-default"
                                             : "glass-surface border-white/10 text-[#E8EAE6] hover:border-[#4FD1B5]/50 hover:text-[#4FD1B5]"
                                     )}
-                                    title={changeSet.includes(selectedFile) ? "Already in change set" : "Add to change set"}
+                                    title={changeSet.includes(selectedFile) ? "Already in plan" : "Add to plan"}
                                 >
                                     <Plus size={13} />
-                                    <span>{changeSet.includes(selectedFile) ? "In change set" : "Add to change set"}</span>
+                                    <span>{changeSet.includes(selectedFile) ? "In plan" : "Add to plan"}</span>
                                 </button>
                             </div>
                         </div>
@@ -3796,7 +3843,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         </div>
                                                     ) : (
                                                         <>
-                                                            <MarkdownRenderer content={msg.content} />
+                                                            <MarkdownRenderer content={cleanAnswerMarkers(msg.content)} />
 
                                                             {/* Evidence chips: only real repo references */}
                                                             {(() => {
@@ -3805,23 +3852,32 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                 return (
                                                                     <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
                                                                         <span className="text-[10px] text-[#8A918C]">Evidence:</span>
-                                                                        {citations.map((c, cIdx) => (
-                                                                            <button
-                                                                                key={cIdx}
-                                                                                onClick={() => {
-                                                                                    const lastColon = c.lastIndexOf(':');
-                                                                                    const filePath = lastColon !== -1 ? c.substring(0, lastColon) : c;
-                                                                                    const lineNum = lastColon !== -1 ? parseInt(c.substring(lastColon + 1), 10) : NaN;
-                                                                                    if (filePath) setSelectedFile(filePath);
-                                                                                    if (!isNaN(lineNum)) setCodeHighlightLine(lineNum);
-                                                                                    setActiveTab('Code');
-                                                                                }}
-                                                                                className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
-                                                                                title={"Open " + c + " in Code viewer"}
-                                                                            >
-                                                                                {c}
-                                                                            </button>
-                                                                        ))}
+                                                                        {citations.map((c, cIdx) => {
+                                                                            const lastColon = c.lastIndexOf(':');
+                                                                            const hasColon = lastColon !== -1;
+                                                                            const linePart = hasColon ? c.substring(lastColon + 1) : '';
+                                                                            const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
+                                                                            const filePath = hasLine ? c.substring(0, lastColon) : c;
+                                                                            const lineRange = hasLine ? linePart : '';
+                                                                            const fileName = filePath.split('/').pop() || filePath;
+                                                                            const label = lineRange ? `${fileName}:${lineRange}` : fileName;
+                                                                            const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
+
+                                                                            return (
+                                                                                <button
+                                                                                    key={cIdx}
+                                                                                    onClick={() => {
+                                                                                        if (filePath) setSelectedFile(filePath);
+                                                                                        if (!isNaN(startLine)) setCodeHighlightLine(startLine);
+                                                                                        setActiveTab('Code');
+                                                                                    }}
+                                                                                    className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
+                                                                                    title={"Open " + c + " in Code viewer"}
+                                                                                >
+                                                                                    {label}
+                                                                                </button>
+                                                                            );
+                                                                        })}
                                                                     </div>
                                                                 );
                                                             })()}
@@ -3852,21 +3908,32 @@ ${lastAssistant?.content || 'No response recorded.'}
 
                             {/* Suggested Prompts */}
                             <div className="px-3.5 py-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap bg-white/[0.01] shrink-0">
-                                {(selectedFile
-                                    ? ['Explain this file', 'Who calls this?', 'Summarize changes']
-                                    : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']
-                                ).map((suggestion, sIdx) => (
-                                    <button
-                                        key={sIdx}
-                                        onClick={() => {
-                                            setAskQ('');
-                                            askAI(suggestion);
-                                        }}
-                                        className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer"
-                                    >
-                                        {suggestion}
-                                    </button>
-                                ))}
+                                {(() => {
+                                    const userMessages = chatMessages.filter(m => m.role === 'user');
+                                    const lastUserText = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : askQ;
+                                    const isHinglish = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi|isko|tum|aap)\b/i.test(lastUserText);
+
+                                    const suggestions = isHinglish
+                                        ? (selectedFile
+                                            ? ['Is file ko samjhao', 'Isko kaun call karta hai?', 'Changes ka summary do']
+                                            : ['Kaunsi files sabse risky hain?', 'Repo ka structure kaisa hai?', 'Kahan se padhna shuru karein?'])
+                                        : (selectedFile
+                                            ? ['Explain this file', 'Who calls this?', 'Summarize changes']
+                                            : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']);
+
+                                    return suggestions.map((suggestion, sIdx) => (
+                                        <button
+                                            key={sIdx}
+                                            onClick={() => {
+                                                setAskQ('');
+                                                askAI(suggestion);
+                                            }}
+                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer"
+                                        >
+                                            {suggestion}
+                                        </button>
+                                    ));
+                                })()}
                             </div>
 
                             {/* Composer - pinned at bottom */}
@@ -4305,11 +4372,11 @@ ${lastAssistant?.content || 'No response recorded.'}
                     {activeTab === 'ChangeSet' && (
                         <div className="flex-1 flex flex-col space-y-4 min-h-0">
                             <ComponentToolbar
-                                title="Change set impact"
-                                subtitle="Combined blast radius and affected files across your selected change set."
+                                title="Planning to edit more than one file?"
+                                subtitle="Add the files you plan to edit. You get one combined risk, every file that could break, and the tests to run."
                                 badge={
                                     <span className="text-xs font-mono font-normal text-[#8A918C]">
-                                        ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
+                                        ({changeSet.length} {changeSet.length === 1 ? 'file' : 'files'})
                                     </span>
                                 }
                                 primaryAction={
@@ -4324,25 +4391,63 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 Analyzing...
                                             </>
                                         ) : (
-                                            'Analyze change set'
+                                            'Analyze plan'
                                         )}
                                     </Button>
                                 }
                                 onDownloadReport={handleDownloadChangeSetReport}
                                 onCopyPRComment={handleCopyChangeSetPRComment}
                                 onReanalyze={analyzeChangeSet}
-                                onExport={() => downloadTextFile('changeset-impact.json', JSON.stringify(changeSetResult || {}, null, 2), 'application/json')}
-                                extraMenuItems={changeSet.length > 0 ? [{ label: 'Clear all inputs', onClick: clearChangeSet }] : []}
+                                onExport={() => downloadTextFile('plan-impact.json', JSON.stringify(changeSetResult || {}, null, 2), 'application/json')}
+                                extraMenuItems={changeSet.length > 0 ? [{ label: 'Clear all files', onClick: clearChangeSet }] : []}
                             />
 
                             {/* Empty or loading states */}
                             {changeSet.length === 0 ? (
-                                <div className="flex-1 text-center py-20 border border-dashed border-white/10 rounded-xl glass-surface p-8 flex flex-col items-center justify-center gap-2">
-                                    <Layers size={28} className="text-[#8A918C]/60 mb-1" />
-                                    <div className="text-sm font-medium text-[#E8EAE6]">Your change set is empty</div>
-                                    <p className="text-xs text-[#8A918C] max-w-sm">
-                                        Add files by clicking &quot;Add to change set&quot; in the file header or from the file view to analyze their combined blast radius.
-                                    </p>
+                                <div className="flex-1 text-center py-16 border border-dashed border-white/10 rounded-xl glass-surface p-8 flex flex-col items-center justify-center gap-6 max-w-xl mx-auto my-auto w-full">
+                                    <div className="flex flex-col items-center gap-2">
+                                        <div className="w-10 h-10 rounded-full bg-[#4FD1B5]/10 border border-[#4FD1B5]/20 flex items-center justify-center text-[#4FD1B5]">
+                                            <Layers size={20} />
+                                        </div>
+                                        <div className="text-sm font-semibold text-[#E8EAE6]">Planning to edit more than one file?</div>
+                                        <p className="text-xs text-[#8A918C] max-w-md">
+                                            Add the files you plan to edit. You get one combined risk, every file that could break, and the tests to run.
+                                        </p>
+                                    </div>
+
+                                    {/* 3 short steps */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full text-left">
+                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">01</div>
+                                            <div className="text-xs text-[#E8EAE6] font-medium">Open a file</div>
+                                            <div className="text-[11px] text-[#8A918C]">Select any file from the sidebar.</div>
+                                        </div>
+                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">02</div>
+                                            <div className="text-xs text-[#E8EAE6] font-medium">Press Add to plan</div>
+                                            <div className="text-[11px] text-[#8A918C]">Add all files you intend to modify.</div>
+                                        </div>
+                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">03</div>
+                                            <div className="text-xs text-[#E8EAE6] font-medium">Press Analyze plan</div>
+                                            <div className="text-[11px] text-[#8A918C]">Get combined risk and breakages.</div>
+                                        </div>
+                                    </div>
+
+                                    {/* button "Add <current file>" */}
+                                    {selectedFile ? (
+                                        <button
+                                            onClick={() => addToChangeSet(selectedFile)}
+                                            className="px-4 py-2 rounded-lg text-xs font-mono bg-[#4FD1B5] text-[#04100D] hover:bg-[#3fbfa3] transition-colors font-medium flex items-center gap-1.5 cursor-pointer shadow-sm"
+                                        >
+                                            <Plus size={14} />
+                                            <span>Add {selectedFile.split('/').pop()}</span>
+                                        </button>
+                                    ) : (
+                                        <div className="text-[11px] text-[#8A918C] font-mono">
+                                            Pick a file in the sidebar to add it to your plan.
+                                        </div>
+                                    )}
                                 </div>
                             ) : changeSetLoading ? (
                                 <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
@@ -4352,7 +4457,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                             ) : !changeSetResult ? (
                                 <div className="flex-1 text-center py-16 border border-white/10 rounded-xl glass-surface p-6 flex flex-col items-center justify-center gap-3">
                                     <div className="text-xs text-[#8A918C]">
-                                        {changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'} ready for analysis.
+                                        {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'} ready in your plan.
                                     </div>
                                     <Button
                                         onClick={async () => {
@@ -4370,7 +4475,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         disabled={!graph}
                                         className="px-4 py-1.5 text-xs font-mono"
                                     >
-                                        Analyze change set now
+                                        Analyze plan now
                                     </Button>
                                 </div>
                             ) : (
@@ -4406,10 +4511,10 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             </span>
                                         </div>
 
-                                        {/* Affected Files Count */}
+                                        {/* Files that could break */}
                                         <div className="glass-surface p-4 rounded-xl border border-white/10 flex flex-col justify-between">
                                             <div className="flex items-center justify-between">
-                                                <span className="text-xs text-[#8A918C]">Unique affected files</span>
+                                                <span className="text-xs text-[#8A918C]">Files that could break</span>
                                                 <FileCode size={14} className="text-[#4FD1B5]" />
                                             </div>
                                             <div className="my-2">
@@ -4446,7 +4551,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             <div className="flex items-center justify-between mb-3">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
                                                     <Activity size={13} className="text-[#4FD1B5]" />
-                                                    Affected files ({changeSetResult?.affectedFiles?.length || 0})
+                                                    Files that could break ({changeSetResult?.affectedFiles?.length || 0})
                                                 </h4>
                                                 <span className="text-[10px] text-[#8A918C] font-mono">Ranked by risk</span>
                                             </div>
@@ -4494,7 +4599,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             <div className="flex items-center justify-between mb-3">
                                                 <h4 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
                                                     <Layers size={13} className="text-[#E3A04A]" />
-                                                    Impact by change set file
+                                                    Impact by file in plan
                                                 </h4>
                                                 <span className="text-[10px] text-[#8A918C] font-mono">{changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'}</span>
                                             </div>
@@ -4519,7 +4624,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                     <button
                                                                         onClick={() => removeFromChangeSet(inputPath)}
                                                                         className="text-[#8A918C] hover:text-red-400 p-0.5 rounded cursor-pointer"
-                                                                        title="Remove from change set"
+                                                                        title="Remove from plan"
                                                                     >
                                                                         <X size={11} />
                                                                     </button>
@@ -4567,7 +4672,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         {(!changeSetResult?.tests || changeSetResult.tests.length === 0) ? (
                                             <div className="flex items-center gap-2 p-3 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs text-[#8A918C]">
                                                 <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" />
-                                                <span>No tests found for the selected change set.</span>
+                                                <span>No tests found for the selected files in plan.</span>
                                             </div>
                                         ) : (
                                             <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">

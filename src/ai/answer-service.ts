@@ -127,6 +127,60 @@ export function getGreetingOrSmallTalkResponse(question: string): string | null 
     return null;
 }
 
+export function getCapabilityResponse(question: string): string | null {
+    const q = question.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
+
+    // Hinglish capability questions: "tum kya kya kar sakte ho", "tum kya kar sakte ho", "aap kya kar sakte ho", etc.
+    const isHinglishCap =
+        /\b(tum|aap)?\s*(kya\s+kya|kya)\s*(kar\s+sakte\s+ho|kar\s+sakti\s+ho|kar\s+sakte\s+hain|kr\s+sakte\s+ho|kar\s+skte\s+ho|krskte\s+ho)\b/i.test(q) ||
+        /\b(tum|aap)\s+(kya\s+karega|kya\s+karte\s+ho|kya\s+kar\s+rahe\s+ho)\b/i.test(q) ||
+        /\b(tumhari|aapki)\s+(capabilities|taqat|features)\s+(kya|kya\s+kya)\s+(hai|hain)\b/i.test(q);
+
+    if (isHinglishCap) {
+        return [
+            "Main is repository ko explore karne me aapki madad kar sakta hoon:",
+            "• Files aur architecture explain karna",
+            "• Kaun kisko call karta hai (imports aur dependents) batana",
+            "• File ka risk score kyu high hai uska breakdown dena",
+            "• Commit history aur recent changes dekhna",
+            "• Code aur symbols dhoondhna"
+        ].join("\n");
+    }
+
+    // Devanagari capability questions
+    const isDevanagariCap =
+        /(\u0924\u0941\u092e|\u0906\u092a)?\s*(\u0915\u094d\u094f\u092f\u093e\s+\u0915\u094d\u094f\u092f\u093e|\u0915\u094d\u094f\u092f\u093e)\s*(\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u094b|\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u0948\u0902|\u0915\u0930\s+\u0938\u0915\u0924\u0940\s+\u0939\u094b)/i.test(q);
+
+    if (isDevanagariCap) {
+        return [
+            "मैं इस रिपॉजिटरी को समझने में आपकी मदद कर सकता हूँ:",
+            "• फाइल्स और आर्किटेक्चर को समझाना",
+            "• कौन किसको कॉल करता है (इम्पोर्ट्स और डिपेंडेंट्स) बताना",
+            "• रिस्क स्कोर क्यों हाई है इसका विवरण देना",
+            "• कमिट हिस्ट्री और हाल के बदलाव देखना",
+            "• कोड और सिंबल्स ढूँढना"
+        ].join("\n");
+    }
+
+    // English capability questions: "what can you do", "what are your capabilities", "how can you help"
+    const isEnglishCap =
+        /^(what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|what\s+can\s+this\s+assistant\s+do|how\s+can\s+you\s+help(\s+me)?|what\s+are\s+you\s+able\s+to\s+do)\b/i.test(q) ||
+        /\bwhat\s+(can\s+you\s+do|are\s+your\s+capabilities)\b/i.test(q);
+
+    if (isEnglishCap) {
+        return [
+            "Here is what I can help you with in this repository:",
+            "• Explain files and system architecture",
+            "• Show who calls what (incoming dependents and outgoing imports)",
+            "• Explain why risk scores are high and what could break",
+            "• Inspect commit history and author changes",
+            "• Find code and symbol definitions"
+        ].join("\n");
+    }
+
+    return null;
+}
+
 export class AiAnswerService {
     constructor(private readonly provider: LlmProvider) {}
 
@@ -149,6 +203,16 @@ export class AiAnswerService {
             return {
                 status: "ok",
                 answer: greetingReply,
+                citations: [],
+                confidence: "high"
+            };
+        }
+
+        const capabilityReply = getCapabilityResponse(request.question);
+        if (capabilityReply) {
+            return {
+                status: "ok",
+                answer: capabilityReply,
                 citations: [],
                 confidence: "high"
             };
@@ -323,6 +387,17 @@ export class AiAnswerService {
             return {
                 status: "ok",
                 answer: greetingReply,
+                citations: [],
+                confidence: "high"
+            };
+        }
+
+        const capabilityReply = getCapabilityResponse(request.question);
+        if (capabilityReply) {
+            onToken(capabilityReply);
+            return {
+                status: "ok",
+                answer: capabilityReply,
                 citations: [],
                 confidence: "high"
             };
