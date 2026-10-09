@@ -19,6 +19,10 @@ export interface RepositoryAiOrchestrationRequest {
     allowInsufficientContext?: boolean;
     lang?: "en" | "hinglish";
     history?: Array<{ role: string; content: string }>;
+    risk?: any;
+    dependents?: string[];
+    recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>;
+    owners?: any;
 }
 
 export class RepositoryAiOrchestrationService {
@@ -145,7 +149,11 @@ export class RepositoryAiOrchestrationService {
             impact,
             fileContent,
             lang: request.lang,
-            history: request.history
+            history: request.history,
+            risk: request.risk,
+            dependents: request.dependents,
+            recentCommits: request.recentCommits,
+            owners: request.owners
         };
 
         return { aiRequest };

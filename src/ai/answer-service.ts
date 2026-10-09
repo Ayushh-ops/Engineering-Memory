@@ -30,6 +30,10 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     fileContent?: string;
     lang?: "en" | "hinglish";
     history?: Array<{ role: string; content: string }>;
+    risk?: any;
+    dependents?: string[];
+    recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>;
+    owners?: any;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -252,7 +256,18 @@ export class AiAnswerService {
             };
         }
 
-        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent, request.graph);
+        let aiContext = buildAiContext(
+            result.context,
+            request.repository,
+            request.evidence,
+            request.impact,
+            request.fileContent,
+            request.graph,
+            request.risk,
+            request.dependents,
+            request.recentCommits,
+            request.owners
+        );
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             // Trim fileContent or evidence to fit within MAX_AI_CONTEXT_BYTES instead of refusing
@@ -290,7 +305,7 @@ export class AiAnswerService {
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
             "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
-            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
             "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
             'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
             directive
@@ -437,7 +452,18 @@ export class AiAnswerService {
             };
         }
 
-        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent, request.graph);
+        let aiContext = buildAiContext(
+            result.context,
+            request.repository,
+            request.evidence,
+            request.impact,
+            request.fileContent,
+            request.graph,
+            request.risk,
+            request.dependents,
+            request.recentCommits,
+            request.owners
+        );
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
@@ -474,7 +500,7 @@ export class AiAnswerService {
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
             "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
-            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
             "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
             'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
             directive

@@ -66,6 +66,8 @@ export interface AiRepositoryContext {
     directImports?: string[];
     directDependents?: string[];
     risk?: AiRiskContext;
+    recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
+    owners?: any;
 }
 
 /**
@@ -198,7 +200,11 @@ export function buildAiContext(
     evidence: RepositorySourceEvidence[] = [],
     impact?: ChangeImpactAnalysisResult,
     fileContent?: string,
-    graph?: RepositoryGraph
+    graph?: RepositoryGraph,
+    providedRisk?: any,
+    providedDependents?: string[],
+    recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>,
+    owners?: any
 ): AiRepositoryContext {
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
@@ -230,12 +236,30 @@ export function buildAiContext(
         name: symbol.name
     }));
 
-    const commits = context.commits.map((commit) => ({
-        sha: commit.sha,
-        message: commit.message,
-        authorName: commit.authorName,
-        authorDate: commit.authorDate
-    }));
+    const normalizedRecentCommits = recentCommits && recentCommits.length > 0
+        ? recentCommits.slice(0, 5).map((commit) => ({
+            sha: commit.sha ? commit.sha.substring(0, 7) : "",
+            message: commit.message || "",
+            author: commit.authorName || commit.author || "Author",
+            date: commit.authorDate || commit.date || ""
+        }))
+        : undefined;
+
+    const commits = (context.commits.length > 0)
+        ? context.commits.map((commit) => ({
+            sha: commit.sha,
+            message: commit.message,
+            authorName: commit.authorName,
+            authorDate: commit.authorDate
+        }))
+        : (normalizedRecentCommits
+            ? normalizedRecentCommits.map((c) => ({
+                sha: c.sha,
+                message: c.message,
+                authorName: c.author,
+                authorDate: c.date
+            }))
+            : []);
 
     const symbolChanges = context.symbolChanges.map((change) => ({
         type: change.changeType,
@@ -334,9 +358,39 @@ export function buildAiContext(
         cappedContent = assembled;
     }
 
-    const risk = targetPath
-        ? computeFileRisk(targetPath, graph, context.commits)
-        : undefined;
+    let risk: AiRiskContext | undefined = undefined;
+    if (providedRisk && typeof providedRisk === "object") {
+        const score = typeof providedRisk.score === "number" ? providedRisk.score : 0;
+        const directDependents = typeof providedRisk.directDependents === "number"
+            ? providedRisk.directDependents
+            : (providedDependents ? providedDependents.length : 0);
+        const transitiveDependents = typeof providedRisk.transitiveDependents === "number"
+            ? providedRisk.transitiveDependents
+            : 0;
+        const hasTests = Boolean(providedRisk.hasTests ?? (providedRisk.hasNoTests === false));
+        const commitCount = typeof providedRisk.commitCount === "number"
+            ? providedRisk.commitCount
+            : (recentCommits ? recentCommits.length : 0);
+        const ownersCount = typeof providedRisk.ownersCount === "number"
+            ? providedRisk.ownersCount
+            : (owners?.owners ? owners.owners.length : (Array.isArray(owners) ? owners.length : 0));
+        const reasons = Array.isArray(providedRisk.reasons) ? providedRisk.reasons : [];
+        risk = {
+            score,
+            directDependents,
+            transitiveDependents,
+            hasTests,
+            commitCount,
+            ownersCount,
+            reasons
+        };
+    } else if (targetPath) {
+        risk = computeFileRisk(targetPath, graph, context.commits);
+    }
+
+    const effectiveDirectDependents = (providedDependents && providedDependents.length > 0)
+        ? providedDependents.slice(0, 30)
+        : directDependentPaths;
 
     const base: AiRepositoryContext = {
         repository,
@@ -353,8 +407,10 @@ export function buildAiContext(
         commits,
         symbolChanges,
         ...(risk ? { risk } : {}),
+        ...(effectiveDirectDependents.length > 0 ? { directDependents: effectiveDirectDependents } : {}),
+        ...(normalizedRecentCommits ? { recentCommits: normalizedRecentCommits } : {}),
+        ...(owners ? { owners } : {}),
         ...(fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
-        ...(fileContent && directDependentPaths.length > 0 ? { directDependents: directDependentPaths } : {}),
         ...(evidence.length > 0 ? { evidence } : {}),
         ...(cappedContent !== undefined ? { fileContent: cappedContent } : {}),
         ...(fileTruncated !== undefined ? { fileTruncated } : {}),

@@ -244,8 +244,32 @@ export const api = {
         }
     },
     ai: {
-        ask(url: string, sha: string, paths: string[], target: ImpactTarget, question: string, history?: Array<{ role: string; content: string }>) {
-            return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
+        ask(
+            url: string,
+            sha: string,
+            paths: string[],
+            target: ImpactTarget,
+            question: string,
+            history?: Array<{ role: string; content: string }>,
+            extraContext?: {
+                risk?: any;
+                dependents?: string[];
+                recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
+                owners?: any;
+            }
+        ) {
+            return post<AiAnswerResult>('/api/ai/ask-repository', {
+                url,
+                sha,
+                paths,
+                target,
+                question,
+                history,
+                risk: extraContext?.risk,
+                dependents: extraContext?.dependents,
+                recentCommits: extraContext?.recentCommits,
+                owners: extraContext?.owners
+            });
         },
         async askStream(
             url: string,
@@ -255,7 +279,13 @@ export const api = {
             question: string,
             history: Array<{ role: string; content: string }> | undefined,
             onToken: (token: string) => void,
-            signal?: AbortSignal
+            signal?: AbortSignal,
+            extraContext?: {
+                risk?: any;
+                dependents?: string[];
+                recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
+                owners?: any;
+            }
         ): Promise<AiAnswerResult> {
             try {
                 const response = await fetch('/api/ai/ask-repository', {
@@ -264,7 +294,18 @@ export const api = {
                         'Content-Type': 'application/json',
                         'Accept': 'text/event-stream'
                     },
-                    body: JSON.stringify({ url, sha, paths, target, question, history }),
+                    body: JSON.stringify({
+                        url,
+                        sha,
+                        paths,
+                        target,
+                        question,
+                        history,
+                        risk: extraContext?.risk,
+                        dependents: extraContext?.dependents,
+                        recentCommits: extraContext?.recentCommits,
+                        owners: extraContext?.owners
+                    }),
                     signal
                 });
 
@@ -274,7 +315,18 @@ export const api = {
                 }
 
                 if (!response.body) {
-                    return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
+                    return post<AiAnswerResult>('/api/ai/ask-repository', {
+                        url,
+                        sha,
+                        paths,
+                        target,
+                        question,
+                        history,
+                        risk: extraContext?.risk,
+                        dependents: extraContext?.dependents,
+                        recentCommits: extraContext?.recentCommits,
+                        owners: extraContext?.owners
+                    });
                 }
 
                 const reader = response.body.getReader();
@@ -293,7 +345,7 @@ export const api = {
 
                     for (const line of lines) {
                         const trimmed = line.trim();
-                        if (trimmed.startsWith('event:')) {
+                        if (!trimmed.startsWith('event:')) {
                             currentEvent = trimmed.slice(6).trim();
                             continue;
                         }
@@ -325,7 +377,18 @@ export const api = {
                     throw err;
                 }
                 // Fall back to non-streaming endpoint if streaming fails
-                return post<AiAnswerResult>('/api/ai/ask-repository', { url, sha, paths, target, question, history });
+                return post<AiAnswerResult>('/api/ai/ask-repository', {
+                    url,
+                    sha,
+                    paths,
+                    target,
+                    question,
+                    history,
+                    risk: extraContext?.risk,
+                    dependents: extraContext?.dependents,
+                    recentCommits: extraContext?.recentCommits,
+                    owners: extraContext?.owners
+                });
             }
         }
     }

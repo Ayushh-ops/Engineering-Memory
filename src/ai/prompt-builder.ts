@@ -47,7 +47,7 @@ export function buildPrompt(input: PromptInput): string {
         "If the context is insufficient, explicitly say so.",
         "Cite relevant file paths, symbol names, or commit SHAs when possible.",
         "Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English.",
-        "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+        "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
         "For greetings or small talk, reply briefly and do not explain the file.",
         "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file.",
         ...(input.instructions ?? [])

@@ -70,7 +70,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { repository, target, question, graph, limits, history } = req.body as Record<string, unknown>;
+        const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners } = req.body as Record<string, unknown>;
 
         if (typeof repository !== "string" || repository.trim().length === 0) {
             return res.status(400).json({ error: "Repository is required." });
@@ -106,7 +106,11 @@ export function createAiRouter(
                 graph: graph as Parameters<typeof service.answer>[0]["graph"],
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
-                history: parsedHistory
+                history: parsedHistory,
+                risk,
+                dependents: Array.isArray(dependents) ? (dependents as string[]) : undefined,
+                recentCommits: Array.isArray(recentCommits) ? (recentCommits as any[]) : undefined,
+                owners
             });
 
             return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
@@ -145,7 +149,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { url, sha, paths, target, question, limits, history } = req.body as Record<string, unknown>;
+        const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
@@ -181,6 +185,8 @@ export function createAiRouter(
         }
 
         const parsedHistory = parseAndTrimHistory(history);
+        const parsedDependents = Array.isArray(dependents) ? (dependents as string[]) : undefined;
+        const parsedRecentCommits = Array.isArray(recentCommits) ? (recentCommits as any[]) : undefined;
         const isSse = req.headers.accept?.includes("text/event-stream");
 
         if (isSse) {
@@ -205,7 +211,11 @@ export function createAiRouter(
                             question: question.trim(),
                             limits: limits as Parameters<typeof service.answer>[0]["limits"],
                             allowInsufficientContext: true,
-                            history: parsedHistory
+                            history: parsedHistory,
+                            risk,
+                            dependents: parsedDependents,
+                            recentCommits: parsedRecentCommits,
+                            owners
                         },
                         (token: string) => {
                             sendEvent("token", { token });
@@ -221,7 +231,11 @@ export function createAiRouter(
                         question: question.trim(),
                         limits: limits as Parameters<typeof service.answer>[0]["limits"],
                         allowInsufficientContext: true,
-                        history: parsedHistory
+                        history: parsedHistory,
+                        risk,
+                        dependents: parsedDependents,
+                        recentCommits: parsedRecentCommits,
+                        owners
                     });
                 }
 
@@ -266,7 +280,11 @@ export function createAiRouter(
                 question: question.trim(),
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
-                history: parsedHistory
+                history: parsedHistory,
+                risk,
+                dependents: parsedDependents,
+                recentCommits: parsedRecentCommits,
+                owners
             });
 
             return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({

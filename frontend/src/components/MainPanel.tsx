@@ -321,6 +321,14 @@ export function cleanAnswerMarkers(text: string): string {
         .replace(/\(file:[^\)]+\)/gi, '')
         // Clean [file:path:14-46] or [file:path] markers
         .replace(/\[file:[^\]]+\]/gi, '')
+        // Strip any ```json block
+        .replace(/```[ \t]*json\b[\s\S]*?(?:```|$)/gi, '')
+        // Strip any stray `json` text
+        .replace(/`json`/gi, '')
+        // Strip <<<FOLLOWUPS>>> markers
+        .replace(/<<<FOLLOWUPS>>>[\s\S]*?(?:<<<END_FOLLOWUPS>>>|$)/gi, '')
+        .replace(/<<<END_FOLLOWUPS>>>/gi, '')
+        .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[\s\S]*$/gim, '')
         // Clean any extra spaces before punctuation or duplicate spaces
         .replace(/[ \t]+([.,;?!])/g, '$1')
         .replace(/[ \t]{2,}/g, ' ')
@@ -426,8 +434,12 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
     }
 
     const parts: React.ReactNode[] = [];
-    // Priority: double-backtick code, single-backtick code, bold/italic markers
-    const regex = /(``[\s\S]+?``|`[^`\r\n]+`|\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*)/g;
+    // Priority:
+    // 1. Double-backtick code: ``code``
+    // 2. Single-backtick code: `code` (e.g. `filter_` - trailing underscores stay inside code, not emphasis!)
+    // 3. Bold/italic with asterisks: ***bold italic***, **bold**, *italic*
+    // 4. Bold/italic with underscores ONLY with whitespace/line-start boundary (never inside identifiers like filter_ or var_name)
+    const regex = /(``[\s\S]+?``|`[^`\r\n]+`|\*\*\*[^*]+?\*\*\*|\*\*[^*]+?\*\*|\*[^*]+?\*|(?<=\s|^)___([^_]+?)___(?=\s|[.,;?!:]|$)|(?<=\s|^)__([^_]+?)__(?=\s|[.,;?!:]|$)|(?<=\s|^)_([^_]+?)_(?=\s|[.,;?!:]|$))/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
 
@@ -446,7 +458,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
                 </code>
             );
         } else if (m.startsWith('`') && m.endsWith('`') && m.length >= 2) {
-            // Render single-backtick inline code as plain text without interpolation
+            // Render single-backtick inline code as plain text without interpolation (trailing underscores like `filter_` stay inside code)
             const codeContent = m.slice(1, -1);
             parts.push(
                 <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5]">
@@ -466,6 +478,24 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
                 </strong>
             );
         } else if (m.startsWith('*') && m.endsWith('*')) {
+            parts.push(
+                <em key={`em-${match.index}`} className="italic text-[#E8EAE6]">
+                    {m.slice(1, -1)}
+                </em>
+            );
+        } else if (m.startsWith('___') && m.endsWith('___')) {
+            parts.push(
+                <strong key={`bold-${match.index}`} className="font-semibold text-[#E8EAE6] italic">
+                    {m.slice(3, -3)}
+                </strong>
+            );
+        } else if (m.startsWith('__') && m.endsWith('__')) {
+            parts.push(
+                <strong key={`bold-${match.index}`} className="font-semibold text-[#E8EAE6]">
+                    {m.slice(2, -2)}
+                </strong>
+            );
+        } else if (m.startsWith('_') && m.endsWith('_')) {
             parts.push(
                 <em key={`em-${match.index}`} className="italic text-[#E8EAE6]">
                     {m.slice(1, -1)}
@@ -2022,6 +2052,15 @@ export function MainPanel({ className }: { className?: string }) {
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
     const fileRisk = useMemo(() => selectedFile ? computeRisk(selectedFile, graph, commits) : null, [selectedFile, graph, commits]);
+    const connectionsData = useMemo(() => {
+        if (!graph || !selectedFile) return null;
+        const connected = getConnectedFiles(graph, selectedFile);
+        return {
+            imports: connected.imports,
+            dependents: connected.importedBy,
+            importedBy: connected.importedBy
+        };
+    }, [graph, selectedFile]);
 
     const analyzedPaths = useMemo(() => {
         const paths = new Set<string>();
@@ -2589,12 +2628,22 @@ ${lastAssistant?.content || 'No response recorded.'}
         }
     };
 
-    // Auto-scroll to bottom of chat on new messages or thinking state
+    // Auto-scroll to bottom of chat on new messages or thinking state, and after streaming/chips render
     useEffect(() => {
         if (activeTab === 'AskAI') {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            const timer1 = setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 50);
+            const timer2 = setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 180);
+            return () => {
+                clearTimeout(timer1);
+                clearTimeout(timer2);
+            };
         }
-    }, [chatMessages, aiError, activeTab]);
+    }, [chatMessages, aiError, isStreaming, activeTab]);
 
     // Reset Ask AI input on selected file change
     useEffect(() => {
@@ -2643,6 +2692,25 @@ ${lastAssistant?.content || 'No response recorded.'}
             return false;
         };
 
+        const tryExtractJsonArray = (text: string): string[] => {
+            const jsonArrayRegex = /\[\s*"[\s\S]*?"\s*\]/;
+            const match = text.match(jsonArrayRegex);
+            if (match) {
+                try {
+                    const parsed = JSON.parse(match[0]);
+                    if (Array.isArray(parsed)) {
+                        return parsed
+                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
+                            .map(item => item.trim())
+                            .slice(0, 3);
+                    }
+                } catch {
+                    // ignore
+                }
+            }
+            return [];
+        };
+
         const delimitedRegex = /<<<FOLLOWUPS>>>([\s\S]*?)(?:<<<END_FOLLOWUPS>>>|$)/i;
         const delimitedMatch = rawAnswer.match(delimitedRegex);
 
@@ -2661,7 +2729,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                         .slice(0, 3);
                 }
             } catch {
-                followups = [];
+                followups = tryExtractJsonArray(rawBlock);
             }
         } else {
             const legacyRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*([\s\S]*)$/i;
@@ -2678,7 +2746,20 @@ ${lastAssistant?.content || 'No response recorded.'}
                             .slice(0, 3);
                     }
                 } catch {
-                    followups = [];
+                    followups = tryExtractJsonArray(trailing);
+                }
+            }
+        }
+
+        // Try extracting from any ```json block if not yet found
+        if (followups.length === 0) {
+            const jsonFenceRegex = /```[ \t]*json\b\s*([\s\S]*?)```/gi;
+            let fenceMatch: RegExpExecArray | null;
+            while ((fenceMatch = jsonFenceRegex.exec(rawAnswer)) !== null) {
+                const candidates = tryExtractJsonArray(fenceMatch[1]);
+                if (candidates.length > 0) {
+                    followups = candidates;
+                    break;
                 }
             }
         }
@@ -2691,20 +2772,10 @@ ${lastAssistant?.content || 'No response recorded.'}
             cleanAnswer = cleanAnswer.slice(0, headerMatch.index).trim();
 
             if (followups.length === 0 && trailing) {
-                try {
-                    let cleanedTrailing = trailing;
-                    if (cleanedTrailing.startsWith('```')) {
-                        cleanedTrailing = cleanedTrailing.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-                    }
-                    const parsed = JSON.parse(cleanedTrailing);
-                    if (Array.isArray(parsed)) {
-                        followups = parsed
-                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
-                            .map(item => item.trim())
-                            .slice(0, 3);
-                    }
-                } catch {
-                    // Try parsing numbered or bulleted lines: 1. Question? or - Question?
+                const candidates = tryExtractJsonArray(trailing);
+                if (candidates.length > 0) {
+                    followups = candidates;
+                } else {
                     const lines = trailing
                         .split(/\r?\n/)
                         .map(l => l.replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]*/, '').trim())
@@ -2716,10 +2787,13 @@ ${lastAssistant?.content || 'No response recorded.'}
             }
         }
 
-        // Final safety cleanup of any stray follow-up tokens or headers
+        // Strip any ```json block, "`json`" text and the FOLLOWUPS marker from the rendered answer
         cleanAnswer = cleanAnswer
+            .replace(/```[ \t]*json\b[\s\S]*?(?:```|$)/gi, '')
+            .replace(/`json`/gi, '')
             .replace(/<<<FOLLOWUPS>>>[\s\S]*?(?:<<<END_FOLLOWUPS>>>|$)/gi, '')
-            .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[ \t]*$/gim, '')
+            .replace(/<<<END_FOLLOWUPS>>>/gi, '')
+            .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[\s\S]*$/gim, '')
             .trim();
 
         return {
@@ -2786,6 +2860,63 @@ ${lastAssistant?.content || 'No response recorded.'}
             }
         }
 
+        const currentRisk = fileRisk || computeRisk(selectedFile, graph, commits);
+        const connected = getConnectedFiles(graph, selectedFile);
+        const currentDependents = (connectionsData?.dependents && connectionsData.dependents.length > 0)
+            ? connectionsData.dependents
+            : (connected.importedBy || []);
+
+        let recentCommitsForFile: Array<{ sha: string; message: string; author: string; date: string }> = [];
+        if (historyData && historyData.length > 0) {
+            recentCommitsForFile = historyData.slice(0, 5).map((c: any) => ({
+                sha: c.sha ? c.sha.substring(0, 7) : '',
+                message: c.commit?.message?.split('\n')[0] || c.message || '',
+                author: c.commit?.author?.name || c.author?.name || (typeof c.author === 'string' ? c.author : 'Author'),
+                date: c.commit?.author?.date || c.date || ''
+            }));
+        } else {
+            try {
+                const cRes = await api.repositories.getCommits(repoUrl, selectedSha || undefined, selectedFile);
+                if (cRes && Array.isArray(cRes.commits)) {
+                    recentCommitsForFile = cRes.commits.slice(0, 5).map((c: any) => ({
+                        sha: c.sha ? c.sha.substring(0, 7) : '',
+                        message: c.commit?.message?.split('\n')[0] || c.message || '',
+                        author: c.commit?.author?.name || c.author?.name || (typeof c.author === 'string' ? c.author : 'Author'),
+                        date: c.commit?.author?.date || c.date || ''
+                    }));
+                }
+            } catch {
+                if (commits && commits.length > 0) {
+                    recentCommitsForFile = commits
+                        .filter((c: any) => c.files && c.files.some((f: any) => f.filename === selectedFile || f.path === selectedFile))
+                        .slice(0, 5)
+                        .map((c: any) => ({
+                            sha: c.sha ? c.sha.substring(0, 7) : '',
+                            message: c.commit?.message?.split('\n')[0] || c.message || '',
+                            author: c.commit?.author?.name || c.author?.name || (typeof c.author === 'string' ? c.author : 'Author'),
+                            date: c.commit?.author?.date || c.date || ''
+                        }));
+                }
+            }
+        }
+
+        let fileOwners: any = null;
+        try {
+            const oRes = await api.repositories.getOwners(repoUrl, selectedFile, selectedSha || undefined);
+            if (oRes && oRes.owners) {
+                fileOwners = oRes;
+            }
+        } catch {
+            // ignore
+        }
+
+        const extraContext = {
+            risk: currentRisk,
+            dependents: currentDependents,
+            recentCommits: recentCommitsForFile,
+            owners: fileOwners
+        };
+
         let accumulatedStreamedText = '';
 
         try {
@@ -2812,7 +2943,8 @@ ${lastAssistant?.content || 'No response recorded.'}
                         return copy;
                     });
                 },
-                controller.signal
+                controller.signal,
+                extraContext
             );
 
             if (res.status === 'error' && res.error) {
@@ -2846,6 +2978,12 @@ ${lastAssistant?.content || 'No response recorded.'}
         } finally {
             setIsStreaming(false);
             abortControllerRef.current = null;
+            setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 50);
+            setTimeout(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }, 180);
         }
     };
 
@@ -2893,16 +3031,6 @@ ${lastAssistant?.content || 'No response recorded.'}
     useEffect(() => {
         if (activeTab === 'History') fetchHistory();
     }, [activeTab, fetchHistory]);
-
-    const connectionsData = useMemo(() => {
-        if (!graph || !selectedFile) return null;
-        const connected = getConnectedFiles(graph, selectedFile);
-        return {
-            imports: connected.imports,
-            dependents: connected.importedBy,
-            importedBy: connected.importedBy
-        };
-    }, [graph, selectedFile]);
 
     const directList = useMemo(() => {
         if (!selectedFile) return [];
