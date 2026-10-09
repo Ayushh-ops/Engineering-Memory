@@ -511,7 +511,7 @@ export function compute2DLayout(
     const positions = new Map<string, { x: number; y: number }>();
     if (nodes.length === 0) return positions;
 
-    const colSpacing = 280;
+    const colSpacing = 360;
     const nodeHeight = 28;
     const verticalGap = 40;
     const rowStep = nodeHeight + verticalGap; // 68px between row centers -> 40px gap between 28px boxes

@@ -39,25 +39,24 @@ export function ConnectedFilesList({
             <div className="flex items-center justify-between text-[#8A918C]">
                 <span className="text-[11px] font-normal flex items-center gap-1.5">
                     <Network size={12} className="text-[#4FD1B5]" />
-                    <span>Connected files</span>
-                </span>
-                <span className="text-[10px] font-mono text-[#8A918C]/80">
-                    {totalCount} total
+                    <span>Connected files ({totalCount})</span>
                 </span>
             </div>
 
             <div className="space-y-3">
-                {/* Imports */}
-                <div className="space-y-1.5">
-                    <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
-                        <span>Imports</span>
-                        <span className="font-mono text-[10px] text-[#4FD1B5]">
-                            ({connected.imports.length})
-                        </span>
-                    </div>
-                    {connected.imports.length === 0 ? (
-                        <div className="text-[11px] text-[#8A918C]/50 italic">None</div>
-                    ) : (
+                {totalCount === 0 && (
+                    <div className="text-[11px] text-[#8A918C]/50 italic">None</div>
+                )}
+
+                {/* Imports - hide if 0 items */}
+                {connected.imports.length > 0 && (
+                    <div className="space-y-1.5">
+                        <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
+                            <span>Imports</span>
+                            <span className="font-mono text-[10px] text-[#4FD1B5]">
+                                ({connected.imports.length})
+                            </span>
+                        </div>
                         <div className={cn("space-y-1 overflow-y-auto scrollbar-custom pr-1", maxHeightClass)}>
                             {connected.imports.map((f) => (
                                 <div
@@ -79,20 +78,18 @@ export function ConnectedFilesList({
                                 </div>
                             ))}
                         </div>
-                    )}
-                </div>
-
-                {/* Imported by */}
-                <div className="space-y-1.5">
-                    <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
-                        <span>Imported by</span>
-                        <span className="font-mono text-[10px] text-[#E3A04A]">
-                            ({connected.importedBy.length})
-                        </span>
                     </div>
-                    {connected.importedBy.length === 0 ? (
-                        <div className="text-[11px] text-[#8A918C]/50 italic">None</div>
-                    ) : (
+                )}
+
+                {/* Imported by - hide if 0 items */}
+                {connected.importedBy.length > 0 && (
+                    <div className="space-y-1.5">
+                        <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
+                            <span>Imported by</span>
+                            <span className="font-mono text-[10px] text-[#E3A04A]">
+                                ({connected.importedBy.length})
+                            </span>
+                        </div>
                         <div className={cn("space-y-1 overflow-y-auto scrollbar-custom pr-1", maxHeightClass)}>
                             {connected.importedBy.map((f) => (
                                 <div
@@ -114,20 +111,18 @@ export function ConnectedFilesList({
                                 </div>
                             ))}
                         </div>
-                    )}
-                </div>
-
-                {/* Calls */}
-                <div className="space-y-1.5">
-                    <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
-                        <span>Calls</span>
-                        <span className="font-mono text-[10px] text-[#4FD1B5]">
-                            ({connected.calls.length})
-                        </span>
                     </div>
-                    {connected.calls.length === 0 ? (
-                        <div className="text-[11px] text-[#8A918C]/50 italic">None</div>
-                    ) : (
+                )}
+
+                {/* Calls - hide if 0 items */}
+                {connected.calls.length > 0 && (
+                    <div className="space-y-1.5">
+                        <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
+                            <span>Calls</span>
+                            <span className="font-mono text-[10px] text-[#4FD1B5]">
+                                ({connected.calls.length})
+                            </span>
+                        </div>
                         <div className={cn("space-y-1 overflow-y-auto scrollbar-custom pr-1", maxHeightClass)}>
                             {connected.calls.map((f) => (
                                 <div
@@ -149,20 +144,18 @@ export function ConnectedFilesList({
                                 </div>
                             ))}
                         </div>
-                    )}
-                </div>
-
-                {/* Contains */}
-                <div className="space-y-1.5">
-                    <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
-                        <span>Contains</span>
-                        <span className="font-mono text-[10px] text-[#4FD1B5]">
-                            ({connected.contains.length})
-                        </span>
                     </div>
-                    {connected.contains.length === 0 ? (
-                        <div className="text-[11px] text-[#8A918C]/50 italic">None</div>
-                    ) : (
+                )}
+
+                {/* Contains - hide if 0 items */}
+                {connected.contains.length > 0 && (
+                    <div className="space-y-1.5">
+                        <div className="text-[10px] font-medium text-[#8A918C] flex items-center justify-between">
+                            <span>Contains</span>
+                            <span className="font-mono text-[10px] text-[#4FD1B5]">
+                                ({connected.contains.length})
+                            </span>
+                        </div>
                         <div className={cn("space-y-1 overflow-y-auto scrollbar-custom pr-1", maxHeightClass)}>
                             {connected.contains.map((sym) => (
                                 <div
@@ -174,7 +167,7 @@ export function ConnectedFilesList({
                                 >
                                     <div className="flex items-center gap-1.5 truncate min-w-0">
                                         {sym.type === 'class' ? (
-                                            <Hexagon size={11} className="text-[#E3A04A] shrink-0" />
+                                             <Hexagon size={11} className="text-[#E3A04A] shrink-0" />
                                         ) : (
                                             <Code2 size={11} className="text-[#8A918C] shrink-0" />
                                         )}
@@ -188,8 +181,8 @@ export function ConnectedFilesList({
                                 </div>
                             ))}
                         </div>
-                    )}
-                </div>
+                    </div>
+                )}
             </div>
         </div>
     );

@@ -2,7 +2,7 @@ import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType } from '@xyflow/react';
+import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
 import SpriteText from 'three-spritetext';
 import * as THREE from 'three';
@@ -262,12 +262,12 @@ function FlowFitViewHandler({
 }) {
     const { fitView } = useReactFlow();
 
-    // Call fitView with 40px padding, maxZoom 1.2 after layout, and on entering/leaving fullscreen
+    // Call fitView with padding 0.1 (fills ~80% of container), maxZoom 2.5 after layout, and on entering/leaving fullscreen
     useEffect(() => {
         if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 40, maxZoom: 1.2, duration: prefersReducedMotion ? 0 : 300 });
+            fitView({ padding: 0.1, maxZoom: 2.5, minZoom: 0.2, duration: prefersReducedMotion ? 0 : 300 });
         }, 80);
         return () => clearTimeout(timer);
     }, [nodes, edges, simplify, focusDepth, resetTrigger, isExpanded, fitView]);
@@ -275,7 +275,7 @@ function FlowFitViewHandler({
     // Fit-to-view on window resize
     useEffect(() => {
         const handleResize = () => {
-            fitView({ padding: 40, maxZoom: 1.2, duration: 0 });
+            fitView({ padding: 0.1, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -669,8 +669,12 @@ function ProseRenderer({ text }: { text: string }) {
 }
 
 function CustomGraphNode({ data }: { data: any }) {
+    const { zoom } = useViewport();
+    const effectiveFontSize = zoom > 0 && zoom < 1 ? Math.max(12, Math.round(12 / zoom)) : 12;
+    const effectiveHeight = zoom > 0 && zoom < 1 ? Math.max(28, Math.round(28 / zoom)) : 28;
+
     return (
-        <div style={data.style}>
+        <div style={{ ...data.style, fontSize: `${effectiveFontSize}px`, minHeight: `${effectiveHeight}px`, height: `${effectiveHeight}px` }}>
             <Handle
                 id="target-left"
                 type="target"
@@ -879,7 +883,7 @@ function OverviewGraph2D({
                                         : "bg-[#8A918C]"
                                 )}
                             />
-                            <span className="truncate text-[#E8EAE6] text-[12px] min-text-[11px] leading-none font-mono">
+                            <span style={{ fontSize: 'inherit' }} className="truncate text-[#E8EAE6] text-[12px] leading-none font-mono">
                                 {labelText}
                             </span>
                         </div>
@@ -981,8 +985,9 @@ function OverviewGraph2D({
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 onPaneClick={() => onSelectNode(null)}
                 fitView
-                fitViewOptions={{ padding: 40, maxZoom: 1.2 }}
-                maxZoom={1.2}
+                fitViewOptions={{ padding: 0.1, maxZoom: 2.5, minZoom: 0.2 }}
+                maxZoom={2.5}
+                minZoom={0.2}
                 proOptions={{ hideAttribution: true }}
             >
                 <Background color="#27272a" gap={16} size={1} />
@@ -1246,6 +1251,38 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return ids;
     }, [displayGraph, hoveredGraphNode]);
 
+    const legendData = useMemo(() => {
+        const nodes = displayGraph?.nodes || [];
+        const edges = displayGraph?.edges || [];
+
+        const hasFile = nodes.some((n: any) => n.type === 'file');
+        const hasFunction = nodes.some((n: any) => n.type === 'function' || n.type === 'method');
+        const hasClass = nodes.some((n: any) => n.type === 'class');
+        const hasRepo = nodes.some((n: any) => n.type === 'repository');
+
+        const hasImports = edges.some((e: any) =>
+            e.type === 'imports' || e.type === 'calls' || !e.type ||
+            (neighborInfo.hasSelection && neighborInfo.outgoingEdgeIds.has(e.id || `${e.from}->${e.to}:${e.type}`))
+        );
+        const hasImportedBy = edges.some((e: any) =>
+            e.type === 'imported_by' ||
+            (neighborInfo.hasSelection && neighborInfo.incomingEdgeIds.has(e.id || `${e.from}->${e.to}:${e.type}`))
+        );
+        const hasContains = edges.some((e: any) => e.type === 'contains');
+
+        return {
+            hasFile,
+            hasFunction,
+            hasClass,
+            hasRepo,
+            hasImports,
+            hasImportedBy,
+            hasContains,
+            hasAnyNodes: hasFile || hasFunction || hasClass || hasRepo,
+            hasAnyEdges: hasImports || hasImportedBy || hasContains
+        };
+    }, [displayGraph, neighborInfo]);
+
     const handleViewModeChange = (mode: '2D' | '3D') => {
         setViewMode(mode);
         try {
@@ -1405,9 +1442,23 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         if (count === 0) return;
 
-        const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
-        const centerZ = (minZ + maxZ) / 2;
+        let centerX = (minX + maxX) / 2;
+        let centerY = (minY + maxY) / 2;
+        let centerZ = (minZ + maxZ) / 2;
+
+        // When a node is selected, center the camera and viewport directly on it
+        if (selectedFile) {
+            const selectedNodeObj = targetNodes.find((n: any) =>
+                n.path === selectedFile ||
+                n.id === selectedFile ||
+                (n.type === 'file' && n.name === selectedFile)
+            );
+            if (selectedNodeObj && typeof selectedNodeObj.x === 'number' && typeof selectedNodeObj.y === 'number' && typeof selectedNodeObj.z === 'number') {
+                centerX = selectedNodeObj.x;
+                centerY = selectedNodeObj.y;
+                centerZ = selectedNodeObj.z;
+            }
+        }
 
         const fovRad = ((camera.fov || 45) * Math.PI) / 180;
         const domHeight = (typeof fg.renderer === 'function' && fg.renderer()?.domElement?.clientHeight) || dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
@@ -1415,10 +1466,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         let distance: number;
 
         if (count === 1) {
-            // With 1 node, show a small node (radius about 8px on screen) in the center, not a huge sphere
-            // Screen radius r_screen = (nodeRadiusWorld / (2 * distance * tan(fov/2))) * domHeight = 8px
-            // distance = (nodeRadiusWorld * domHeight) / (16 * tan(fov/2))
-            const nodeRadiusWorld = 2.8;
+            const nodeRadiusWorld = 6;
             distance = (nodeRadiusWorld * domHeight) / (16 * Math.tan(fovRad / 2));
         } else {
             // Compute bounding sphere radius from center
@@ -1431,8 +1479,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             }
             const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 4, 15);
             // Clamp camera distance to a minimum so the bounding sphere fills ~55% (fillFraction) of canvas height:
-            // (2 * sphereRadius) / (2 * distance * tan(fovRad / 2)) <= fillFraction
-            // distance >= sphereRadius / (fillFraction * tan(fovRad / 2))
             const minDistanceForSphere = sphereRadius / (fillFraction * Math.tan(fovRad / 2));
 
             const sizeX = Math.max(maxX - minX, 20);
@@ -1461,15 +1507,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fg.cameraPosition(targetPos, lookAt, prefersReducedMotion ? 0 : 350);
         }
-    }, [dimensions.height]);
+    }, [dimensions.height, selectedFile]);
 
     fitCameraToVisibleNodesRef.current = fitCameraToVisibleNodes;
 
     const fgRef = useCallback((fg: any) => {
         if (fg) {
             fgInstanceRef.current = fg;
-            fg.d3Force('charge').strength(-600);
-            fg.d3Force('link').distance(160);
+            fg.d3Force('charge').strength(-1400);
+            fg.d3Force('link').distance(260);
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fg.controls().autoRotate = !prefersReducedMotion;
             fg.controls().autoRotateSpeed = 0.5;
@@ -1567,8 +1613,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     // Center 3D camera on visible nodes bounding box (~55% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
-        fgInstanceRef.current.d3Force('charge')?.strength(-600);
-        fgInstanceRef.current.d3Force('link')?.distance(160);
+        fgInstanceRef.current.d3Force('charge')?.strength(-1400);
+        fgInstanceRef.current.d3Force('link')?.distance(260);
         const timer = setTimeout(() => {
             fitCameraToVisibleNodes(graphData.nodes, 0.55);
         }, 200);
@@ -1614,7 +1660,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                     const drawn: Array<{ x: number; y: number }> = [];
                     for (const item of screenPositions) {
-                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 60 && Math.abs(d.y - item.y) < 20);
+                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 75 && Math.abs(d.y - item.y) < 22);
                         if (overlaps) {
                             item.sprite.visible = false;
                         } else {
@@ -1889,8 +1935,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         if (link.type === 'imports' || link.type === 'calls') return '#4FD1B5';
                         return '#8A918C';
                     }}
-                    linkWidth={1.5}
-                    linkOpacity={0.7}
+                    linkWidth={1}
+                    linkOpacity={0.4}
                     linkDirectionalParticles={0}
                     backgroundColor="#07090A"
                     onNodeClick={handleNodeClick3D}
@@ -1905,11 +1951,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                         const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
 
+                        const connCount = Number(node.connections || 0);
+                        // Bigger node spheres (radius by degree, min 6px)
+                        const baseRadius = Math.max(6, Math.min(18, 6 + Math.sqrt(connCount) * 2));
+                        const radius = isSelected ? baseRadius * 1.25 : baseRadius;
+
                         // Labels only for selected, hovered and the 8 highest-degree nodes
                         const shouldShowLabel = isSelected || isHovered || isTop8Degree;
 
                         if (!shouldShowLabel) {
-                            const dotGeometry = new THREE.SphereGeometry(1.8, 12, 12);
+                            const dotGeometry = new THREE.SphereGeometry(radius, 16, 16);
                             const dotMaterial = new THREE.MeshLambertMaterial({
                                 color: baseColor,
                                 opacity: 0.9,
@@ -1919,20 +1970,31 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         }
 
                         // Selected, hovered, or eligible high-degree node: node sphere + pill label
-                        const radius = isSelected ? 3.5 : 2.8;
                         const group = new THREE.Group();
 
                         if (isRepo) {
-                            const ringGeo = new THREE.TorusGeometry(3.5, 0.4, 16, 32);
+                            const ringGeo = new THREE.TorusGeometry(radius, radius * 0.25, 16, 32);
                             const ringMat = new THREE.MeshBasicMaterial({ color: 0xE8EAE6 });
                             group.add(new THREE.Mesh(ringGeo, ringMat));
                         } else {
                             const material = new THREE.MeshLambertMaterial({
-                                color: baseColor,
-                                emissive: isSelected ? baseColor : 0x000000,
-                                emissiveIntensity: isSelected ? 0.4 : 0.2
+                                color: isSelected ? '#4FD1B5' : baseColor,
+                                emissive: isSelected ? 0x4FD1B5 : (isHovered ? baseColor : 0x000000),
+                                emissiveIntensity: isSelected ? 0.8 : (isHovered ? 0.4 : 0.1)
                             });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 16, 16), material));
+                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 18, 18), material));
+
+                            // Highlight selected node with prominent wireframe halo
+                            if (isSelected) {
+                                const haloGeo = new THREE.SphereGeometry(radius * 1.35, 16, 16);
+                                const haloMat = new THREE.MeshBasicMaterial({
+                                    color: 0x4FD1B5,
+                                    wireframe: true,
+                                    transparent: true,
+                                    opacity: 0.6
+                                });
+                                group.add(new THREE.Mesh(haloGeo, haloMat));
+                            }
                         }
 
                         // Labels: base name only
@@ -1948,11 +2010,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         sprite.padding = [4, 2];
                         sprite.borderColor = 'rgba(255, 255, 255, 0.1)';
                         sprite.borderWidth = 0.5;
-                        sprite.position.y = radius + 3.5;
+                        sprite.position.y = radius + 5;
                         sprite.renderOrder = 999;
                         sprite.material.depthTest = false;
-                        // Priority: selected (3) > hovered (2) > high degree (1)
-                        const priority = isSelected ? 3 : isHovered ? 2 : 1;
+                        // Priority: selected > hovered > highest degree
+                        let priority = connCount;
+                        if (isHovered) priority += 500000;
+                        if (isSelected) priority += 1000000;
                         (sprite as any).userData = {
                             priority
                         };
@@ -1983,7 +2047,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     )}
                 </div>
 
-                {/* Legend always visible by default (compact, bottom-left, small collapse chevron), also outside fullscreen */}
+                {/* Legend always visible by default (compact, bottom-left, small collapse chevron), filtered to present types */}
                 <div className="glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2 text-xs font-mono shadow-xl max-w-xs">
                     <div
                         className="flex items-center justify-between gap-3 border-b border-white/[0.08] pb-1 cursor-pointer"
@@ -2003,17 +2067,21 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     </div>
                     {!legendCollapsed && (
                         <div className="pt-1.5 space-y-1.5">
-                            <div className="flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
-                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]" />File</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#8A918C]" />Function</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#E3A04A]" />Class</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full border border-[#E8EAE6] bg-transparent inline-block" />Repo</span>
-                            </div>
-                            <div className="pt-1 border-t border-white/[0.06] flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
-                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#4FD1B5] inline-block" />Imports</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#E3A04A] inline-block" />Imported by</span>
-                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#8A918C] inline-block" />Contains</span>
-                            </div>
+                            {legendData.hasAnyNodes && (
+                                <div className="flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
+                                    {legendData.hasFile && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]" />File</span>}
+                                    {legendData.hasFunction && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#8A918C]" />Function</span>}
+                                    {legendData.hasClass && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#E3A04A]" />Class</span>}
+                                    {legendData.hasRepo && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full border border-[#E8EAE6] bg-transparent inline-block" />Repo</span>}
+                                </div>
+                            )}
+                            {legendData.hasAnyEdges && (
+                                <div className={cn("flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap", legendData.hasAnyNodes && "pt-1 border-t border-white/[0.06]")}>
+                                    {legendData.hasImports && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#4FD1B5] inline-block" />Imports</span>}
+                                    {legendData.hasImportedBy && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#E3A04A] inline-block" />Imported by</span>}
+                                    {legendData.hasContains && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#8A918C] inline-block" />Contains</span>}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
