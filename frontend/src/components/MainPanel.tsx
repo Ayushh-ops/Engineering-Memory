@@ -2125,6 +2125,33 @@ export function MainPanel({ className }: { className?: string }) {
     const [isStreaming, setIsStreaming] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
 
+    const [drawerFile, setDrawerFile] = useState<string | null>(null);
+    const [drawerOpen, setDrawerOpen] = useState(false);
+
+    const handleOpenDrawer = useCallback((filePath: string) => {
+        setDrawerFile(filePath);
+        setDrawerOpen(true);
+    }, []);
+
+    // Open drawer on file selection in Overview
+    useEffect(() => {
+        if (activeTab === 'Overview' && selectedFile) {
+            setDrawerFile(selectedFile);
+            setDrawerOpen(true);
+        }
+    }, [activeTab, selectedFile]);
+
+    // Close drawer on Escape key
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setDrawerOpen(false);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
     // Save chat per repo+commit in localStorage (last 30 messages)
     const chatStorageKey = (repoUrl && selectedSha) ? `ask-chat:${repoUrl}:${selectedSha}` : null;
 
@@ -2762,8 +2789,133 @@ ${lastAssistant?.content || 'No response recorded.'}
     }, [graph]);
 
     useEffect(() => {
-        if (activeTab === 'Health') fetchHealth();
+        if (activeTab === 'Health' || activeTab === 'Overview') fetchHealth();
     }, [activeTab, fetchHealth]);
+
+    const repoDisplayName = useMemo(() => {
+        if (meta?.fullName) return meta.fullName;
+        if (meta?.name) return meta.name;
+        if (repoUrl) {
+            return repoUrl.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+        }
+        return 'Repository';
+    }, [meta, repoUrl]);
+
+    const overviewMapData = useMemo(() => {
+        if (!graph || !graph.nodes || graph.nodes.length === 0) return { nodes: [], edges: [] };
+        const fileNodes = graph.nodes.filter(n => n.type === 'file');
+        const selectedNodesMap = new Map<string, any>();
+        for (const h of hotspotsList) {
+            if (selectedNodesMap.size >= 40) break;
+            const n = graph.nodes.find(node => node.id === h.id || (node as any).path === h.path);
+            if (n) selectedNodesMap.set(n.id, n);
+        }
+        for (const fn of fileNodes) {
+            if (selectedNodesMap.size >= 40) break;
+            if (!selectedNodesMap.has(fn.id)) {
+                selectedNodesMap.set(fn.id, fn);
+            }
+        }
+        if (selectedNodesMap.size === 0) {
+            for (const n of graph.nodes) {
+                if (selectedNodesMap.size >= 40) break;
+                selectedNodesMap.set(n.id, n);
+            }
+        }
+        const nodesList = Array.from(selectedNodesMap.values());
+        const nodeIds = new Set(nodesList.map(n => n.id));
+
+        const count = nodesList.length;
+        const positions: Record<string, { x: number; y: number }> = {};
+        if (count === 1) {
+            positions[nodesList[0].id] = { x: 200, y: 75 };
+        } else {
+            const width = 400;
+            const height = 150;
+            const cx = width / 2;
+            const cy = height / 2;
+            nodesList.forEach((node, i) => {
+                const angle = i * 2.3999632;
+                const radiusFrac = Math.sqrt((i + 1) / (count + 1));
+                const rx = radiusFrac * (width * 0.42);
+                const ry = radiusFrac * (height * 0.38);
+                const x = Math.round(cx + rx * Math.cos(angle));
+                const y = Math.round(cy + ry * Math.sin(angle));
+                positions[node.id] = { x, y };
+            });
+        }
+
+        const filteredEdges = graph.edges
+            .filter(e => nodeIds.has(e.from) && nodeIds.has(e.to) && e.from !== e.to)
+            .slice(0, 60);
+
+        const riskySet = new Set(hotspotsList.slice(0, 7).map(h => h.id));
+
+        return {
+            nodes: nodesList.map(n => ({
+                id: n.id,
+                x: positions[n.id]?.x ?? 200,
+                y: positions[n.id]?.y ?? 75,
+                isRisky: riskySet.has(n.id)
+            })),
+            edges: filteredEdges.map(e => ({
+                x1: positions[e.from]?.x ?? 200,
+                y1: positions[e.from]?.y ?? 75,
+                x2: positions[e.to]?.x ?? 200,
+                y2: positions[e.to]?.y ?? 75
+            }))
+        };
+    }, [graph, hotspotsList]);
+
+    const drawerRisk = useMemo(() => {
+        if (!drawerFile || !graph) return null;
+        return computeRisk(drawerFile, graph, commits);
+    }, [drawerFile, graph, commits]);
+
+    const drawerImportedBy = useMemo(() => {
+        if (!drawerFile || !graph) return [];
+        const directSet = new Set<string>();
+        const fileNode = graph.nodes.find((n: any) => n.type === 'file' && (n.path === drawerFile || n.id === drawerFile));
+        const fileId = fileNode ? fileNode.id : drawerFile;
+        for (const edge of graph.edges) {
+            if (edge.to === fileId && (edge.type === 'imports' || edge.type === 'calls')) {
+                const fromNode = graph.nodes.find((n: any) => n.id === edge.from);
+                const p = (fromNode as any)?.path || (fromNode?.type === 'file' ? fromNode.id : null);
+                if (p && p !== drawerFile) {
+                    directSet.add(p);
+                }
+            }
+        }
+        return Array.from(directSet);
+    }, [drawerFile, graph]);
+
+    const drawerCommitInfo = useMemo(() => {
+        if (!drawerFile || !commits || commits.length === 0) {
+            return { countText: 'None recorded', author: '—' };
+        }
+        const touching = commits.filter((c: any) =>
+            c.files && c.files.some((f: any) => f.filename === drawerFile || (f as any).path === drawerFile)
+        );
+        const count = touching.length;
+        const authorCounts: Record<string, number> = {};
+        for (const c of touching) {
+            if (c.authorName) {
+                authorCounts[c.authorName] = (authorCounts[c.authorName] || 0) + 1;
+            }
+        }
+        let topAuthor = '—';
+        let max = 0;
+        for (const [author, cnt] of Object.entries(authorCounts)) {
+            if (cnt > max) {
+                max = cnt;
+                topAuthor = author;
+            }
+        }
+        return {
+            countText: count > 0 ? `${count} commit${count === 1 ? '' : 's'}` : 'None recorded',
+            author: topAuthor
+        };
+    }, [drawerFile, commits]);
 
     const isCode = selectedFile ? isCodeFile(selectedFile) : false;
     const isRepoLevelTab = activeTab === 'Overview' || activeTab === 'ChangeSet' || activeTab === 'Health';
@@ -2821,81 +2973,236 @@ ${lastAssistant?.content || 'No response recorded.'}
             {/* Content */}
             <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6] min-h-0", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code' || activeTab === 'Impact' || activeTab === 'ChangeSet') && "flex flex-col")}>
                 <ErrorBoundary key={activeTab} name={activeTab}>
-                    {/* Overview Tab: hotspots list, composition bar */}
+                    {/* Overview Tab: Editorial Ledger layout & Drawer */}
                     {activeTab === 'Overview' && (
-                        <div className="space-y-4">
-                            <ComponentToolbar
-                                title="Repository overview"
-                                subtitle="Hotspots, composition, and high-level structure."
-                                primaryAction={
-                                    <Button onClick={reanalyzeRepo} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={analyzing}>
-                                        {analyzing ? <Loader2 size={11} className="animate-spin" /> : 'Re-analyze'}
-                                    </Button>
-                                }
-                                onDownloadReport={handleDownloadOverviewReport}
-                                onCopyPRComment={handleCopyOverviewPRComment}
-                                onReanalyze={reanalyzeRepo}
-                                onExport={() => downloadTextFile('repo-overview.json', JSON.stringify({ stats, hotspots: hotspotsList, composition: compositionData }, null, 2), 'application/json')}
-                            />
-
-                            {/* Hotspots & Composition */}
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col">
-                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Hotspots, ranked by churn and dependents</h4>
-                                    <div className="space-y-2 max-h-[260px] overflow-y-auto scrollbar-custom">
-                                        {hotspotsList.length === 0 ? (
-                                            <div className="text-xs text-[#8A918C]">No hotspots found</div>
-                                        ) : (
-                                            hotspotsList.map((h) => (
-                                                <div
-                                                    key={h.id}
-                                                    onClick={() => h.path && selectFile(h.path)}
-                                                    className="grid grid-cols-[1fr_80px_40px] gap-3 items-center py-1.5 border-b border-white/[0.05] last:border-0 text-xs cursor-pointer hover:bg-white/[0.02] rounded px-1 group"
-                                                >
-                                                    <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={h.path || ''}>{h.name || (h.path ? h.path.split('/').pop() : 'unknown')}</span>
-                                                    <div className="h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                        <div className="h-full rounded-full bg-[#E3A04A]" style={{ width: `${Math.min(100, Math.max(0, h.risk?.score || 0))}%` }} />
-                                                    </div>
-                                                    <span className="text-[#8A918C] font-mono text-right font-medium">{Math.round(h.risk?.score || 0)}</span>
-                                                </div>
-                                            ))
-                                        )}
-                                    </div>
+                        <div className="relative flex-1 min-h-0 -m-4 overflow-hidden flex flex-col">
+                            {(!graph || stats.analyzedFiles === 0) ? (
+                                <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] py-24 gap-1.5">
+                                    <div className="text-sm font-medium text-[#E8EAE6]">No files have been analyzed yet.</div>
+                                    <div className="text-xs">Pick a file or re-analyze the repository to explore risk and dependencies.</div>
                                 </div>
+                            ) : (
+                                <div className="flex-1 overflow-y-auto scrollbar-custom p-[30px_36px_34px]">
+                                    <div className="text-xs font-mono text-[#8A918C] mb-2">{repoDisplayName}</div>
 
-                                <div className="glass-surface p-4 rounded-xl border-white/10">
-                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-3">Composition</h4>
-                                    {compositionData.length === 0 ? (
-                                        <div className="text-xs text-[#8A918C]">No analyzed files yet.</div>
+                                    {hotspotsList.length > 0 ? (
+                                        <h1 className="text-[36px] leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
+                                            {hotspotsList.length} {hotspotsList.length === 1 ? 'file carries' : 'files carry'} most of the risk. Start with{" "}
+                                            <u style={{ textDecoration: 'none', boxShadow: 'inset 0 -.18em 0 rgba(227,160,74,.45)' }}>
+                                                {hotspotsList[0].name || (hotspotsList[0].path ? hotspotsList[0].path.split('/').pop() : '')}
+                                            </u>
+                                            .
+                                        </h1>
                                     ) : (
-                                        <>
-                                            <div className="flex h-2 rounded-full overflow-hidden gap-0.5 mb-3 bg-white/[0.08]">
-                                                {compositionData.map((c, i) => (
-                                                    <div
-                                                        key={i}
-                                                        className="h-full"
-                                                        style={{ width: `${c.percentage || 0}%`, backgroundColor: c.color }}
-                                                        title={`${c.label || ''}: ${c.percentage || 0}%`}
+                                        <h1 className="text-[36px] leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
+                                            No risky files found in the analyzed set.
+                                        </h1>
+                                    )}
+
+                                    <p className="text-xs text-[#8A918C] max-w-[560px] mb-1">
+                                        {stats.analyzedFiles} of {stats.totalFiles} files analyzed.
+                                    </p>
+
+                                    <div className="overview-st">
+                                        <div>
+                                            <b>{stats.analyzedFiles}</b>
+                                            <span>files analyzed</span>
+                                        </div>
+                                        <div>
+                                            <b>{stats.symbols}</b>
+                                            <span>symbols mapped</span>
+                                        </div>
+                                        <div>
+                                            <b>{stats.links}</b>
+                                            <span>links between them</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="overview-two">
+                                        <div>
+                                            <h3 className="text-xs font-medium text-[#8A918C] mb-1.5">Where a change is riskiest</h3>
+                                            {hotspotsList.length === 0 ? (
+                                                <div className="text-xs text-[#8A918C] py-3">No risky files found in the analyzed set.</div>
+                                            ) : (
+                                                hotspotsList.map((h, i) => {
+                                                    const fileName = h.name || (h.path ? h.path.split('/').pop() : 'unknown');
+                                                    const folder = h.path && h.path.includes('/') ? h.path.substring(0, h.path.lastIndexOf('/')) : '';
+                                                    const reach = (h.risk?.directDependents || 0) + (h.risk?.transitiveDependents || 0);
+                                                    const reasonText = (h.risk?.directDependents || 0) > 0
+                                                        ? `Imported by ${h.risk.directDependents} file${h.risk.directDependents === 1 ? '' : 's'}, reaches ${reach}`
+                                                        : (reach > 0 ? `Reaches ${reach} file${reach === 1 ? '' : 's'}` : `Isolated file`);
+                                                    const isSelected = drawerOpen && drawerFile === h.path;
+
+                                                    return (
+                                                        <div
+                                                            key={h.id || h.path || i}
+                                                            onClick={() => handleOpenDrawer(h.path)}
+                                                            className={cn("overview-rw", isSelected && "active")}
+                                                        >
+                                                            <span className="font-mono text-xs text-[#8A918C]">
+                                                                {String(i + 1).padStart(2, '0')}
+                                                            </span>
+                                                            <span className="font-mono font-medium text-sm text-[#E8EAE6] truncate">
+                                                                {fileName}
+                                                                {folder && <small className="block text-[#8A918C] text-[11px] font-normal truncate">{folder}</small>}
+                                                            </span>
+                                                            <span className="overview-reason text-[#8A918C] text-xs truncate" title={reasonText}>
+                                                                {reasonText}
+                                                            </span>
+                                                            <span className="overview-bar">
+                                                                <i style={{ width: `${Math.min(100, Math.max(0, h.risk?.score || 0))}%` }} />
+                                                            </span>
+                                                            <b className="font-mono text-xs text-right font-medium text-[#E8EAE6]">
+                                                                {Math.round(h.risk?.score || 0)}
+                                                            </b>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+
+                                        <div>
+                                            <h3 className="text-xs font-medium text-[#8A918C] mb-1.5">How to use this</h3>
+                                            <div className="grid gap-0">
+                                                <div className="overview-stp">
+                                                    <i className="not-italic text-[26px] font-semibold text-[#4FD1B5] leading-none tracking-[-0.04em]">1</i>
+                                                    <div>
+                                                        <b className="block font-medium text-xs text-[#E8EAE6]">Pick a file</b>
+                                                        <span className="text-xs text-[#8A918C]">Press Ctrl K or choose one from the list.</span>
+                                                    </div>
+                                                </div>
+                                                <div className="overview-stp">
+                                                    <i className="not-italic text-[26px] font-semibold text-[#4FD1B5] leading-none tracking-[-0.04em]">2</i>
+                                                    <div>
+                                                        <b className="block font-medium text-xs text-[#E8EAE6]">See what depends on it</b>
+                                                        <span className="text-xs text-[#8A918C]">Impact shows every file a change can reach.</span>
+                                                    </div>
+                                                </div>
+                                                <div className="overview-stp">
+                                                    <i className="not-italic text-[26px] font-semibold text-[#4FD1B5] leading-none tracking-[-0.04em]">3</i>
+                                                    <div>
+                                                        <b className="block font-medium text-xs text-[#E8EAE6]">Ask why</b>
+                                                        <span className="text-xs text-[#8A918C]">Ask AI answers with the files as proof.</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <h3 className="text-xs font-medium text-[#8A918C] mt-[22px] mb-1.5">Repository map</h3>
+                                            <svg className="w-full h-[150px] mt-1.5" viewBox="0 0 400 150" role="img">
+                                                <title>Repository map</title>
+                                                <g stroke="rgba(255,255,255,0.14)" strokeWidth="1">
+                                                    {overviewMapData.edges.map((e, idx) => (
+                                                        <line key={idx} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} />
+                                                    ))}
+                                                </g>
+                                                {overviewMapData.nodes.map(n => (
+                                                    <circle
+                                                        key={n.id}
+                                                        cx={n.x}
+                                                        cy={n.y}
+                                                        r={n.isRisky ? 5.5 : 3.5}
+                                                        fill={n.isRisky ? "#E3A04A" : "#4FD1B5"}
+                                                        opacity={n.isRisky ? 1 : 0.7}
                                                     />
                                                 ))}
+                                            </svg>
+
+                                            <div className={cn("overview-hl", (healthData?.circularImports?.length || 0) > 0 && "w")}>
+                                                <i />
+                                                <span><b>{healthData?.circularImports?.length || 0}</b> circular imports</span>
                                             </div>
-                                            <div className="space-y-1.5 text-xs">
-                                                {compositionData.map((c, i) => (
-                                                    <div key={i} className="flex justify-between items-center py-1 border-b border-white/[0.05] last:border-0">
-                                                        <span className="flex items-center gap-2 text-[#8A918C]">
-                                                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: c.color }} />
-                                                            {c.label}
-                                                        </span>
-                                                        <span className="font-mono text-[#E8EAE6]">
-                                                            {c.count} <span className="text-[#8A918C] text-[11px]">({c.percentage}%)</span>
+                                            <div className={cn("overview-hl", (healthData?.unusedFiles?.length || 0) > 0 && "w")}>
+                                                <i />
+                                                <span><b>{healthData?.unusedFiles?.length || 0}</b> files nothing imports</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Overview Drawer */}
+                            <aside
+                                className={cn("overview-drawer scrollbar-custom", drawerOpen && "open")}
+                                aria-label="File risk details"
+                            >
+                                {drawerFile ? (
+                                    <>
+                                        <button
+                                            onClick={() => setDrawerOpen(false)}
+                                            className="absolute right-3.5 top-3.5 text-xs text-[#E8EAE6] hover:border-[#8A918C] border border-white/10 rounded-lg px-2.5 py-1 bg-transparent cursor-pointer transition-colors"
+                                        >
+                                            Close
+                                        </button>
+                                        <h4 className="font-mono text-[17px] font-semibold text-[#E8EAE6] break-all pr-14">
+                                            {drawerFile.split('/').pop() || drawerFile}
+                                        </h4>
+                                        <div className="font-mono text-xs text-[#8A918C] mt-0.5 mb-3.5 break-all">
+                                            {drawerFile}
+                                        </div>
+                                        <div className="text-[44px] font-semibold tracking-[-0.05em] leading-none text-[#E3A04A]">
+                                            {drawerRisk ? Math.round(drawerRisk.score) : 0}
+                                            <small className="text-sm font-normal text-[#8A918C] tracking-normal ml-1"> / 100 risk</small>
+                                        </div>
+                                        <p className="text-xs text-[#8A918C] my-3">
+                                            {drawerRisk && drawerRisk.directDependents > 0
+                                                ? `Imported by ${drawerRisk.directDependents} file${drawerRisk.directDependents === 1 ? '' : 's'}, reaches ${drawerRisk.directDependents + drawerRisk.transitiveDependents}.`
+                                                : (drawerRisk && (drawerRisk.directDependents + drawerRisk.transitiveDependents) > 0
+                                                    ? `Reaches ${drawerRisk.transitiveDependents} file${drawerRisk.transitiveDependents === 1 ? '' : 's'}.`
+                                                    : 'Isolated file with no dependents.')}
+                                        </p>
+
+                                        <h3 className="text-xs font-medium text-[#8A918C] mb-1.5">Imported by</h3>
+                                        <div className="space-y-0 max-h-48 overflow-y-auto scrollbar-custom border-t border-white/[0.08]">
+                                            {drawerImportedBy.length === 0 ? (
+                                                <div className="py-2 text-xs text-[#8A918C]">No importing files</div>
+                                            ) : (
+                                                drawerImportedBy.map((imp, idx) => (
+                                                    <div key={idx} className="flex justify-between py-1.5 border-b border-white/[0.08] text-xs text-[#8A918C]">
+                                                        <span className="font-mono text-[#E8EAE6] truncate" title={imp}>
+                                                            {imp.split('/').pop()}
                                                         </span>
                                                     </div>
-                                                ))}
-                                            </div>
-                                        </>
-                                    )}
-                                </div>
-                            </div>
+                                                ))
+                                            )}
+                                        </div>
+
+                                        <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C] mt-3">
+                                            <span>Main author</span>
+                                            <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.author}</b>
+                                        </div>
+                                        <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C]">
+                                            <span>History</span>
+                                            <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.countText}</b>
+                                        </div>
+
+                                        <div className="flex gap-2 mt-4">
+                                            <button
+                                                onClick={() => {
+                                                    selectFile(drawerFile);
+                                                    setActiveTab('Impact');
+                                                }}
+                                                className="text-xs font-medium px-3.5 py-1.5 rounded-lg bg-[#4FD1B5] text-[#04100D] hover:brightness-110 cursor-pointer transition-all"
+                                            >
+                                                Open impact
+                                            </button>
+                                            <button
+                                                onClick={() => {
+                                                    selectFile(drawerFile);
+                                                    setActiveTab('AskAI');
+                                                }}
+                                                className="text-xs border border-white/10 text-[#E8EAE6] hover:border-[#8A918C] rounded-lg px-3 py-1.5 bg-transparent cursor-pointer transition-colors"
+                                            >
+                                                Ask AI
+                                            </button>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] text-xs gap-1.5">
+                                        <b className="text-[#E8EAE6] font-medium">No file selected</b>
+                                        <span>Choose a file from the list to see what a change would touch.</span>
+                                    </div>
+                                )}
+                            </aside>
                         </div>
                     )}
 
