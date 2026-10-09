@@ -2642,8 +2642,11 @@ ${lastAssistant?.content || 'No response recorded.'}
 
         const historyToSend = chatMessages
             .filter(m => !m.isThinking && m.content.trim().length > 0)
-            .slice(-6)
-            .map(m => ({ role: m.role, content: m.content }));
+            .slice(-4)
+            .map(m => ({
+                role: m.role,
+                content: m.role === 'assistant' && m.content.length > 600 ? m.content.slice(0, 600) : m.content
+            }));
 
         let totalHistoryChars = historyToSend.reduce((acc, m) => acc + m.content.length, 0);
         while (totalHistoryChars > 4000 && historyToSend.length > 0) {

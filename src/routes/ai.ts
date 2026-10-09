@@ -42,6 +42,19 @@ function isValidRepositoryTarget(value: unknown): value is RepositoryContextTarg
     return false;
 }
 
+function parseAndTrimHistory(history: unknown): Array<{ role: string; content: string }> | undefined {
+    if (!Array.isArray(history)) {
+        return undefined;
+    }
+    const valid = history.filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string"));
+    return valid.slice(-4).map((h) => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: h.role === "assistant" && typeof h.content === "string" && h.content.length > 600
+            ? h.content.slice(0, 600)
+            : String(h.content ?? "")
+    }));
+}
+
 export function createAiRouter(
     service: AiAnswerService,
     repositoryService: Pick<RepositoryAiOrchestrationService, "answer"> & { streamAnswer?: RepositoryAiOrchestrationService["streamAnswer"] } = new RepositoryAiOrchestrationService(
@@ -83,9 +96,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
-        const parsedHistory = Array.isArray(history)
-            ? (history as any[]).filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string")).slice(-6)
-            : undefined;
+        const parsedHistory = parseAndTrimHistory(history);
 
         try {
             const result = await service.answer({
@@ -169,9 +180,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Invalid limits." });
         }
 
-        const parsedHistory = Array.isArray(history)
-            ? (history as any[]).filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string")).slice(-6)
-            : undefined;
+        const parsedHistory = parseAndTrimHistory(history);
         const isSse = req.headers.accept?.includes("text/event-stream");
 
         if (isSse) {

@@ -5,6 +5,20 @@ import { validateRepositoryContextConsistency } from "./consistency-validator";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
+import { detectLang, getLanguageDirective } from "./prompt-builder";
+
+export { detectLang, getLanguageDirective };
+
+export function sanitizeHistory(history?: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> | undefined {
+    if (!Array.isArray(history)) return undefined;
+    const valid = history.filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string"));
+    return valid.slice(-4).map((h) => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: h.role === "assistant" && typeof h.content === "string" && h.content.length > 600
+            ? h.content.slice(0, 600)
+            : String(h.content ?? "")
+    }));
+}
 
 export interface AiAnswerRequest extends RepositoryContextRequest {
     repository: string;
@@ -201,24 +215,32 @@ export class AiAnswerService {
             };
         }
 
+        const cleanHistory = sanitizeHistory(request.history);
+        const lang = detectLang(request.question);
+        const directive = getLanguageDirective(lang);
+        const promptQuestion = request.question.includes(directive)
+            ? request.question
+            : `${request.question}\n${directive}`;
+
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
             "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
             "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks'), reply with a single friendly line in the user's language and script, with no code explanation, no citations, and no follow-ups.",
-            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.'
+            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
+            directive
         ];
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
             target: aiContext.target,
-            question: request.question,
+            question: promptQuestion,
             facts: {
                 ...aiContext,
-                ...(request.history && request.history.length > 0 ? { history: request.history } : {})
+                ...(cleanHistory && cleanHistory.length > 0 ? { history: cleanHistory } : {})
             },
             instructions,
-            history: request.history
+            history: cleanHistory
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
@@ -365,24 +387,32 @@ export class AiAnswerService {
             };
         }
 
+        const cleanHistory = sanitizeHistory(request.history);
+        const lang = detectLang(request.question);
+        const directive = getLanguageDirective(lang);
+        const promptQuestion = request.question.includes(directive)
+            ? request.question
+            : `${request.question}\n${directive}`;
+
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
             "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
             "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks'), reply with a single friendly line in the user's language and script, with no code explanation, no citations, and no follow-ups.",
-            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.'
+            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
+            directive
         ];
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
             target: aiContext.target,
-            question: request.question,
+            question: promptQuestion,
             facts: {
                 ...aiContext,
-                ...(request.history && request.history.length > 0 ? { history: request.history } : {})
+                ...(cleanHistory && cleanHistory.length > 0 ? { history: cleanHistory } : {})
             },
             instructions,
-            history: request.history
+            history: cleanHistory
         };
 
         try {

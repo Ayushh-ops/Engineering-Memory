@@ -5,7 +5,7 @@ import { buildRepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
-import { buildPrompt } from "./prompt-builder";
+import { buildPrompt, detectLang, getLanguageDirective } from "./prompt-builder";
 import { AiAnswerService, isGroundedQuestion } from "./answer-service";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
@@ -781,6 +781,53 @@ async function main(): Promise<void> {
     assert.equal(greetingResult.status, "ok");
     assert.ok(greetingResult.answer.toLowerCase().includes("hello") || greetingResult.answer.toLowerCase().includes("how can i help"));
     assert.deepEqual(greetingResult.citations, []);
+
+    // Test detectLang
+    assert.equal(detectLang("hi"), "en");
+    assert.equal(detectLang("hii"), "en");
+    assert.equal(detectLang("hiii!"), "en");
+    assert.equal(detectLang("ye kya krta hai"), "hinglish");
+    assert.equal(detectLang("auth function kya karta hai?"), "hinglish");
+    assert.equal(detectLang("यह कोड क्या करता है"), "hi");
+    assert.equal(detectLang("What does this function do?"), "en");
+    assert.equal(detectLang("bhai ye code samjhao"), "hinglish");
+
+    // Test getLanguageDirective
+    assert.ok(getLanguageDirective("hinglish").includes("Reply in Roman-script Hinglish (natural Hindi in English letters), not English and not Devanagari. Ignore the language of earlier answers."));
+    assert.ok(getLanguageDirective("hinglish").includes("Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions."));
+    assert.ok(getLanguageDirective("hi").includes("Reply in Hindi (Devanagari)."));
+    assert.ok(getLanguageDirective("hi").includes("Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions."));
+    assert.ok(getLanguageDirective("en").includes("Reply in English."));
+    assert.ok(getLanguageDirective("en").includes("Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions."));
+
+    // Test history capping to 4 messages and trimming assistant message to 600 chars
+    const historyProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "OK",
+        citations: [],
+        confidence: "medium"
+    });
+    const longAssistantAnswer = "a".repeat(1000);
+    await new AiAnswerService(historyProvider).answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "Explain this file",
+        graph,
+        allowInsufficientContext: true,
+        history: [
+            { role: "user", content: "msg1" },
+            { role: "assistant", content: "msg2" },
+            { role: "user", content: "msg3" },
+            { role: "assistant", content: longAssistantAnswer },
+            { role: "user", content: "msg5" },
+            { role: "assistant", content: "msg6" }
+        ]
+    });
+    const passedHistory = historyProvider.calls[0]?.history;
+    assert.equal(passedHistory?.length, 4);
+    assert.equal(passedHistory?.[1]?.content.length, 600); // the assistant answer trimmed to 600
+    assert.equal(passedHistory?.[2]?.content, "msg5");
+    assert.equal(passedHistory?.[3]?.content, "msg6");
 
     // Test pronoun grounding: "this", "ye", "yeh", "is file"
     assert.equal(isGroundedQuestion("explain this file", { type: "file", path: "src/auth.ts" }), true);

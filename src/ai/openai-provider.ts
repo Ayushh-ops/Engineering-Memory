@@ -5,6 +5,7 @@ import {
     getLlmConfig,
     type OpenAIConfig
 } from "./config";
+import { detectLang, getLanguageDirective } from "./prompt-builder";
 
 export interface OpenAIMessage {
     role: "system" | "user" | "assistant";
@@ -126,24 +127,36 @@ export class OpenAIProvider implements LlmProvider {
         ];
 
         if (Array.isArray(request.history)) {
-            for (const h of request.history) {
-                if (h && typeof h.content === "string") {
-                    messages.push({
-                        role: h.role === "assistant" ? "assistant" : "user",
-                        content: h.content
-                    });
-                }
+            const trimmedHistory = request.history
+                .filter((h) => Boolean(h && typeof h.content === "string"))
+                .slice(-4);
+            for (const h of trimmedHistory) {
+                messages.push({
+                    role: h.role === "assistant" ? "assistant" : "user",
+                    content: h.role === "assistant" && h.content.length > 600
+                        ? h.content.slice(0, 600)
+                        : h.content
+                });
             }
         }
 
+        const lang = detectLang(request.question);
+        const directive = getLanguageDirective(lang);
+
+        const userPayload = JSON.stringify({
+            repository: request.repository,
+            target: request.target,
+            question: request.question,
+            facts: factsPayload
+        }, null, 2);
+
+        const finalUserContent = userPayload.endsWith(directive)
+            ? userPayload
+            : `${userPayload}\n\n${directive}`;
+
         messages.push({
             role: "user",
-            content: JSON.stringify({
-                repository: request.repository,
-                target: request.target,
-                question: request.question,
-                facts: factsPayload
-            }, null, 2)
+            content: finalUserContent
         });
 
         return messages;
