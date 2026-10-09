@@ -247,7 +247,6 @@ function FlowFitViewHandler({
     isExpanded,
     selectedFile,
     simplify,
-    focusConnected,
     focusDepth,
     resetTrigger,
     nodes,
@@ -256,67 +255,31 @@ function FlowFitViewHandler({
     isExpanded: boolean;
     selectedFile: string | null;
     simplify: boolean;
-    focusConnected: boolean;
     focusDepth: 1 | 2;
     resetTrigger: number;
     nodes: any[];
     edges: any[];
 }) {
     const { fitView } = useReactFlow();
-    const prevFileRef = useRef<string | null>(selectedFile);
 
-    // Call fitView with padding 0.2, maxZoom 1.2 after layout, after toggling Simplify/Focus/depth chips/Reset, and on resize.
+    // Call fitView with 40px padding, maxZoom 1.2 after layout, and on entering/leaving fullscreen
     useEffect(() => {
         if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.2, maxZoom: 1.2, duration: prefersReducedMotion ? 0 : 300 });
+            fitView({ padding: 40, maxZoom: 1.2, duration: prefersReducedMotion ? 0 : 300 });
         }, 80);
         return () => clearTimeout(timer);
-    }, [nodes, edges, simplify, focusConnected, focusDepth, resetTrigger, isExpanded, fitView]);
+    }, [nodes, edges, simplify, focusDepth, resetTrigger, isExpanded, fitView]);
 
+    // Fit-to-view on window resize
     useEffect(() => {
         const handleResize = () => {
-            fitView({ padding: 0.2, maxZoom: 1.2, duration: 0 });
+            fitView({ padding: 40, maxZoom: 1.2, duration: 0 });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
     }, [fitView]);
-
-    // Center & zoom on new node with its neighbors when selectedFile changes
-    useEffect(() => {
-        if (!selectedFile) {
-            prevFileRef.current = null;
-            return;
-        }
-        if (selectedFile === prevFileRef.current) return;
-        prevFileRef.current = selectedFile;
-
-        const targetNode = nodes.find(n => {
-            const raw = n.data?.rawNode;
-            const rawPath = raw?.path || (raw?.type === 'file' ? raw?.id : undefined);
-            return rawPath === selectedFile || raw?.id === selectedFile || (raw?.type === 'file' && raw?.name === selectedFile);
-        });
-
-        if (targetNode) {
-            const neighborIds = new Set<string>();
-            edges.forEach(e => {
-                if (e.source === targetNode.id) neighborIds.add(e.target);
-                if (e.target === targetNode.id) neighborIds.add(e.source);
-            });
-            const focusNodes = [
-                { id: targetNode.id },
-                ...Array.from(neighborIds).map(id => ({ id }))
-            ];
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fitView({
-                nodes: focusNodes,
-                padding: 0.2,
-                maxZoom: 1.2,
-                duration: prefersReducedMotion ? 0 : 350
-            });
-        }
-    }, [selectedFile, nodes, edges, fitView]);
 
     return null;
 }
@@ -680,7 +643,6 @@ function OverviewGraph2D({
     onDoubleClickNode,
     isExpanded,
     hoveredGraphNode,
-    focusConnected,
     focusDepth,
     resetTrigger
 }: {
@@ -692,7 +654,6 @@ function OverviewGraph2D({
     onDoubleClickNode: (rawNode: any) => void;
     isExpanded: boolean;
     hoveredGraphNode: string | null;
-    focusConnected: boolean;
     focusDepth: 1 | 2;
     resetTrigger: number;
 }) {
@@ -731,7 +692,7 @@ function OverviewGraph2D({
 
         const positions = compute2DLayout(visibleNodes, validEdges, {
             centerId,
-            isFocused: Boolean(focusConnected && selectedFile),
+            isFocused: Boolean(selectedFile),
             focusDepth
         });
 
@@ -936,7 +897,7 @@ function OverviewGraph2D({
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
-    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusConnected, focusDepth, setNodes, setEdges]);
+    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusDepth, setNodes, setEdges]);
 
     return (
         <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2]">
@@ -948,8 +909,9 @@ function OverviewGraph2D({
                 onEdgesChange={onEdgesChange}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
+                onPaneClick={() => onSelectNode(null)}
                 fitView
-                fitViewOptions={{ padding: 0.2, maxZoom: 1.2 }}
+                fitViewOptions={{ padding: 40, maxZoom: 1.2 }}
                 maxZoom={1.2}
                 proOptions={{ hideAttribution: true }}
             >
@@ -962,7 +924,6 @@ function OverviewGraph2D({
                     isExpanded={isExpanded}
                     selectedFile={selectedFile}
                     simplify={simplify}
-                    focusConnected={focusConnected}
                     focusDepth={focusDepth}
                     resetTrigger={resetTrigger}
                     nodes={nodes}
@@ -1002,10 +963,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
     const [simplify, setSimplify] = useState(false);
     const [showFunctions, setShowFunctions] = useState(false);
-    const [focusConnected, setFocusConnected] = useState(true);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
-    const [extraNodesCount, setExtraNodesCount] = useState(0);
-    const [showLegend, setShowLegend] = useState(false);
+    const [showAllNodes, setShowAllNodes] = useState(false);
+    const [showLegend, setShowLegend] = useState(true);
+    const [legendCollapsed, setLegendCollapsed] = useState(false);
     const [moreMenuOpen, setMoreMenuOpen] = useState(false);
     const moreMenuRef = useRef<HTMLDivElement>(null);
     const [resetTrigger, setResetTrigger] = useState(0);
@@ -1026,10 +987,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [selectedFile]);
 
-    // Reset node expansion cap when selection or depth/focus filters change
+    // Reset showAllNodes when selection or filters change
     useEffect(() => {
-        setExtraNodesCount(0);
-    }, [selectedFile, focusConnected, focusDepth, simplify, showFunctions]);
+        setShowAllNodes(false);
+    }, [selectedFile, focusDepth, simplify, showFunctions, viewMode]);
 
     // Close "..." menu on click outside
     useEffect(() => {
@@ -1054,11 +1015,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     }, [visitedHistory, setActiveTab, selectFile]);
 
     const handleReset = useCallback(() => {
-        setFocusConnected(true);
         setFocusDepth(1);
         setSelectedFile(null);
         setSelectedSymbol(null);
-        setExtraNodesCount(0);
+        setShowAllNodes(false);
         setResetTrigger(prev => prev + 1);
         if (viewMode === '3D' && fgInstanceRef.current) {
             fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.4);
@@ -1096,13 +1056,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         });
     }, [graph, showFunctions, simplify]);
 
-    // Compute displayed nodes (capped at 30 with file selected, 20 with no file selected; max 60)
-    const { displayNodes, totalCandidateCount, excessNodesCount } = useMemo(() => {
+    // Default cap: 12 nodes in 2D, 30 in 3D
+    const defaultCap = viewMode === '2D' ? 12 : 30;
+
+    // Compute displayed nodes (capped at defaultCap, show all when showAllNodes is true)
+    const { displayNodes, totalCandidateCount } = useMemo(() => {
         if (baseNodes.length === 0) {
-            return { displayNodes: [], totalCandidateCount: 0, excessNodesCount: 0 };
+            return { displayNodes: [], totalCandidateCount: 0 };
         }
 
-        // Case A: No file selected -> show top files by connections (capped at 20 + extraNodesCount, max 60)
+        // Case A: No file selected -> show top files by connections
         if (!selectedFile) {
             const sorted = [...baseNodes].sort((a, b) => {
                 const connA = connectionCounts.get(a.id) || 0;
@@ -1110,16 +1073,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 return connB - connA;
             });
             const total = sorted.length;
-            const maxAllowed = Math.min(60, total);
-            const currentLimit = Math.min(maxAllowed, 20 + extraNodesCount);
-            const displayed = sorted.slice(0, currentLimit);
-            const remaining = maxAllowed - displayed.length;
-            const excess = Math.min(20, remaining);
+            const displayed = showAllNodes ? sorted : sorted.slice(0, defaultCap);
 
             return {
                 displayNodes: displayed,
-                totalCandidateCount: total,
-                excessNodesCount: excess
+                totalCandidateCount: total
             };
         }
 
@@ -1142,16 +1100,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         if (!centerNode) {
             const sorted = [...baseNodes].sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
             const total = sorted.length;
-            const maxAllowed = Math.min(60, total);
-            const currentLimit = Math.min(maxAllowed, 30 + extraNodesCount);
-            const displayed = sorted.slice(0, currentLimit);
-            const remaining = maxAllowed - displayed.length;
-            const excess = Math.min(20, remaining);
-            return { displayNodes: displayed, totalCandidateCount: total, excessNodesCount: excess };
+            const displayed = showAllNodes ? sorted : sorted.slice(0, defaultCap);
+            return { displayNodes: displayed, totalCandidateCount: total };
         }
-
-        // Focus on = only selected + direct neighbors (depth 1), off = depth setting applies (focusDepth)
-        const effectiveDepth = focusConnected ? 1 : focusDepth;
 
         // Direct neighbors (depth 1)
         const depth1Set = new Set<string>();
@@ -1161,9 +1112,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
         depth1Set.delete(centerNode.id);
 
-        // Depth 2 neighbors if requested
+        // Depth 2 neighbors if requested (focusDepth === 2 for Indirect)
         const depth2Set = new Set<string>();
-        if (effectiveDepth === 2) {
+        if (focusDepth === 2) {
             for (const e of graph.edges) {
                 if (depth1Set.has(e.from) && baseNodeMap.has(e.to) && !depth1Set.has(e.to) && e.to !== centerNode.id) {
                     depth2Set.add(e.to);
@@ -1187,18 +1138,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         // Visible nodes = selected + neighbors up to chosen depth only
         const allCandidates = [centerNode, ...depth1Nodes, ...depth2Nodes];
         const total = allCandidates.length;
-        const maxAllowed = Math.min(60, total);
-        const currentLimit = Math.min(maxAllowed, 30 + extraNodesCount);
-        const displayed = allCandidates.slice(0, currentLimit);
-        const remaining = maxAllowed - displayed.length;
-        const excess = Math.min(20, remaining);
+        const displayed = showAllNodes ? allCandidates : allCandidates.slice(0, defaultCap);
 
         return {
             displayNodes: displayed,
-            totalCandidateCount: total,
-            excessNodesCount: excess
+            totalCandidateCount: total
         };
-    }, [baseNodes, selectedFile, selectedSymbol, focusConnected, focusDepth, extraNodesCount, connectionCounts, graph]);
+    }, [baseNodes, selectedFile, selectedSymbol, focusDepth, showAllNodes, defaultCap, connectionCounts, graph]);
 
     // Active subgraph with visible nodes & edges
     const displayGraph = useMemo(() => {
@@ -1269,16 +1215,23 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setIsExpanded(prev => !prev);
     }, []);
 
-    // Escape key exits expanded mode
+    // Escape key exits fullscreen and clears selected node
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape' && isExpanded) {
-                setIsExpanded(false);
+            if (e.key === 'Escape') {
+                if (isExpanded) {
+                    setIsExpanded(false);
+                }
+                if (selectedFile) {
+                    setSelectedFile(null);
+                    setSelectedSymbol(null);
+                    setResetTrigger(prev => prev + 1);
+                }
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isExpanded]);
+    }, [isExpanded, selectedFile, setSelectedFile, setSelectedSymbol]);
 
     // Lock page scroll while expanded
     useEffect(() => {
@@ -1309,7 +1262,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
     // Node click selects node and refits view to neighborhood
     const handleSelectNode = useCallback(async (node: any) => {
-        if (!node) return;
+        if (!node) {
+            setSelectedFile(null);
+            setSelectedSymbol(null);
+            setResetTrigger(prev => prev + 1);
+            return;
+        }
         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
         if (!nodePath) return;
 
@@ -1440,15 +1398,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const fgRef = useCallback((fg: any) => {
         if (fg) {
             fgInstanceRef.current = fg;
-            fg.d3Force('charge').strength(-350);
-            fg.d3Force('link').distance(100);
+            fg.d3Force('charge').strength(-600);
+            fg.d3Force('link').distance(160);
             const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             fg.controls().autoRotate = !prefersReducedMotion;
             fg.controls().autoRotateSpeed = 0.5;
             fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
             setTimeout(() => {
                 fitCameraToVisibleNodes(graphData.nodes, 0.55);
-            }, 350);
+            }, 300);
         }
     }, [graphData.nodes, fitCameraToVisibleNodes]);
 
@@ -1529,16 +1487,23 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setGraphData({ nodes, links });
     }, [displayGraph, neighborInfo, hoveredGraphNode]);
 
+    // Precompute top 8 highest-degree nodes for 3D label display
+    const top8DegreeNodeIds = useMemo(() => {
+        if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
+        const sorted = [...graphData.nodes].sort((a, b) => (b.connections || 0) - (a.connections || 0));
+        return new Set(sorted.slice(0, 8).map(n => n.id));
+    }, [graphData.nodes]);
+
     // Center 3D camera on visible nodes bounding box (~55% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
-        fgInstanceRef.current.d3Force('charge')?.strength(-350);
-        fgInstanceRef.current.d3Force('link')?.distance(100);
+        fgInstanceRef.current.d3Force('charge')?.strength(-600);
+        fgInstanceRef.current.d3Force('link')?.distance(160);
         const timer = setTimeout(() => {
             fitCameraToVisibleNodes(graphData.nodes, 0.55);
         }, 200);
         return () => clearTimeout(timer);
-    }, [selectedFile, viewMode, graphData, fitCameraToVisibleNodes]);
+    }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
 
     // Keep 3D sprite labels constant screen size (fixed 12px font) and hide overlapping ones (priority: selected > hovered > neighbors)
     useEffect(() => {
@@ -1602,7 +1567,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             className={cn(
                 "bg-[#07090A] overflow-hidden select-none",
                 isExpanded
-                    ? "fixed top-12 left-0 right-0 bottom-0 z-40 w-full h-[calc(100vh-48px)] flex flex-col"
+                    ? "fixed inset-0 h-[100dvh] w-screen z-50 overflow-hidden flex flex-col"
                     : "w-full h-full rounded-lg border border-zinc-800/50 relative"
             )}
             style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
@@ -1652,70 +1617,45 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     </button>
                 </div>
 
-                {/* Segmented control: Depth 1 | 2 */}
+                {/* Segmented control: Direct | Indirect */}
                 <div className="flex items-center rounded-md bg-white/[0.04] p-0.5 border border-white/[0.06]">
-                    {[1, 2].map((d) => (
-                        <button
-                            key={d}
-                            onClick={() => {
-                                if (!selectedFile) return;
-                                setFocusDepth(d as 1 | 2);
-                            }}
-                            disabled={!selectedFile}
-                            className={cn(
-                                "px-2 py-0.5 text-[11px] font-mono rounded transition-colors select-none",
-                                !selectedFile
-                                    ? "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
-                                    : focusDepth === d
-                                    ? "bg-[#4FD1B5] text-[#04100D] font-medium cursor-pointer"
-                                    : "text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
-                            )}
-                            title={!selectedFile ? "Select a node first" : `Depth ${d}`}
-                        >
-                            {d}
-                        </button>
-                    ))}
+                    <button
+                        onClick={() => {
+                            if (!selectedFile) return;
+                            setFocusDepth(1);
+                        }}
+                        disabled={!selectedFile}
+                        className={cn(
+                            "px-2 py-0.5 text-[11px] font-mono rounded transition-colors select-none",
+                            !selectedFile
+                                ? "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
+                                : focusDepth === 1
+                                ? "bg-[#4FD1B5] text-[#04100D] font-medium cursor-pointer"
+                                : "text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                        )}
+                        title={!selectedFile ? "Select a node first" : "Direct connections (depth 1)"}
+                    >
+                        Direct
+                    </button>
+                    <button
+                        onClick={() => {
+                            if (!selectedFile) return;
+                            setFocusDepth(2);
+                        }}
+                        disabled={!selectedFile}
+                        className={cn(
+                            "px-2 py-0.5 text-[11px] font-mono rounded transition-colors select-none",
+                            !selectedFile
+                                ? "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
+                                : focusDepth === 2
+                                ? "bg-[#4FD1B5] text-[#04100D] font-medium cursor-pointer"
+                                : "text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                        )}
+                        title={!selectedFile ? "Select a node first" : "Direct & indirect connections (depth 2)"}
+                    >
+                        Indirect
+                    </button>
                 </div>
-
-                {/* Focus toggle */}
-                <button
-                    onClick={() => {
-                        if (!selectedFile) return;
-                        setFocusConnected(!focusConnected);
-                    }}
-                    disabled={!selectedFile}
-                    className={cn(
-                        "px-2.5 py-1 text-xs rounded transition-colors border select-none font-medium",
-                        !selectedFile
-                            ? "border-white/5 text-[#8A918C]/40 opacity-40 cursor-not-allowed"
-                            : focusConnected
-                            ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/50 text-[#4FD1B5] cursor-pointer"
-                            : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 cursor-pointer"
-                    )}
-                    title={!selectedFile ? "Select a node first" : "Toggle focus on selected node"}
-                >
-                    Focus
-                </button>
-
-                {/* Show N more / Show fewer when capped */}
-                {excessNodesCount > 0 && (
-                    <button
-                        onClick={() => setExtraNodesCount(prev => prev + 20)}
-                        className="px-2 py-0.5 text-xs rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5] hover:bg-[#4FD1B5]/20 transition-colors cursor-pointer whitespace-nowrap"
-                        title={`Show ${excessNodesCount} additional connected nodes`}
-                    >
-                        Show {excessNodesCount} more
-                    </button>
-                )}
-                {extraNodesCount > 0 && (
-                    <button
-                        onClick={() => setExtraNodesCount(0)}
-                        className="px-2 py-0.5 text-xs rounded border border-white/10 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer whitespace-nowrap"
-                        title="Show fewer nodes"
-                    >
-                        Show fewer
-                    </button>
-                )}
 
                 <div className="h-3.5 w-[1px] bg-white/10" />
 
@@ -1781,12 +1721,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             </button>
 
                             <button
-                                onClick={() => setShowLegend(!showLegend)}
+                                onClick={() => setLegendCollapsed(!legendCollapsed)}
                                 className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
                             >
                                 <span>Legend</span>
-                                <span className={cn("text-[10px] px-1.5 py-0.5 rounded", showLegend ? "bg-[#4FD1B5]/20 text-[#4FD1B5]" : "text-[#8A918C]")}>
-                                    {showLegend ? "Visible" : "Hidden"}
+                                <span className={cn("text-[10px] px-1.5 py-0.5 rounded", !legendCollapsed ? "bg-[#4FD1B5]/20 text-[#4FD1B5]" : "text-[#8A918C]")}>
+                                    {!legendCollapsed ? "Expanded" : "Collapsed"}
                                 </span>
                             </button>
                         </div>
@@ -1796,7 +1736,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
             {/* In expanded mode, floating glass panel */}
             {isExpanded && (
-                <div className="absolute top-3.5 right-3.5 z-30 w-72 max-h-[calc(100vh-48px-2rem)] overflow-y-auto glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md border border-white/10 rounded-xl p-3.5 text-xs shadow-2xl space-y-3">
+                <div className="absolute top-3.5 right-3.5 z-30 w-72 max-h-[calc(100dvh-2rem)] overflow-y-auto glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md border border-white/10 rounded-xl p-3.5 text-xs shadow-2xl space-y-3">
                     <div className="flex items-center justify-between pb-2 border-b border-white/10">
                         <span className="font-semibold text-xs text-[#E8EAE6]">Node details</span>
                         <button
@@ -1844,7 +1784,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     onDoubleClickNode={handleDoubleClickNode}
                     isExpanded={isExpanded}
                     hoveredGraphNode={hoveredGraphNode}
-                    focusConnected={focusConnected}
                     focusDepth={focusDepth}
                     resetTrigger={resetTrigger}
                 />
@@ -1885,20 +1824,19 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     linkDirectionalParticles={0}
                     backgroundColor="#07090A"
                     onNodeClick={handleNodeClick3D}
+                    onBackgroundClick={() => handleSelectNode(null)}
                     onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.55)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
                         const isSelected = neighborInfo.selectedNodeIds.has(node.id);
-                        const isCallee = neighborInfo.calleeNeighborIds.has(node.id);
-                        const isDependent = neighborInfo.dependentNeighborIds.has(node.id);
                         const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
-                        const isDirectNeighbor = isCallee || isDependent || neighborInfo.directNeighborIds.has(node.id);
+                        const isTop8Degree = top8DegreeNodeIds.has(node.id);
                         const isRepo = node.type === 'repository';
 
                         const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
 
-                        // Labels only for selected, hovered and depth-1 nodes
-                        const shouldShowLabel = isSelected || isHovered || isDirectNeighbor;
+                        // Labels only for selected, hovered and the 8 highest-degree nodes
+                        const shouldShowLabel = isSelected || isHovered || isTop8Degree;
 
                         if (!shouldShowLabel) {
                             const dotGeometry = new THREE.SphereGeometry(1.8, 12, 12);
@@ -1910,7 +1848,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             return new THREE.Mesh(dotGeometry, dotMaterial);
                         }
 
-                        // Selected, hovered, or eligible neighbor: node sphere + pill label
+                        // Selected, hovered, or eligible high-degree node: node sphere + pill label
                         const radius = isSelected ? 3.5 : 2.8;
                         const group = new THREE.Group();
 
@@ -1943,7 +1881,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         sprite.position.y = radius + 3.5;
                         sprite.renderOrder = 999;
                         sprite.material.depthTest = false;
-                        // Priority: selected (3) > hovered (2) > neighbors (1)
+                        // Priority: selected (3) > hovered (2) > high degree (1)
                         const priority = isSelected ? 3 : isHovered ? 2 : 1;
                         (sprite as any).userData = {
                             priority
@@ -1955,34 +1893,61 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 />
             )}
 
-            {/* Small Legend (toggled from "..." menu) */}
-            {showLegend && (
-                <div className="absolute bottom-3.5 left-3.5 glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2.5 text-xs space-y-2 z-10 max-w-xs font-mono shadow-xl">
-                    <div className="flex items-center justify-between border-b border-white/[0.08] pb-1">
+            {/* Bottom-left: Status pill and Legend */}
+            <div className="absolute bottom-3.5 left-3.5 z-20 flex flex-col items-start gap-2 pointer-events-auto select-none">
+                {/* Status pill: "Showing 12 of 32 files" plus a "Show all" action */}
+                <div className="glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-md px-2.5 py-1 flex items-center gap-2 border border-white/10 text-xs font-mono shadow-md text-[#8A918C]">
+                    <span>
+                        Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> of <span className="text-[#E8EAE6] font-medium">{totalCandidateCount}</span> files
+                    </span>
+                    {displayNodes.length < totalCandidateCount && (
+                        <>
+                            <span className="text-white/20">|</span>
+                            <button
+                                onClick={() => setShowAllNodes(true)}
+                                className="text-[#4FD1B5] hover:underline font-medium cursor-pointer"
+                            >
+                                Show all
+                            </button>
+                        </>
+                    )}
+                </div>
+
+                {/* Legend always visible by default (compact, bottom-left, small collapse chevron), also outside fullscreen */}
+                <div className="glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2 text-xs font-mono shadow-xl max-w-xs">
+                    <div
+                        className="flex items-center justify-between gap-3 border-b border-white/[0.08] pb-1 cursor-pointer"
+                        onClick={() => setLegendCollapsed(prev => !prev)}
+                    >
                         <span className="font-semibold text-[10px] text-[#E8EAE6]">Legend</span>
                         <button
-                            onClick={() => setShowLegend(false)}
-                            className="text-[#8A918C] hover:text-[#E8EAE6] text-[10px] cursor-pointer"
-                            title="Close legend"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setLegendCollapsed(prev => !prev);
+                            }}
+                            className="text-[#8A918C] hover:text-[#E8EAE6] text-[10px] cursor-pointer p-0.5"
+                            title={legendCollapsed ? "Expand legend" : "Collapse legend"}
                         >
-                            <X size={11} />
+                            {legendCollapsed ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                         </button>
                     </div>
-                    <div className="flex items-center gap-3 text-[11px] text-[#8A918C] flex-wrap">
-                        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]"></span>File</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#8A918C]"></span>Function</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#E3A04A]"></span>Class</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full border border-[#E8EAE6] bg-transparent inline-block"></span>Repo root</span>
-                    </div>
-
-                    <div className="pt-1.5 border-t border-white/[0.08] flex items-center gap-3 text-[11px] text-[#8A918C] flex-wrap">
-                        <span className="font-semibold text-[10px] text-[#E8EAE6]">Edges:</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#4FD1B5] inline-block"></span>Imports</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#E3A04A] inline-block"></span>Imported by</span>
-                        <span className="flex items-center gap-1.5"><span className="w-2.5 h-[2px] bg-[#8A918C] inline-block"></span>Contains</span>
-                    </div>
+                    {!legendCollapsed && (
+                        <div className="pt-1.5 space-y-1.5">
+                            <div className="flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]" />File</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#8A918C]" />Function</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#E3A04A]" />Class</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full border border-[#E8EAE6] bg-transparent inline-block" />Repo</span>
+                            </div>
+                            <div className="pt-1 border-t border-white/[0.06] flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
+                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#4FD1B5] inline-block" />Imports</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#E3A04A] inline-block" />Imported by</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#8A918C] inline-block" />Contains</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
-            )}
+            </div>
         </div>
     );
 }

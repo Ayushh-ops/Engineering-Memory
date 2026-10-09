@@ -583,30 +583,44 @@ export function compute2DLayout(
         // Selected in the center, at (0, 0)
         positions.set(cId, { x: 0, y: 0 });
 
-        // Left column (imports on the left), centered vertically on the selected node (y = 0)
+        // Left column(s) (imports on the left), centered vertically on the selected node (y = 0)
+        // If leftCount > 10, place in multiple columns (max 10 per column)
         const leftCount = leftIds.length;
         if (leftCount > 0) {
-            const leftSpan = (leftCount - 1) * rowStep;
-            leftIds.forEach((id, idx) => {
-                const y = Math.round(-leftSpan / 2 + idx * rowStep);
-                positions.set(id, { x: -colSpacing, y });
-            });
+            const leftColCount = Math.max(1, Math.ceil(leftCount / 10));
+            const leftChunkSize = Math.ceil(leftCount / leftColCount);
+            for (let c = 0; c < leftColCount; c++) {
+                const chunk = leftIds.slice(c * leftChunkSize, (c + 1) * leftChunkSize);
+                const x = -colSpacing * (c + 1);
+                const span = (chunk.length - 1) * rowStep;
+                chunk.forEach((id, idx) => {
+                    const y = Math.round(-span / 2 + idx * rowStep);
+                    positions.set(id, { x, y });
+                });
+            }
         }
 
-        // Right column (imported by on the right), centered vertically on the selected node (y = 0)
+        // Right column(s) (imported by on the right), centered vertically on the selected node (y = 0)
+        // If rightCount > 10, place in multiple columns (max 10 per column)
         const rightCount = rightIds.length;
         if (rightCount > 0) {
-            const rightSpan = (rightCount - 1) * rowStep;
-            rightIds.forEach((id, idx) => {
-                const y = Math.round(-rightSpan / 2 + idx * rowStep);
-                positions.set(id, { x: colSpacing, y });
-            });
+            const rightColCount = Math.max(1, Math.ceil(rightCount / 10));
+            const rightChunkSize = Math.ceil(rightCount / rightColCount);
+            for (let c = 0; c < rightColCount; c++) {
+                const chunk = rightIds.slice(c * rightChunkSize, (c + 1) * rightChunkSize);
+                const x = colSpacing * (c + 1);
+                const span = (chunk.length - 1) * rowStep;
+                chunk.forEach((id, idx) => {
+                    const y = Math.round(-span / 2 + idx * rowStep);
+                    positions.set(id, { x, y });
+                });
+            }
         }
 
         return positions;
     }
 
-    // When no node is selected: three columns, 40px vertical gap, centered vertically at y = 0
+    // When no node is selected: multiple columns (max 10 per column), 40px vertical gap, centered vertically at y = 0
     const inDegrees = new Map<string, number>();
     const outDegrees = new Map<string, number>();
     nodes.forEach(n => {
@@ -624,37 +638,18 @@ export function compute2DLayout(
         return flowB - flowA;
     });
 
-    const leftCol: string[] = [];
-    const centerCol: string[] = [];
-    const rightCol: string[] = [];
+    const numCols = Math.max(1, Math.ceil(sortedNodes.length / 10));
+    const perCol = Math.ceil(sortedNodes.length / numCols);
 
-    const perCol = Math.max(1, Math.ceil(sortedNodes.length / 3));
-    sortedNodes.forEach((n, idx) => {
-        if (idx < perCol) {
-            leftCol.push(n.id);
-        } else if (idx < perCol * 2) {
-            centerCol.push(n.id);
-        } else {
-            rightCol.push(n.id);
-        }
-    });
-
-    const cols: Array<{ x: number; ids: string[] }> = [
-        { x: -colSpacing, ids: leftCol },
-        { x: 0, ids: centerCol },
-        { x: colSpacing, ids: rightCol }
-    ];
-
-    cols.forEach(col => {
-        const count = col.ids.length;
-        if (count > 0) {
-            const span = (count - 1) * rowStep;
-            col.ids.forEach((id, idx) => {
-                const y = Math.round(-span / 2 + idx * rowStep);
-                positions.set(id, { x: col.x, y });
-            });
-        }
-    });
+    for (let c = 0; c < numCols; c++) {
+        const chunk = sortedNodes.slice(c * perCol, (c + 1) * perCol);
+        const x = Math.round((c - (numCols - 1) / 2) * colSpacing);
+        const span = (chunk.length - 1) * rowStep;
+        chunk.forEach((n, idx) => {
+            const y = Math.round(-span / 2 + idx * rowStep);
+            positions.set(n.id, { x, y });
+        });
+    }
 
     return positions;
 }
