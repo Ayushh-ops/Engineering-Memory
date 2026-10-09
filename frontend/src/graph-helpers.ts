@@ -106,6 +106,18 @@ export interface ConnectedSymbol {
     id: string;
 }
 
+function decodeGraphFileId(id: string): string {
+    if (!id) return '';
+    if (id.startsWith('file:')) {
+        try {
+            return decodeURIComponent(id.slice(5));
+        } catch {
+            return id.slice(5);
+        }
+    }
+    return id;
+}
+
 export function getConnectedFiles(
     graph: RepositoryGraph | null,
     selectedFile: string | null
@@ -120,14 +132,31 @@ export function getConnectedFiles(
     }
 
     const currentFileNodeIds = new Set<string>();
-    const nodeMap = new Map<string, any>();
+    const idToPath = new Map<string, string>();
+    const decodedSelected = decodeGraphFileId(selectedFile);
+    currentFileNodeIds.add(selectedFile);
+    currentFileNodeIds.add(decodedSelected);
 
     for (const rawNode of graph.nodes) {
         const n = rawNode as any;
-        nodeMap.set(n.id, n);
-        const nPath = n.path || (n.type === 'file' ? n.id : undefined);
-        if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile)) {
+        const decodedId = decodeGraphFileId(n.id);
+        const p = n.path || (n.type === 'file' ? decodedId : undefined);
+        if (p) {
+            idToPath.set(n.id, p);
+        }
+        if (
+            p === selectedFile ||
+            p === decodedSelected ||
+            n.id === selectedFile ||
+            decodedId === selectedFile ||
+            decodedId === decodedSelected ||
+            (n.type === 'file' && (n.name === selectedFile || n.name === decodedSelected)) ||
+            (p && (p.endsWith('/' + selectedFile) || p.endsWith('/' + decodedSelected))) ||
+            (decodedId && (decodedId.endsWith('/' + selectedFile) || decodedId.endsWith('/' + decodedSelected)))
+        ) {
             currentFileNodeIds.add(n.id);
+            if (p) currentFileNodeIds.add(p);
+            if (decodedId) currentFileNodeIds.add(decodedId);
         }
     }
 
@@ -136,23 +165,35 @@ export function getConnectedFiles(
     const callsSet = new Set<string>();
 
     for (const edge of graph.edges) {
-        const fromNode = nodeMap.get(edge.from) as any;
-        const toNode = nodeMap.get(edge.to) as any;
-        const fromPath = fromNode?.path || (fromNode?.type === 'file' ? fromNode.id : undefined);
-        const toPath = toNode?.path || (toNode?.type === 'file' ? toNode.id : undefined);
+        const rawFrom = idToPath.get(edge.from) || edge.from;
+        const rawTo = idToPath.get(edge.to) || edge.to;
+        const fromPath = decodeGraphFileId(rawFrom);
+        const toPath = decodeGraphFileId(rawTo);
+
+        const isFromTarget = currentFileNodeIds.has(edge.from) ||
+            currentFileNodeIds.has(fromPath) ||
+            fromPath === selectedFile ||
+            fromPath === decodedSelected ||
+            fromPath.endsWith('/' + selectedFile);
+
+        const isToTarget = currentFileNodeIds.has(edge.to) ||
+            currentFileNodeIds.has(toPath) ||
+            toPath === selectedFile ||
+            toPath === decodedSelected ||
+            toPath.endsWith('/' + selectedFile);
 
         if (edge.type === 'imports') {
-            if (currentFileNodeIds.has(edge.from) && toPath && toPath !== selectedFile) {
+            if (isFromTarget && !isToTarget && toPath && toPath !== selectedFile && toPath !== decodedSelected) {
                 importsSet.add(toPath);
             }
-            if (currentFileNodeIds.has(edge.to) && fromPath && fromPath !== selectedFile) {
+            if (isToTarget && !isFromTarget && fromPath && fromPath !== selectedFile && fromPath !== decodedSelected) {
                 importedBySet.add(fromPath);
             }
         } else if (edge.type === 'calls') {
-            if (currentFileNodeIds.has(edge.from) && toPath && toPath !== selectedFile) {
+            if (isFromTarget && !isToTarget && toPath && toPath !== selectedFile && toPath !== decodedSelected) {
                 callsSet.add(toPath);
             }
-            if (currentFileNodeIds.has(edge.to) && fromPath && fromPath !== selectedFile) {
+            if (isToTarget && !isFromTarget && fromPath && fromPath !== selectedFile && fromPath !== decodedSelected) {
                 callsSet.add(fromPath);
             }
         }
@@ -165,8 +206,14 @@ export function getConnectedFiles(
     for (const rawNode of graph.nodes) {
         const n = rawNode as any;
         if (n.type === 'function' || n.type === 'class' || n.type === 'method') {
-            const nPath = n.path || (n.type === 'file' ? n.id : undefined);
-            if (nPath === selectedFile) {
+            const decodedId = decodeGraphFileId(n.id);
+            const nPath = n.path || (n.type === 'file' ? decodedId : undefined);
+            if (
+                nPath === selectedFile ||
+                nPath === decodedSelected ||
+                currentFileNodeIds.has(n.path) ||
+                (nPath && (nPath.endsWith('/' + selectedFile) || nPath.endsWith('/' + decodedSelected)))
+            ) {
                 const key = `${n.type}:${n.name}`;
                 if (!seenSymbols.has(key)) {
                     seenSymbols.add(key);

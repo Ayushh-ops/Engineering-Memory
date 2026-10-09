@@ -4,7 +4,7 @@ import { Badge, cn, Button } from '../ui';
 import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp, Users, AlertTriangle } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
 import { ConnectedFilesList } from './ConnectedFilesList';
-import { computeRisk } from '../graph-helpers';
+import { computeRisk, getConnectedFiles } from '../graph-helpers';
 
 export function RightPanel({ className }: { className?: string }) {
     const { selectedSymbol, selectedFile, activeTab, setActiveTab, commits, selectedSha, graph, selectFile, repoUrl, selectedHistoryCommit, aiCitations, setCodeHighlightLine } = useAppStore();
@@ -260,22 +260,9 @@ export function RightPanel({ className }: { className?: string }) {
         if (!selectedFile) {
             return renderEmptyState("Select a file to inspect its connections counts");
         }
-        let incomingCount = 0;
-        let outgoingCount = 0;
-        if (graph) {
-            const idToPath = new Map<string, string>();
-            graph.nodes.forEach((n: any) => {
-                if (n.type === 'file' && n.path) idToPath.set(n.id, n.path);
-            });
-            graph.edges.forEach((e: any) => {
-                if (e.type === 'imports') {
-                    const fromPath = idToPath.get(e.from) || e.from;
-                    const toPath = idToPath.get(e.to) || e.to;
-                    if (toPath === selectedFile) incomingCount++;
-                    if (fromPath === selectedFile) outgoingCount++;
-                }
-            });
-        }
+        const connected = getConnectedFiles(graph, selectedFile);
+        const incomingCount = connected.importedBy.length;
+        const outgoingCount = connected.imports.length;
         return (
             <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
                 <div className="p-3.5 border-b border-white/10">

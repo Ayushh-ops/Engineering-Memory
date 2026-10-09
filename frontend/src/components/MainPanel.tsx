@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
-import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout } from '../graph-helpers';
+import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -35,6 +35,7 @@ interface ComponentToolbarProps {
     onDownloadReport?: () => void;
     onCopyPRComment?: () => void;
     onReanalyze?: () => void;
+    reanalyzeLabel?: string;
     onExport?: () => void;
     extraMenuItems?: { label: string; onClick: () => void }[];
 }
@@ -48,6 +49,7 @@ function ComponentToolbar({
     onDownloadReport,
     onCopyPRComment,
     onReanalyze,
+    reanalyzeLabel,
     onExport,
     extraMenuItems = [],
 }: ComponentToolbarProps) {
@@ -141,7 +143,7 @@ function ComponentToolbar({
                                     className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
                                 >
                                     <RefreshCw size={13} className="text-[#4FD1B5]" />
-                                    <span>Re-analyze</span>
+                                    <span>{reanalyzeLabel || "Re-analyze"}</span>
                                 </button>
                             )}
 
@@ -2196,7 +2198,6 @@ export function MainPanel({ className }: { className?: string }) {
     const [aiError, setAiError] = useState<{ message: string; rawCode?: string } | null>(null);
     const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>>([]);
     const [historyData, setHistoryData] = useState<any[] | null>(null);
-    const [connectionsData, setConnectionsData] = useState<any>(null);
     const [healthData, setHealthData] = useState<import('../api').HealthSummaryResult | null>(null);
     const [healthLoading, setHealthLoading] = useState(false);
     const [openHealthSections, setOpenHealthSections] = useState({ circular: true, unused: true, god: true });
@@ -2843,21 +2844,27 @@ ${lastAssistant?.content || 'No response recorded.'}
         }
     };
 
-    const reanalyze = async () => {
+    const reanalyze = useCallback(async () => {
         if (!graph || !selectedFile) return;
         setAnalyzing(true);
         try {
             const target = selectedSymbol
                 ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
                 : { type: 'file', path: selectedFile };
-            const res = await api.graph.impact(graph, target as any, { maxDepth: depth, maxResults: maxRes });
+            const res = await api.graph.impact(graph, target as any, { maxDepth: 3, maxResults: 50 });
             setImpactResult(res);
         } catch (e) {
             console.error(e);
         } finally {
             setAnalyzing(false);
         }
-    };
+    }, [graph, selectedFile, selectedSymbol]);
+
+    useEffect(() => {
+        if (activeTab === 'Impact' && graph && selectedFile) {
+            reanalyze();
+        }
+    }, [activeTab, graph, selectedFile, selectedSymbol, reanalyze]);
 
     const fetchHistory = useCallback(async () => {
         if (!repoUrl || !selectedFile) return;
@@ -2875,24 +2882,88 @@ ${lastAssistant?.content || 'No response recorded.'}
         if (activeTab === 'History') fetchHistory();
     }, [activeTab, fetchHistory]);
 
-    const fetchConnections = useCallback(async () => {
-        if (!graph || !selectedFile) return;
-        try {
-            const imports = await api.graph.query(graph, { type: 'file-imports', path: selectedFile });
-            const dependents = await api.graph.query(graph, { type: 'file-dependents', path: selectedFile });
-            setConnectionsData({
-                imports: (imports as any).results?.files || imports.files || [],
-                dependents: (dependents as any).results?.files || dependents.files || []
-            });
-        } catch (e) {
-            console.error(e);
-            setConnectionsData({ imports: [], dependents: [] });
-        }
+    const connectionsData = useMemo(() => {
+        if (!graph || !selectedFile) return null;
+        const connected = getConnectedFiles(graph, selectedFile);
+        return {
+            imports: connected.imports,
+            dependents: connected.importedBy,
+            importedBy: connected.importedBy
+        };
     }, [graph, selectedFile]);
 
-    useEffect(() => {
-        if (activeTab === 'Connections') fetchConnections();
-    }, [activeTab, fetchConnections]);
+    const directList = useMemo(() => {
+        if (!selectedFile) return [];
+        const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
+        if (impactResult?.directCallers) {
+            for (const dc of impactResult.directCallers) {
+                const rawPath = dc.symbol.path || (dc.symbol.type === 'file' ? dc.symbol.name : '');
+                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
+                    const fileName = rawPath.split('/').pop() || rawPath;
+                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                    const score = computeRisk(rawPath, graph, commits).score;
+                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
+                }
+            }
+        }
+        if (connectionsData?.importedBy) {
+            for (const imp of connectionsData.importedBy) {
+                const rawPath = typeof imp === 'string' ? imp : ((imp as any)?.path || (imp as any)?.name || (imp as any)?.id || '');
+                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
+                    const fileName = rawPath.split('/').pop() || rawPath;
+                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                    const score = computeRisk(rawPath, graph, commits).score;
+                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
+                }
+            }
+        }
+        return Array.from(map.values()).sort((a, b) => b.score - a.score);
+    }, [impactResult, connectionsData, selectedFile, graph, commits]);
+
+    const indirectList = useMemo(() => {
+        if (!selectedFile) return [];
+        const directPaths = new Set(directList.map(d => d.path));
+        const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
+        if (impactResult?.transitiveConsumers) {
+            for (const tc of impactResult.transitiveConsumers) {
+                let rawPath = tc.symbol.path;
+                if (!rawPath && graph?.nodes) {
+                    const found = graph.nodes.find(n => n.id === tc.symbol.name || (n as any).name === tc.symbol.name);
+                    if (found && (found as any).path) {
+                        rawPath = (found as any).path;
+                    }
+                }
+                if (!rawPath) rawPath = tc.symbol.name;
+                if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
+                    const fileName = rawPath.split('/').pop() || rawPath;
+                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                    const score = computeRisk(rawPath, graph, commits).score;
+                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
+                }
+            }
+        }
+        if (impactResult?.paths) {
+            for (const p of impactResult.paths) {
+                if (p.nodes) {
+                    for (const nodeId of p.nodes) {
+                        const node = graph?.nodes.find(n => n.id === nodeId);
+                        const rawPath = (node as any)?.path || (node?.type === 'file' ? node.id : null);
+                        if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
+                            const fileName = rawPath.split('/').pop() || rawPath;
+                            const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                            const score = computeRisk(rawPath, graph, commits).score;
+                            map.set(rawPath, { path: rawPath, name: fileName, folder, score });
+                        }
+                    }
+                }
+            }
+        }
+        return Array.from(map.values()).sort((a, b) => b.score - a.score);
+    }, [impactResult, directList, selectedFile, graph, commits]);
+
+    const fetchConnections = useCallback(() => {
+        // Automatically computed from graph and selectedFile
+    }, []);
 
     const fetchHealth = useCallback(async () => {
         if (!graph) return;
@@ -3102,14 +3173,19 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     <div className="text-xs">Pick a file or re-analyze the repository to explore risk and dependencies.</div>
                                 </div>
                             ) : (
-                                <div className="flex-1 overflow-y-auto scrollbar-custom p-[30px_36px_34px]">
+                                <div
+                                    className="flex-1 overflow-y-auto scrollbar-custom p-[30px_36px_34px] transition-[padding] duration-300"
+                                    style={{
+                                        paddingRight: drawerOpen ? 'calc(36px + 330px)' : '36px'
+                                    }}
+                                >
                                     <div className="text-xs font-mono text-[#8A918C] mb-2">{repoDisplayName}</div>
 
                                     {hotspotsList.length > 0 ? (
                                         <h1 className="text-[36px] leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
                                             {hotspotsList.length} {hotspotsList.length === 1 ? 'file carries' : 'files carry'} most of the risk. Start with{" "}
                                             <u style={{ textDecoration: 'none', boxShadow: 'inset 0 -.18em 0 rgba(227,160,74,.45)' }}>
-                                                {hotspotsList[0].name || (hotspotsList[0].path ? hotspotsList[0].path.split('/').pop() : '')}
+                                                {hotspotsList[0].path ? hotspotsList[0].path.split('/').pop() : (hotspotsList[0].name ? hotspotsList[0].name.split('/').pop() : '')}
                                             </u>
                                             .
                                         </h1>
@@ -3286,14 +3362,18 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             )}
                                         </div>
 
-                                        <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C] mt-3">
-                                            <span>Main author</span>
-                                            <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.author}</b>
-                                        </div>
-                                        <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C]">
-                                            <span>History</span>
-                                            <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.countText}</b>
-                                        </div>
+                                        {drawerCommitInfo.author && drawerCommitInfo.author !== '—' && (
+                                            <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C] mt-3">
+                                                <span>Main author</span>
+                                                <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.author}</b>
+                                            </div>
+                                        )}
+                                        {drawerCommitInfo.countText && drawerCommitInfo.countText !== 'None recorded' && (
+                                            <div className="flex justify-between py-2 border-b border-white/[0.08] text-xs text-[#8A918C]">
+                                                <span>History</span>
+                                                <b className="font-medium text-[#E8EAE6]">{drawerCommitInfo.countText}</b>
+                                            </div>
+                                        )}
 
                                         <div className="flex gap-2 mt-4">
                                             <button
@@ -3354,33 +3434,10 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             Impact: <span className="font-mono text-[#4FD1B5] font-normal">{selectedSymbol?.name || selectedFile.split('/').pop()}</span>
                                         </span>
                                     }
-                                    middle={
-                                        <div className="flex items-center rounded-md bg-white/[0.04] p-0.5 border border-white/[0.06] shrink-0">
-                                            {[1, 2, 3].map(d => (
-                                                <button
-                                                    key={d}
-                                                    onClick={() => setDepth(d)}
-                                                    className={cn(
-                                                        "px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer select-none",
-                                                        depth === d
-                                                            ? "bg-[#4FD1B5] text-[#04100D] font-medium"
-                                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
-                                                    )}
-                                                    title={`Depth ${d}`}
-                                                >
-                                                    {d}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    }
-                                    primaryAction={
-                                        <Button onClick={reanalyze} className="px-2.5 py-1 text-xs shrink-0 whitespace-nowrap" disabled={analyzing}>
-                                            {analyzing ? <Loader2 size={12} className="animate-spin" /> : 'Re-analyze'}
-                                        </Button>
-                                    }
                                     onDownloadReport={handleDownloadReport}
                                     onCopyPRComment={handleCopyReport}
                                     onReanalyze={reanalyze}
+                                    reanalyzeLabel="Refresh"
                                     onExport={() => downloadTextFile('impact-result.json', JSON.stringify(impactResult, null, 2), 'application/json')}
                                 />
 
@@ -3389,32 +3446,38 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Calculating impact paths...</span>
                                 </div>
-                            ) : impactResult ? (
+                            ) : (
                                 <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 min-h-[460px]">
                                     {/* Concentric blast-radius rings SVG */}
                                     <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full min-h-0">
                                         <svg viewBox="0 0 440 440" preserveAspectRatio="xMidYMid meet" className="w-full max-w-[420px] h-auto max-h-[380px]" role="img">
                                             <title>Blast radius rings</title>
-                                            {[65, 115, 165].map((r) => (
-                                                <circle
-                                                    key={r}
-                                                    cx="220"
-                                                    cy="220"
-                                                    r={r}
-                                                    fill="none"
-                                                    stroke="rgba(255, 255, 255, 0.08)"
-                                                    strokeDasharray="3 5"
-                                                />
-                                            ))}
+                                            {/* Ring 1 guide */}
                                             <circle
-                                                className="rpl"
                                                 cx="220"
                                                 cy="220"
-                                                r={depth === 1 ? 65 : (depth === 2 ? 115 : 165)}
+                                                r="80"
                                                 fill="none"
-                                                stroke="#4FD1B5"
-                                                strokeWidth="1.5"
+                                                stroke="rgba(255, 255, 255, 0.08)"
+                                                strokeDasharray="3 5"
                                             />
+                                            <text x="220" y={220 - 80 - 4} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                Ring 1 · Direct
+                                            </text>
+
+                                            {/* Ring 2 guide */}
+                                            <circle
+                                                cx="220"
+                                                cy="220"
+                                                r="160"
+                                                fill="none"
+                                                stroke="rgba(255, 255, 255, 0.08)"
+                                                strokeDasharray="3 5"
+                                            />
+                                            <text x="220" y={220 - 160 - 4} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                Ring 2 · Indirect
+                                            </text>
+
                                             {/* Center Target Node */}
                                             <circle cx="220" cy="220" r="10" fill="#E8EAE6" />
                                             <text
@@ -3427,41 +3490,92 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             >
                                                 {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'target')}
                                             </text>
-                                            {/* Render impact callers on concentric rings */}
-                                            {impactResult.directCallers.slice(0, 6).map((dc, i) => {
-                                                const rad = 65;
-                                                const angle = (i / Math.max(1, Math.min(6, impactResult.directCallers.length))) * 6.283;
-                                                const px = 220 + Math.cos(angle) * rad;
-                                                const py = 220 + Math.sin(angle) * rad;
+
+                                            {/* Ring 1 nodes: max 12 nodes per ring plus "+N more" */}
+                                            {(() => {
+                                                const maxNodes = 12;
+                                                const visible = directList.slice(0, maxNodes);
+                                                const remaining = directList.length - maxNodes;
+                                                const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
                                                 return (
-                                                    <g key={i}>
-                                                        <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.3" />
-                                                        <circle cx={px} cy={py} r="5" fill="#E3A04A" />
-                                                        <text x={px} y={py + 14} fontSize="9" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                            {dc.symbol.name}
-                                                        </text>
-                                                    </g>
+                                                    <>
+                                                        {visible.map((node, i) => {
+                                                            const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2;
+                                                            const px = 220 + Math.cos(angle) * 80;
+                                                            const py = 220 + Math.sin(angle) * 80;
+                                                            const shortName = node.name.length > 10 ? node.name.slice(0, 8) + '…' : node.name;
+                                                            return (
+                                                                <g key={`direct-${node.path}-${i}`} onClick={() => selectFile(node.path)} className="cursor-pointer group">
+                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.25" strokeWidth="1" />
+                                                                    <circle cx={px} cy={py} r="5" fill="#E3A04A" />
+                                                                    <text x={px} y={py + 13} fontSize="9" fill="#E8EAE6" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                                        {shortName}
+                                                                    </text>
+                                                                </g>
+                                                            );
+                                                        })}
+                                                        {remaining > 0 && (() => {
+                                                            const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2;
+                                                            const px = 220 + Math.cos(angle) * 80;
+                                                            const py = 220 + Math.sin(angle) * 80;
+                                                            return (
+                                                                <g key="direct-more">
+                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.25" strokeWidth="1" strokeDasharray="2 2" />
+                                                                    <rect x={px - 20} y={py - 7} width="40" height="14" rx="7" fill="#1C2122" stroke="#E3A04A" strokeWidth="0.8" />
+                                                                    <text x={px} y={py + 3.5} fontSize="8" fill="#E3A04A" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                                        +{remaining} more
+                                                                    </text>
+                                                                </g>
+                                                            );
+                                                        })()}
+                                                    </>
                                                 );
-                                            })}
-                                            {impactResult.transitiveConsumers.slice(0, 6).map((tc, i) => {
-                                                const rad = depth >= 3 ? 165 : 115;
-                                                const angle = (i / Math.max(1, Math.min(6, impactResult.transitiveConsumers.length))) * 6.283 + 0.5;
-                                                const px = 220 + Math.cos(angle) * rad;
-                                                const py = 220 + Math.sin(angle) * rad;
+                                            })()}
+
+                                            {/* Ring 2 nodes: max 12 nodes per ring plus "+N more" */}
+                                            {(() => {
+                                                const maxNodes = 12;
+                                                const visible = indirectList.slice(0, maxNodes);
+                                                const remaining = indirectList.length - maxNodes;
+                                                const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
                                                 return (
-                                                    <g key={i}>
-                                                        <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.3" />
-                                                        <circle cx={px} cy={py} r="4" fill="#4FD1B5" />
-                                                        <text x={px} y={py + 14} fontSize="9" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                            {tc.symbol.name}
-                                                        </text>
-                                                    </g>
+                                                    <>
+                                                        {visible.map((node, i) => {
+                                                            const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2 + 0.25;
+                                                            const px = 220 + Math.cos(angle) * 160;
+                                                            const py = 220 + Math.sin(angle) * 160;
+                                                            const shortName = node.name.length > 10 ? node.name.slice(0, 8) + '…' : node.name;
+                                                            return (
+                                                                <g key={`indirect-${node.path}-${i}`} onClick={() => selectFile(node.path)} className="cursor-pointer group">
+                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.2" strokeWidth="1" />
+                                                                    <circle cx={px} cy={py} r="4" fill="#4FD1B5" />
+                                                                    <text x={px} y={py + 12} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                                        {shortName}
+                                                                    </text>
+                                                                </g>
+                                                            );
+                                                        })}
+                                                        {remaining > 0 && (() => {
+                                                            const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2 + 0.25;
+                                                            const px = 220 + Math.cos(angle) * 160;
+                                                            const py = 220 + Math.sin(angle) * 160;
+                                                            return (
+                                                                <g key="indirect-more">
+                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.2" strokeWidth="1" strokeDasharray="2 2" />
+                                                                    <rect x={px - 20} y={py - 7} width="40" height="14" rx="7" fill="#15302A" stroke="#4FD1B5" strokeWidth="0.8" />
+                                                                    <text x={px} y={py + 3.5} fontSize="8" fill="#4FD1B5" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
+                                                                        +{remaining} more
+                                                                    </text>
+                                                                </g>
+                                                            );
+                                                        })()}
+                                                    </>
                                                 );
-                                            })}
+                                            })()}
                                         </svg>
                                     </div>
 
-                                    {/* Ranked Risk List */}
+                                    {/* Direct (N) and Indirect (M) Lists */}
                                     <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
                                         <div className="flex-1 flex flex-col min-h-0">
                                             <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] shrink-0">
@@ -3469,7 +3583,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     <span className="text-[11px] font-semibold text-[#8A918C]">Risk score</span>
                                                     <div className="flex items-baseline gap-1.5 mt-0.5">
                                                         <span className="text-2xl font-bold font-mono text-[#E8EAE6]">
-                                                            {fileRisk ? fileRisk.score : (impactResult.score ?? 0)}
+                                                            {fileRisk ? fileRisk.score : (impactResult?.score ?? 0)}
                                                         </span>
                                                         <span className="text-xs font-mono text-[#8A918C]">/ 100</span>
                                                     </div>
@@ -3482,39 +3596,86 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 </div>
                                             </div>
 
-                                            <h4 className="text-xs font-semibold text-[#8A918C] mb-2 shrink-0">Ranked risk list</h4>
-                                            <div className="space-y-2 flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1">
-                                                {impactResult.directCallers.length === 0 && impactResult.transitiveConsumers.length === 0 ? (
-                                                    <div className="text-xs text-[#8A918C] py-4">No dependents found. This file may be a leaf, or its imports could not be resolved.</div>
-                                                ) : (
-                                                    [...impactResult.directCallers, ...impactResult.transitiveConsumers].slice(0, 12).map((c, i) => {
-                                                        const itemPath = c.symbol.path || c.symbol.name;
-                                                        const itemRisk = computeRisk(itemPath, graph, commits).score;
-                                                        const isWarm = itemRisk > 75;
-                                                        const isFile = (c.symbol.type as string) === 'file';
-                                                        const isFunction = c.symbol.type === 'function' || c.symbol.type === 'method';
-                                                        const pill = isFile ? 'file' : (isFunction ? 'function' : c.symbol.type);
-                                                        return (
-                                                            <div
-                                                                key={i}
-                                                                onClick={() => selectFile(itemPath)}
-                                                                className="flex items-center gap-2 p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
-                                                            >
-                                                                <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate flex-1">{c.symbol.name}</span>
-                                                                <span className="font-mono text-[9px] px-1 py-0.5 rounded border border-white/10 text-[#8A918C]">
-                                                                    {pill}
-                                                                </span>
-                                                                <div className="w-14 h-1.5 rounded-full bg-white/[0.08] overflow-hidden shrink-0">
-                                                                    <div
-                                                                        className={cn("h-full rounded-full", isWarm ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
-                                                                        style={{ width: `${itemRisk}%` }}
-                                                                    />
+                                            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 space-y-4">
+                                                {/* Direct List */}
+                                                <div>
+                                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-2 sticky top-0 bg-[#07090A]/90 backdrop-blur-sm py-1 z-10 flex items-center justify-between">
+                                                        <span>Direct ({directList.length})</span>
+                                                    </h4>
+                                                    <div className="space-y-1.5">
+                                                        {directList.length === 0 ? (
+                                                            <div className="text-xs text-[#8A918C] py-2">No direct dependents found.</div>
+                                                        ) : (
+                                                            directList.map((item, i) => (
+                                                                <div
+                                                                    key={`direct-item-${item.path}-${i}`}
+                                                                    onClick={() => selectFile(item.path)}
+                                                                    className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                                >
+                                                                    <div className="min-w-0 flex-1 mr-2">
+                                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate block">
+                                                                            {item.name}
+                                                                        </span>
+                                                                        {item.folder && (
+                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
+                                                                                {item.folder}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 shrink-0">
+                                                                        <div className="w-12 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                                            <div
+                                                                                className={cn("h-full rounded-full", item.score > 60 ? "bg-red-400" : item.score > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
+                                                                                style={{ width: `${item.score}%` }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-5 text-right">{item.score}</span>
+                                                                    </div>
                                                                 </div>
-                                                                <span className="font-mono text-[11px] text-[#8A918C] w-6 text-right">{itemRisk}</span>
-                                                            </div>
-                                                        );
-                                                    })
-                                                )}
+                                                            ))
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Indirect List */}
+                                                <div>
+                                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-2 sticky top-0 bg-[#07090A]/90 backdrop-blur-sm py-1 z-10 flex items-center justify-between">
+                                                        <span>Indirect ({indirectList.length})</span>
+                                                    </h4>
+                                                    <div className="space-y-1.5">
+                                                        {indirectList.length === 0 ? (
+                                                            <div className="text-xs text-[#8A918C] py-2">No indirect dependents found.</div>
+                                                        ) : (
+                                                            indirectList.map((item, i) => (
+                                                                <div
+                                                                    key={`indirect-item-${item.path}-${i}`}
+                                                                    onClick={() => selectFile(item.path)}
+                                                                    className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                                >
+                                                                    <div className="min-w-0 flex-1 mr-2">
+                                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate block">
+                                                                            {item.name}
+                                                                        </span>
+                                                                        {item.folder && (
+                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
+                                                                                {item.folder}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-2 shrink-0">
+                                                                        <div className="w-12 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                                            <div
+                                                                                className={cn("h-full rounded-full", item.score > 60 ? "bg-red-400" : item.score > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
+                                                                                style={{ width: `${item.score}%` }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-5 text-right">{item.score}</span>
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                         <div className="pt-3 border-t border-white/[0.08] mt-3">
@@ -3542,7 +3703,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     >
                                                         score = min(100, 4×direct + 2×transitive + 0.25×churn% + tests)
                                                     </div>
-                                                    {(fileRisk ? fileRisk.reasons : (impactResult.reasons || [])).map((r, i) => (
+                                                    {(fileRisk ? fileRisk.reasons : (impactResult?.reasons || [])).map((r, i) => (
                                                         <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
                                                             <span className="text-[#8A918C] text-[11px]">{r.label}</span>
                                                             <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
@@ -3555,7 +3716,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         <div className="pt-3 border-t border-white/[0.08] mt-3">
                                             <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
                                             {(() => {
-                                                const tests = (impactResult.tests || [])
+                                                const tests = (impactResult?.tests || [])
                                                     .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
                                                     .filter(Boolean) as string[];
                                                 if (tests.length === 0) {
@@ -3588,13 +3749,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         </div>
                                     </div>
                                 </div>
-                            ) : (
-                                    <div className="glass-surface p-8 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2 flex-1">
-                                        <div className="text-xs text-[#8A918C]">
-                                            Impact analysis has not been calculated for {selectedFile.split('/').pop()}. Click Re-analyze above to run it.
-                                        </div>
-                                    </div>
-                                )}
+                            )}
                             </div>
                         )
                     )}
