@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -13,6 +13,170 @@ import { CodeViewer } from './CodeViewer';
 import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 import { ErrorBoundary } from './ErrorBoundary';
+
+function downloadTextFile(filename: string, content: string, mime = 'text/markdown;charset=utf-8;') {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+}
+
+interface ComponentToolbarProps {
+    title: React.ReactNode;
+    subtitle?: React.ReactNode;
+    badge?: React.ReactNode;
+    middle?: React.ReactNode;
+    primaryAction?: React.ReactNode;
+    onDownloadReport?: () => void;
+    onCopyPRComment?: () => void;
+    onReanalyze?: () => void;
+    onExport?: () => void;
+    extraMenuItems?: { label: string; onClick: () => void }[];
+}
+
+function ComponentToolbar({
+    title,
+    subtitle,
+    badge,
+    middle,
+    primaryAction,
+    onDownloadReport,
+    onCopyPRComment,
+    onReanalyze,
+    onExport,
+    extraMenuItems = [],
+}: ComponentToolbarProps) {
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const menuRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        if (!menuOpen) return;
+        const handleClickOutside = (e: MouseEvent) => {
+            if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+                setMenuOpen(false);
+            }
+        };
+        window.addEventListener('mousedown', handleClickOutside);
+        return () => window.removeEventListener('mousedown', handleClickOutside);
+    }, [menuOpen]);
+
+    const handleCopy = () => {
+        if (onCopyPRComment) {
+            onCopyPRComment();
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+            setMenuOpen(false);
+        }
+    };
+
+    return (
+        <div className="flex items-center justify-between shrink-0 gap-3 whitespace-nowrap overflow-x-auto scrollbar-none py-1">
+            {/* Title Left */}
+            <div className="flex items-center gap-2 min-w-0">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <h3 className="text-xs font-semibold text-[#E8EAE6] truncate">{title}</h3>
+                        {badge}
+                    </div>
+                    {subtitle && <p className="text-[11px] text-[#8A918C] mt-0.5">{subtitle}</p>}
+                </div>
+            </div>
+
+            {/* Right Controls: Middle (e.g. depth segmented control) + Primary Action + "..." Menu */}
+            <div className="flex items-center gap-2 shrink-0">
+                {middle}
+
+                {primaryAction}
+
+                {/* "..." menu for secondary actions */}
+                <div className="relative" ref={menuRef}>
+                    <button
+                        onClick={() => setMenuOpen(!menuOpen)}
+                        className={cn(
+                            "p-1.5 rounded-lg border border-white/10 glass-surface transition-colors cursor-pointer flex items-center justify-center",
+                            menuOpen ? "bg-white/[0.08] text-[#E8EAE6]" : "text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20"
+                        )}
+                        title="More actions"
+                    >
+                        <MoreHorizontal size={14} />
+                    </button>
+
+                    {menuOpen && (
+                        <div className="absolute right-0 top-full mt-1.5 w-52 glass-surface bg-[rgba(16,20,21,0.95)] backdrop-blur-md border border-white/10 rounded-lg p-1.5 shadow-2xl z-50 text-xs font-mono space-y-0.5">
+                            {onDownloadReport && (
+                                <button
+                                    onClick={() => {
+                                        onDownloadReport();
+                                        setMenuOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                >
+                                    <Download size={13} className="text-[#4FD1B5]" />
+                                    <span>Download report</span>
+                                </button>
+                            )}
+
+                            {onCopyPRComment && (
+                                <button
+                                    onClick={handleCopy}
+                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                >
+                                    {copied ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} className="text-[#4FD1B5]" />}
+                                    <span>{copied ? "Copied comment" : "Copy as PR comment"}</span>
+                                </button>
+                            )}
+
+                            {onReanalyze && (
+                                <button
+                                    onClick={() => {
+                                        onReanalyze();
+                                        setMenuOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                >
+                                    <RefreshCw size={13} className="text-[#4FD1B5]" />
+                                    <span>Re-analyze</span>
+                                </button>
+                            )}
+
+                            {onExport && (
+                                <button
+                                    onClick={() => {
+                                        onExport();
+                                        setMenuOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                >
+                                    <Layers size={13} className="text-[#4FD1B5]" />
+                                    <span>Export</span>
+                                </button>
+                            )}
+
+                            {extraMenuItems.map((item, idx) => (
+                                <button
+                                    key={idx}
+                                    onClick={() => {
+                                        item.onClick();
+                                        setMenuOpen(false);
+                                    }}
+                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                >
+                                    <span>{item.label}</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
 
 function ImpactGraph({ impactNodes, paths, targetNodeId }: { impactNodes: any[], paths: any[], targetNodeId?: string }) {
     // Transform to react-flow shape
@@ -1723,12 +1887,12 @@ function formatRelativeDate(dateStr: string): string {
 export function MainPanel({ className }: { className?: string }) {
     const {
         activeTab, setActiveTab, selectedFile, setSelectedFile,
-        selectedSymbol, impactResult, setImpactResult, graph,
+        selectedSymbol, impactResult, setImpactResult, graph, setGraph,
         repoUrl, selectedSha, setCodeHighlightLine, selectFile,
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
         changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
-        treeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
-        setAiCitations
+        treeFiles, setTreeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
+        setAiCitations, meta
     } = useAppStore();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
@@ -2031,6 +2195,171 @@ export function MainPanel({ className }: { className?: string }) {
         setTimeout(() => setCopiedReport(false), 2000);
     };
 
+    const handleDownloadOverviewReport = () => {
+        const md = `# Repository Overview: ${meta?.fullName || repoUrl || 'Repository'}
+
+- **Analyzed Files**: ${stats.analyzedFiles} / ${stats.totalFiles}
+- **Symbols**: ${stats.symbols}
+- **Links**: ${stats.links}
+- **Hotspots**: ${stats.hotspots}
+
+## Top Hotspots
+${hotspotsList.map(h => `- \`${h.path || h.name}\` (Score: ${Math.round(h.risk?.score || 0)}, Dependents: ${h.risk?.directDependents || 0})`).join('\n')}
+`;
+        downloadTextFile('repo-overview.md', md);
+    };
+
+    const handleCopyOverviewPRComment = async () => {
+        const md = `### 📊 Repository Overview: \`${meta?.fullName || repoUrl || 'Repository'}\`
+- Files analyzed: **${stats.analyzedFiles} / ${stats.totalFiles}**
+- High risk hotspots: **${hotspotsList.slice(0, 5).map(h => h.path?.split('/').pop()).join(', ')}**
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const handleDownloadChangeSetReport = () => {
+        const md = `# Change Set Impact Report
+
+## Input Files
+${changeSet.map(f => `- \`${f}\``).join('\n')}
+
+## Combined Impact
+- **Total Affected**: ${changeSetResult?.affectedFiles?.length || 0}
+- **Average Risk Score**: ${changeSetResult?.combinedRisk ? Math.round(changeSetResult.combinedRisk) : 0}
+
+### Affected Files
+${(changeSetResult?.affectedFiles || []).map((f: string) => `- \`${f}\``).join('\n')}
+`;
+        downloadTextFile('changeset-impact.md', md);
+    };
+
+    const handleCopyChangeSetPRComment = async () => {
+        const md = `### 💥 Change Set Impact
+- Inputs: \`${changeSet.map(f => f.split('/').pop()).join('`, `')}\`
+- Affected files: **${changeSetResult?.affectedFiles?.length || 0}**
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const handleDownloadHealthReport = () => {
+        const md = `# Repository Health Report
+
+- **Circular Imports**: ${healthData?.circularImports?.length || 0}
+- **God Files**: ${healthData?.godFiles?.length || 0}
+- **Unused Files**: ${healthData?.unusedFiles?.length || 0}
+
+## Circular Imports
+${(healthData?.circularImports || []).map((c: string[]) => `- ${c.join(' -> ')}`).join('\n')}
+
+## God Files
+${(healthData?.godFiles || []).map((g: any) => `- \`${g.file || g.path}\` (${g.dependents || 0} dependents)`).join('\n')}
+
+## Unused Files
+${(healthData?.unusedFiles || []).map((u: string) => `- \`${u}\``).join('\n')}
+`;
+        downloadTextFile('repository-health.md', md);
+    };
+
+    const handleCopyHealthPRComment = async () => {
+        const md = `### 🩺 Repository Health Check
+- Circular dependency cycles: **${healthData?.circularImports?.length || 0}**
+- God modules (>15 dependents): **${healthData?.godFiles?.length || 0}**
+- Unused files: **${healthData?.unusedFiles?.length || 0}**
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const handleDownloadConnectionsReport = () => {
+        const md = `# Connections for ${selectedFile || 'file'}
+
+## Imports
+${(connectionsData?.imports || []).map((f: string) => `- \`${f}\``).join('\n')}
+
+## Imported By
+${(connectionsData?.importedBy || []).map((f: string) => `- \`${f}\``).join('\n')}
+`;
+        downloadTextFile(`connections-${selectedFile?.split('/').pop() || 'file'}.md`, md);
+    };
+
+    const handleCopyConnectionsPRComment = async () => {
+        const md = `### 🔗 File Connections: \`${selectedFile?.split('/').pop()}\`
+- Imports: **${connectionsData?.imports?.length || 0}**
+- Imported by: **${connectionsData?.importedBy?.length || 0}**
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const handleDownloadHistoryReport = () => {
+        const md = `# Commit History: ${selectedFile || 'file'}
+
+${(historyData || []).map((c: any) => `- \`${c.sha?.substring(0, 7)}\` **${c.author?.name || 'Author'}**: ${c.commit?.message?.split('\n')[0]}`).join('\n')}
+`;
+        downloadTextFile(`history-${selectedFile?.split('/').pop() || 'file'}.md`, md);
+    };
+
+    const handleCopyHistoryPRComment = async () => {
+        const md = `### 📜 History for \`${selectedFile?.split('/').pop()}\`
+${(historyData || []).slice(0, 5).map((c: any) => `- \`${c.sha?.substring(0, 7)}\` ${c.commit?.message?.split('\n')[0]}`).join('\n')}
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const handleDownloadChatReport = () => {
+        const md = `# Ask AI Conversation: ${selectedFile || 'file'}
+
+${chatMessages.map(m => `### ${m.role === 'user' ? 'User' : 'AI'}\n${m.content}\n`).join('\n')}
+`;
+        downloadTextFile(`chat-${selectedFile?.split('/').pop() || 'file'}.md`, md);
+    };
+
+    const handleCopyChatPRComment = async () => {
+        const lastAssistant = [...chatMessages].reverse().find(m => m.role === 'assistant');
+        const md = `### 🤖 Ask AI Summary
+${lastAssistant?.content || 'No response recorded.'}
+`;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md);
+        }
+    };
+
+    const reanalyzeRepo = async () => {
+        if (!repoUrl || !selectedSha) return;
+        setAnalyzing(true);
+        try {
+            const treeRes = await api.repositories.getTree(repoUrl, selectedSha);
+            setTreeFiles(treeRes.files);
+            const data = await api.repositories.analyze(repoUrl, selectedSha, treeRes.files.slice(0, 50));
+            setGraph(data.graph);
+        } catch (e) {
+            console.error('Re-analyze repo failed', e);
+        } finally {
+            setAnalyzing(false);
+        }
+    };
+
+    const analyzeChangeSet = async () => {
+        if (!graph || changeSet.length === 0) return;
+        setChangeSetLoading(true);
+        try {
+            const res = await api.graph.impactBatch(graph, changeSet);
+            setChangeSetResult(res);
+        } catch (err) {
+            console.error("Batch impact failed", err);
+        } finally {
+            setChangeSetLoading(false);
+        }
+    };
+
     // Auto-scroll to bottom of chat on new messages or thinking state
     useEffect(() => {
         if (activeTab === 'AskAI') {
@@ -2315,10 +2644,10 @@ export function MainPanel({ className }: { className?: string }) {
 
     return (
         <div className={cn("flex flex-col bg-[#07090A] select-none h-full min-h-0", className)}>
-            {/* Header / Breadcrumb & Tabs (fixed at top) */}
-            <div className="p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10">
-                {!isRepoLevelTab && selectedFile && (
-                    <>
+            {/* Header / Breadcrumb & File-level Segmented Tabs (shown only when a file is selected and not in repo-level views) */}
+            {!isRepoLevelTab && selectedFile && (
+                <div className="p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10 space-y-3">
+                    <div>
                         <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px]">
                             {selectedFile.split('/').map((part, i, arr) => (
                                 <span key={i} className="flex items-center gap-1.5">
@@ -2327,7 +2656,7 @@ export function MainPanel({ className }: { className?: string }) {
                                 </span>
                             ))}
                         </div>
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
                                 <div className="w-7 h-7 rounded-lg glass-surface border-white/10 flex items-center justify-center text-[#4FD1B5]">
                                     {isCode ? <FileCode size={14} /> : <FileText size={14} />}
@@ -2359,41 +2688,10 @@ export function MainPanel({ className }: { className?: string }) {
                                 </button>
                             </div>
                         </div>
-                    </>
-                )}
-
-                <div className="flex items-center gap-1 border-b border-white/[0.06] overflow-x-auto scrollbar-none">
-                    {/* Repo-level tabs */}
-                    <div className="flex items-center gap-3 shrink-0">
-                        {[
-                            { id: 'Overview', icon: Hexagon, label: 'Overview' },
-                            { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length} ${changeSet.length === 1 ? 'input' : 'inputs'})` : ''}` },
-                            { id: 'Health', icon: HeartPulse, label: 'Health' },
-                        ].map(t => {
-                            const Icon = t.icon;
-                            const isActive = activeTab === t.id;
-                            return (
-                                <button
-                                    key={t.id} onClick={() => setActiveTab(t.id as any)}
-                                    className={cn(
-                                        "text-xs pb-2 transition-colors flex items-center gap-1.5 cursor-pointer relative font-medium shrink-0",
-                                        isActive
-                                            ? "text-[#E8EAE6] before:content-[''] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-[#4FD1B5]"
-                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
-                                    )}
-                                >
-                                    <Icon size={13} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
-                                    <span>{t.label}</span>
-                                </button>
-                            );
-                        })}
                     </div>
 
-                    {/* Thin divider */}
-                    <div className="w-[1px] h-3.5 bg-white/20 mx-2 shrink-0 self-center mb-2" />
-
-                    {/* File-level tabs */}
-                    <div className="flex items-center gap-3 shrink-0">
+                    {/* File-level segmented tab bar */}
+                    <div className="flex items-center rounded-lg bg-white/[0.04] p-0.5 border border-white/[0.08] select-none w-fit overflow-x-auto scrollbar-none">
                         {[
                             { id: 'Graph', icon: Network, label: 'Graph' },
                             { id: 'Impact', icon: Activity, label: 'Impact' },
@@ -2408,20 +2706,20 @@ export function MainPanel({ className }: { className?: string }) {
                                 <button
                                     key={t.id} onClick={() => setActiveTab(t.id as any)}
                                     className={cn(
-                                        "text-xs pb-2 transition-colors flex items-center gap-1.5 cursor-pointer relative font-medium shrink-0",
+                                        "px-3 py-1 text-xs rounded-md font-medium transition-colors flex items-center gap-1.5 cursor-pointer select-none shrink-0",
                                         isActive
-                                            ? "text-[#E8EAE6] before:content-[''] before:absolute before:bottom-0 before:left-0 before:right-0 before:h-[2px] before:bg-[#4FD1B5]"
-                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
+                                            ? "bg-[#4FD1B5] text-[#04100D] font-semibold shadow-sm"
+                                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04]"
                                     )}
                                 >
-                                    <Icon size={13} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
+                                    <Icon size={13} className={isActive ? "text-[#04100D]" : "opacity-70"} />
                                     <span>{t.label}</span>
                                 </button>
                             );
                         })}
                     </div>
                 </div>
-            </div>
+            )}
 
             {/* Content */}
             <div className={cn("flex-1 p-4 overflow-y-auto scrollbar-custom text-[#E8EAE6] min-h-0", (activeTab === 'Overview' || activeTab === 'Graph' || activeTab === 'AskAI' || activeTab === 'Code' || activeTab === 'Impact' || activeTab === 'ChangeSet') && "flex flex-col")}>
@@ -2429,6 +2727,20 @@ export function MainPanel({ className }: { className?: string }) {
                     {/* Overview Tab: hotspots list, composition bar */}
                     {activeTab === 'Overview' && (
                         <div className="space-y-4">
+                            <ComponentToolbar
+                                title="Repository overview"
+                                subtitle="Hotspots, composition, and high-level structure."
+                                primaryAction={
+                                    <Button onClick={reanalyzeRepo} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={analyzing}>
+                                        {analyzing ? <Loader2 size={11} className="animate-spin" /> : 'Re-analyze'}
+                                    </Button>
+                                }
+                                onDownloadReport={handleDownloadOverviewReport}
+                                onCopyPRComment={handleCopyOverviewPRComment}
+                                onReanalyze={reanalyzeRepo}
+                                onExport={() => downloadTextFile('repo-overview.json', JSON.stringify({ stats, hotspots: hotspotsList, composition: compositionData }, null, 2), 'application/json')}
+                            />
+
                             {/* Hotspots & Composition */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col">
@@ -2512,53 +2824,41 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
                         ) : (
                             <div className="flex-1 flex flex-col space-y-4 min-h-0">
-                                <div className="flex items-center justify-between shrink-0 gap-3 whitespace-nowrap overflow-x-auto scrollbar-none py-1">
-                                    <div className="flex items-center gap-2 min-w-0">
-                                        <h3 className="text-xs font-semibold text-[#E8EAE6] truncate">
+                                <ComponentToolbar
+                                    title={
+                                        <span>
                                             Impact: <span className="font-mono text-[#4FD1B5] font-normal">{selectedSymbol?.name || selectedFile.split('/').pop()}</span>
-                                        </h3>
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                        <div className="flex items-center gap-1 glass-surface p-1 rounded-lg border-white/10">
-                                            <button
-                                                onClick={handleDownloadReport}
-                                                className="p-1.5 rounded text-[#8A918C] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                                title="Download report as Markdown"
-                                            >
-                                                <Download size={13} />
-                                            </button>
-                                            <button
-                                                onClick={handleCopyReport}
-                                                className="p-1.5 rounded text-[#8A918C] hover:text-[#4FD1B5] hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                                title="Copy report as PR comment"
-                                            >
-                                                {copiedReport ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} />}
-                                            </button>
+                                        </span>
+                                    }
+                                    middle={
+                                        <div className="flex items-center rounded-md bg-white/[0.04] p-0.5 border border-white/[0.06] shrink-0">
+                                            {[1, 2, 3].map(d => (
+                                                <button
+                                                    key={d}
+                                                    onClick={() => setDepth(d)}
+                                                    className={cn(
+                                                        "px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer select-none",
+                                                        depth === d
+                                                            ? "bg-[#4FD1B5] text-[#04100D] font-medium"
+                                                            : "text-[#8A918C] hover:text-[#E8EAE6]"
+                                                    )}
+                                                    title={`Depth ${d}`}
+                                                >
+                                                    {d}
+                                                </button>
+                                            ))}
                                         </div>
-                                        <div className="flex items-center gap-1.5 glass-surface p-1 rounded-lg border-white/10 shrink-0">
-                                            <span className="text-[10px] text-[#8A918C] pl-1.5 pr-0.5">Depth</span>
-                                            <div className="flex items-center gap-1 shrink-0">
-                                                {[1, 2, 3].map(d => (
-                                                    <button
-                                                        key={d}
-                                                        onClick={() => setDepth(d)}
-                                                        className={cn(
-                                                            "px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer border shrink-0",
-                                                            depth === d
-                                                                ? "border-[#4FD1B5] text-[#4FD1B5] bg-[#4FD1B5]/10"
-                                                                : "border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
-                                                        )}
-                                                    >
-                                                        {d}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                            <Button onClick={reanalyze} className="px-2.5 py-1 text-[11px] ml-1 shrink-0 whitespace-nowrap" disabled={analyzing}>
-                                                {analyzing ? <Loader2 size={11} className="animate-spin" /> : 'Re-analyze'}
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </div>
+                                    }
+                                    primaryAction={
+                                        <Button onClick={reanalyze} className="px-2.5 py-1 text-xs shrink-0 whitespace-nowrap" disabled={analyzing}>
+                                            {analyzing ? <Loader2 size={12} className="animate-spin" /> : 'Re-analyze'}
+                                        </Button>
+                                    }
+                                    onDownloadReport={handleDownloadReport}
+                                    onCopyPRComment={handleCopyReport}
+                                    onReanalyze={reanalyze}
+                                    onExport={() => downloadTextFile('impact-result.json', JSON.stringify(impactResult, null, 2), 'application/json')}
+                                />
 
                             {analyzing ? (
                                 <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
@@ -2783,23 +3083,30 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
                         ) : (
                             <div className="flex-1 flex flex-col min-h-0 glass-surface border-white/10 rounded-xl overflow-hidden">
-                                <div className="p-3.5 bg-white/[0.02] border-b border-white/10 flex items-center justify-between shrink-0">
-                                    <div className="flex items-center gap-2 text-xs font-mono text-[#8A918C]">
-                                        <FileCode size={13} className="text-[#4FD1B5]" />
-                                        <span className="text-[#E8EAE6] truncate max-w-[280px]">
-                                            {selectedSymbol?.name ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
-                                        </span>
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={handleNewChat}
-                                            className="px-2 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
-                                            title="Clear conversation"
-                                        >
-                                            <Plus size={12} />
-                                            <span>New chat</span>
-                                        </button>
-                                    </div>
+                                <div className="p-3 bg-white/[0.02] border-b border-white/10 shrink-0">
+                                    <ComponentToolbar
+                                        title={
+                                            <div className="flex items-center gap-2 font-mono">
+                                                <FileCode size={13} className="text-[#4FD1B5]" />
+                                                <span className="text-[#E8EAE6] truncate max-w-[280px]">
+                                                    {selectedSymbol?.name ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                                                </span>
+                                            </div>
+                                        }
+                                        primaryAction={
+                                            <button
+                                                onClick={handleNewChat}
+                                                className="px-2.5 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
+                                                title="Clear conversation"
+                                            >
+                                                <Plus size={12} />
+                                                <span>New chat</span>
+                                            </button>
+                                        }
+                                        onDownloadReport={handleDownloadChatReport}
+                                        onCopyPRComment={handleCopyChatPRComment}
+                                        onExport={() => downloadTextFile('chat-history.json', JSON.stringify(chatMessages, null, 2), 'application/json')}
+                                    />
                                 </div>
 
                             {/* Chat Messages - Fixed height scroll area */}
@@ -2964,17 +3271,28 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
                         ) : (
                             <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <h3 className="text-xs font-semibold text-[#E8EAE6]">Commit history</h3>
-                                        <p className="text-[11px] text-[#8A918C] mt-0.5">
-                                            Showing changes for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'current selection'}</span>. Switch commits in the sidebar to inspect other points in time.
-                                        </p>
-                                    </div>
-                                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 text-[#4FD1B5] bg-[#4FD1B5]/10">
-                                        {selectedSha?.substring(0, 7) || 'HEAD'}
-                                    </span>
-                                </div>
+                                <ComponentToolbar
+                                    title="Commit history"
+                                    subtitle={
+                                        <span>
+                                            Showing changes for <span className="font-mono text-[#E8EAE6]">{selectedFile?.split('/').pop() || 'current selection'}</span>. Switch commits in sidebar to inspect history.
+                                        </span>
+                                    }
+                                    badge={
+                                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 text-[#4FD1B5] bg-[#4FD1B5]/10">
+                                            {selectedSha?.substring(0, 7) || 'HEAD'}
+                                        </span>
+                                    }
+                                    primaryAction={
+                                        <Button onClick={fetchHistory} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={!historyData}>
+                                            Re-fetch
+                                        </Button>
+                                    }
+                                    onDownloadReport={handleDownloadHistoryReport}
+                                    onCopyPRComment={handleCopyHistoryPRComment}
+                                    onReanalyze={fetchHistory}
+                                    onExport={() => downloadTextFile('commit-history.json', JSON.stringify(historyData || [], null, 2), 'application/json')}
+                                />
 
                                 {!historyData ? (
                                     <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
@@ -3045,24 +3363,26 @@ export function MainPanel({ className }: { className?: string }) {
 
                     {activeTab === 'Health' && (
                         <div className="space-y-4">
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                        <h3 className="text-xs font-semibold text-[#E8EAE6]">Repository health</h3>
-                                        {stats.analyzedFiles < stats.totalFiles && (
-                                            <span className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400">
-                                                Based on {stats.analyzedFiles} of {stats.totalFiles} files
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="text-[11px] text-[#8A918C] mt-0.5">
-                                        Architectural smells and dependency diagnostics computed from the repository graph.
-                                    </p>
-                                </div>
-                                <Button onClick={fetchHealth} className="px-3 py-1 text-xs" disabled={healthLoading || !graph}>
-                                    {healthLoading ? <Loader2 size={12} className="animate-spin" /> : 'Re-check'}
-                                </Button>
-                            </div>
+                            <ComponentToolbar
+                                title="Repository health"
+                                subtitle="Architectural smells and dependency diagnostics computed from the repository graph."
+                                badge={
+                                    stats.analyzedFiles < stats.totalFiles ? (
+                                        <span className="text-[11px] font-mono px-2 py-0.5 rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-400">
+                                            Based on {stats.analyzedFiles} of {stats.totalFiles} files
+                                        </span>
+                                    ) : undefined
+                                }
+                                primaryAction={
+                                    <Button onClick={fetchHealth} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={healthLoading || !graph}>
+                                        {healthLoading ? <Loader2 size={12} className="animate-spin" /> : 'Re-check'}
+                                    </Button>
+                                }
+                                onDownloadReport={handleDownloadHealthReport}
+                                onCopyPRComment={handleCopyHealthPRComment}
+                                onReanalyze={fetchHealth}
+                                onExport={() => downloadTextFile('repository-health.json', JSON.stringify(healthData || {}, null, 2), 'application/json')}
+                            />
 
                             {healthLoading && !healthData ? (
                                 <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
@@ -3237,14 +3557,23 @@ export function MainPanel({ className }: { className?: string }) {
                             </div>
                         ) : (
                             <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <h3 className="text-sm font-semibold text-[#E8EAE6]">File connections</h3>
-                                        <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
+                                <ComponentToolbar
+                                    title="File connections"
+                                    subtitle={
+                                        <span>
                                             Incoming and outgoing file dependencies for <span className="font-mono text-[#E8EAE6]">{selectedFile.split('/').pop()}</span>.
-                                        </p>
-                                    </div>
-                                </div>
+                                        </span>
+                                    }
+                                    primaryAction={
+                                        <Button onClick={fetchConnections} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={!graph}>
+                                            Re-analyze
+                                        </Button>
+                                    }
+                                    onDownloadReport={handleDownloadConnectionsReport}
+                                    onCopyPRComment={handleCopyConnectionsPRComment}
+                                    onReanalyze={fetchConnections}
+                                    onExport={() => downloadTextFile('file-connections.json', JSON.stringify(connectionsData || {}, null, 2), 'application/json')}
+                                />
                             {!connectionsData ? (
                                 <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-3">
                                     <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
@@ -3331,43 +3660,19 @@ export function MainPanel({ className }: { className?: string }) {
 
                     {activeTab === 'ChangeSet' && (
                         <div className="flex-1 flex flex-col space-y-4 min-h-0">
-                            {/* Change Set Header */}
-                            <div className="flex items-center justify-between shrink-0">
-                                <div>
-                                    <h3 className="text-sm font-semibold text-[#E8EAE6] flex items-center gap-2">
-                                        <span>Change set impact</span>
-                                        <span className="text-xs font-mono font-normal text-[#8A918C]">
-                                            ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
-                                        </span>
-                                    </h3>
-                                    <p className="text-xs text-[#8A918C] mt-0.5 font-sans">
-                                        Combined blast radius and affected files across your selected change set.
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    {changeSet.length > 0 && (
-                                        <button
-                                            onClick={clearChangeSet}
-                                            className="px-2.5 py-1 rounded text-xs font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer"
-                                        >
-                                            Clear all
-                                        </button>
-                                    )}
+                            <ComponentToolbar
+                                title="Change set impact"
+                                subtitle="Combined blast radius and affected files across your selected change set."
+                                badge={
+                                    <span className="text-xs font-mono font-normal text-[#8A918C]">
+                                        ({changeSet.length} {changeSet.length === 1 ? 'input' : 'inputs'})
+                                    </span>
+                                }
+                                primaryAction={
                                     <Button
-                                        onClick={async () => {
-                                            if (!graph || changeSet.length === 0) return;
-                                            setChangeSetLoading(true);
-                                            try {
-                                                const res = await api.graph.impactBatch(graph, changeSet);
-                                                setChangeSetResult(res);
-                                            } catch (err) {
-                                                console.error("Batch impact failed", err);
-                                            } finally {
-                                                setChangeSetLoading(false);
-                                            }
-                                        }}
+                                        onClick={analyzeChangeSet}
                                         disabled={changeSetLoading || changeSet.length === 0 || !graph}
-                                        className="px-3 py-1 text-xs"
+                                        className="px-3 py-1 text-xs shrink-0 whitespace-nowrap"
                                     >
                                         {changeSetLoading ? (
                                             <>
@@ -3378,8 +3683,13 @@ export function MainPanel({ className }: { className?: string }) {
                                             'Analyze change set'
                                         )}
                                     </Button>
-                                </div>
-                            </div>
+                                }
+                                onDownloadReport={handleDownloadChangeSetReport}
+                                onCopyPRComment={handleCopyChangeSetPRComment}
+                                onReanalyze={analyzeChangeSet}
+                                onExport={() => downloadTextFile('changeset-impact.json', JSON.stringify(changeSetResult || {}, null, 2), 'application/json')}
+                                extraMenuItems={changeSet.length > 0 ? [{ label: 'Clear all inputs', onClick: clearChangeSet }] : []}
+                            />
 
                             {/* Empty or loading states */}
                             {changeSet.length === 0 ? (

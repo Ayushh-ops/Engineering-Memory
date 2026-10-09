@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useAppStore } from '../store';
-import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers } from 'lucide-react';
+import { GitBranch, Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers, Hexagon, HeartPulse } from 'lucide-react';
 import { api } from '../api';
 import { cn } from '../ui';
 import { getPathsToAnalyze, isFileInGraph, isCodeFile } from '../analyze-helpers';
@@ -86,7 +86,7 @@ export function Sidebar({ className }: { className?: string }) {
         setSelectedFile, setSelectedSymbol, setImpactResult,
         changeSet, removeFromChangeSet, clearChangeSet,
         setChangeSetResult, changeSetLoading, setChangeSetLoading,
-        setActiveTab
+        activeTab, setActiveTab
     } = useAppStore();
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
@@ -124,6 +124,9 @@ export function Sidebar({ className }: { className?: string }) {
         setAnalyzingFile(true);
         try {
             await useAppStore.getState().selectFile(path);
+            if (['Overview', 'ChangeSet', 'Health'].includes(useAppStore.getState().activeTab)) {
+                useAppStore.getState().setActiveTab('Graph');
+            }
         } finally {
             setAnalyzingFile(false);
         }
@@ -169,6 +172,38 @@ export function Sidebar({ className }: { className?: string }) {
                             {selectedSha ? selectedSha.substring(0, 7) : 'eeda9e2'}
                         </span>
                     )}
+                </div>
+
+                {/* Repository section */}
+                <div className="mt-3 pt-3 border-t border-white/[0.08]">
+                    <div className="text-[11px] font-semibold text-[#8A918C] px-1 mb-1.5">
+                        Repository
+                    </div>
+                    <div className="space-y-0.5">
+                        {[
+                            { id: 'Overview', icon: Hexagon, label: 'Overview' },
+                            { id: 'ChangeSet', icon: Layers, label: `Change set${changeSet.length > 0 ? ` (${changeSet.length})` : ''}` },
+                            { id: 'Health', icon: HeartPulse, label: 'Health' },
+                        ].map(item => {
+                            const Icon = item.icon;
+                            const isActive = activeTab === item.id;
+                            return (
+                                <button
+                                    key={item.id}
+                                    onClick={() => setActiveTab(item.id as any)}
+                                    className={cn(
+                                        "w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer text-left select-none",
+                                        isActive
+                                            ? "bg-[#4FD1B5]/15 text-[#4FD1B5] border border-[#4FD1B5]/30 font-semibold"
+                                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] border border-transparent"
+                                    )}
+                                >
+                                    <Icon size={14} className={isActive ? "text-[#4FD1B5]" : "opacity-70"} />
+                                    <span>{item.label}</span>
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
 
                 {/* Quick stats in sidebar */}

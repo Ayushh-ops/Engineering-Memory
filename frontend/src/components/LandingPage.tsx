@@ -86,80 +86,87 @@ export function LandingPage() {
 
         const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-        // Node definitions normalized relative to center (cx, cy)
-        // Center node index 0
-        const nodesData = [
-            // Center node
-            { id: 0, x: 0, y: 0, type: 'center', r: 8, phase: 0, speed: 0 },
-            // Risky nodes (amber)
-            { id: 1, x: 80, y: -52, type: 'amber', r: 9, phase: 0.4, speed: 1.0 },
-            { id: 2, x: 72, y: 62, type: 'amber', r: 8, phase: 1.8, speed: 0.9 },
-            { id: 3, x: 158, y: -110, type: 'amber', r: 7.5, phase: 3.1, speed: 1.1 },
-            { id: 4, x: 145, y: 105, type: 'amber', r: 7, phase: 4.5, speed: 0.8 },
-            // Normal nodes (teal)
-            { id: 5, x: -75, y: -64, type: 'teal', r: 8, phase: 0.8, speed: 1.0 },
-            { id: 6, x: -66, y: 66, type: 'teal', r: 8, phase: 2.2, speed: 0.9 },
-            { id: 7, x: -140, y: -130, type: 'teal', r: 6.5, phase: 1.4, speed: 1.2 },
-            { id: 8, x: -168, y: -36, type: 'teal', r: 6.5, phase: 2.9, speed: 1.0 },
-            { id: 9, x: -130, y: 138, type: 'teal', r: 6.5, phase: 4.1, speed: 0.9 },
-            { id: 10, x: 140, y: -24, type: 'teal', r: 6, phase: 5.3, speed: 1.1 },
-            { id: 11, x: 60, y: 128, type: 'teal', r: 6.5, phase: 0.5, speed: 0.8 },
-            { id: 12, x: -110, y: 50, type: 'teal', r: 6, phase: 3.7, speed: 1.0 },
-            { id: 13, x: 110, y: -120, type: 'teal', r: 6, phase: 1.9, speed: 1.2 },
-            { id: 14, x: -30, y: -125, type: 'teal', r: 6, phase: 4.9, speed: 0.9 },
-            // Leaf nodes (grey)
-            { id: 15, x: 172, y: -24, type: 'grey', r: 5, phase: 0.2, speed: 1.0 },
-            { id: 16, x: -130, y: -198, type: 'grey', r: 4.5, phase: 1.7, speed: 1.3 },
-            { id: 17, x: 140, y: 128, type: 'grey', r: 5, phase: 3.4, speed: 0.9 },
-            { id: 18, x: 206, y: -168, type: 'grey', r: 4, phase: 4.8, speed: 1.1 },
-            { id: 19, x: -190, y: -198, type: 'grey', r: 4, phase: 2.1, speed: 1.2 },
-            { id: 20, x: -190, y: 160, type: 'grey', r: 4, phase: 5.6, speed: 0.8 },
-            { id: 21, x: 190, y: 186, type: 'grey', r: 4.5, phase: 0.9, speed: 1.0 },
-            { id: 22, x: 215, y: -80, type: 'grey', r: 4, phase: 2.7, speed: 1.2 },
-            { id: 23, x: -210, y: 40, type: 'grey', r: 4, phase: 3.9, speed: 0.9 },
-            { id: 24, x: -50, y: 190, type: 'grey', r: 4, phase: 1.1, speed: 1.1 },
-            { id: 25, x: 40, y: -200, type: 'grey', r: 4, phase: 4.2, speed: 1.0 },
-            { id: 26, x: 180, y: 50, type: 'grey', r: 4, phase: 5.1, speed: 0.9 },
-            { id: 27, x: -150, y: -80, type: 'grey', r: 4.5, phase: 2.4, speed: 1.1 },
-            { id: 28, x: 90, y: 190, type: 'grey', r: 4, phase: 0.6, speed: 1.0 }
+        // Decorative network only: 50 nodes organized in soft clusters (teal with a few grey and very few amber)
+        const nodesData: Array<{ id: number; x: number; y: number; type: 'teal' | 'grey' | 'amber'; r: number; phase: number; speed: number }> = [
+            // Cluster 1 (Top Left)
+            { id: 0, x: -110, y: -80, type: 'teal', r: 6.5, phase: 0.2, speed: 0.9 },
+            { id: 1, x: -145, y: -95, type: 'teal', r: 5.5, phase: 1.1, speed: 1.1 },
+            { id: 2, x: -80, y: -105, type: 'grey', r: 4.5, phase: 2.3, speed: 0.8 },
+            { id: 3, x: -130, y: -50, type: 'teal', r: 6.0, phase: 3.4, speed: 1.0 },
+            { id: 4, x: -85, y: -60, type: 'amber', r: 6.5, phase: 4.2, speed: 0.9 },
+            { id: 5, x: -165, y: -70, type: 'grey', r: 4.0, phase: 0.8, speed: 1.2 },
+            { id: 6, x: -150, y: -130, type: 'teal', r: 5.0, phase: 1.9, speed: 0.9 },
+            { id: 7, x: -95, y: -135, type: 'teal', r: 5.5, phase: 2.8, speed: 1.0 },
+            { id: 8, x: -60, y: -85, type: 'teal', r: 5.0, phase: 3.7, speed: 1.1 },
+            { id: 9, x: -120, y: -115, type: 'grey', r: 4.5, phase: 5.1, speed: 0.8 },
+            { id: 10, x: -175, y: -105, type: 'teal', r: 4.5, phase: 0.4, speed: 1.0 },
+            { id: 11, x: -75, y: -35, type: 'teal', r: 5.0, phase: 1.5, speed: 1.1 },
+
+            // Cluster 2 (Top Right)
+            { id: 12, x: 110, y: -70, type: 'teal', r: 6.5, phase: 0.6, speed: 0.9 },
+            { id: 13, x: 75, y: -95, type: 'teal', r: 5.5, phase: 1.8, speed: 1.0 },
+            { id: 14, x: 145, y: -85, type: 'grey', r: 4.5, phase: 2.7, speed: 1.2 },
+            { id: 15, x: 90, y: -45, type: 'amber', r: 6.5, phase: 3.5, speed: 0.8 },
+            { id: 16, x: 135, y: -40, type: 'teal', r: 5.5, phase: 4.4, speed: 1.1 },
+            { id: 17, x: 60, y: -65, type: 'teal', r: 5.0, phase: 5.2, speed: 0.9 },
+            { id: 18, x: 165, y: -65, type: 'teal', r: 5.0, phase: 0.9, speed: 1.0 },
+            { id: 19, x: 125, y: -115, type: 'grey', r: 4.5, phase: 2.1, speed: 1.1 },
+            { id: 20, x: 80, y: -130, type: 'teal', r: 5.0, phase: 3.2, speed: 0.9 },
+            { id: 21, x: 175, y: -100, type: 'grey', r: 4.0, phase: 4.0, speed: 1.2 },
+            { id: 22, x: 150, y: -10, type: 'teal', r: 5.0, phase: 5.0, speed: 0.9 },
+            { id: 23, x: 105, y: -15, type: 'teal', r: 5.5, phase: 0.3, speed: 1.0 },
+
+            // Cluster 3 (Bottom Left)
+            { id: 24, x: -70, y: 90, type: 'teal', r: 6.5, phase: 0.7, speed: 1.0 },
+            { id: 25, x: -105, y: 70, type: 'teal', r: 5.5, phase: 1.6, speed: 0.9 },
+            { id: 26, x: -40, y: 75, type: 'amber', r: 6.5, phase: 2.5, speed: 1.1 },
+            { id: 27, x: -95, y: 115, type: 'grey', r: 4.5, phase: 3.6, speed: 0.8 },
+            { id: 28, x: -50, y: 125, type: 'teal', r: 5.5, phase: 4.7, speed: 1.0 },
+            { id: 29, x: -135, y: 95, type: 'grey', r: 4.0, phase: 5.5, speed: 1.2 },
+            { id: 30, x: -80, y: 150, type: 'teal', r: 5.0, phase: 0.5, speed: 0.9 },
+            { id: 31, x: -25, y: 110, type: 'teal', r: 5.0, phase: 1.4, speed: 1.1 },
+            { id: 32, x: -115, y: 40, type: 'teal', r: 5.0, phase: 2.6, speed: 0.8 },
+            { id: 33, x: -35, y: 45, type: 'grey', r: 4.5, phase: 3.9, speed: 1.0 },
+            { id: 34, x: -65, y: 170, type: 'teal', r: 4.5, phase: 4.8, speed: 1.1 },
+            { id: 35, x: -120, y: 135, type: 'teal', r: 4.5, phase: 0.2, speed: 0.9 },
+
+            // Cluster 4 (Bottom Right)
+            { id: 36, x: 100, y: 95, type: 'teal', r: 6.5, phase: 0.8, speed: 0.9 },
+            { id: 37, x: 65, y: 75, type: 'teal', r: 5.5, phase: 1.7, speed: 1.1 },
+            { id: 38, x: 135, y: 75, type: 'grey', r: 4.5, phase: 2.9, speed: 0.8 },
+            { id: 39, x: 80, y: 125, type: 'amber', r: 6.5, phase: 3.8, speed: 1.0 },
+            { id: 40, x: 125, y: 120, type: 'teal', r: 5.5, phase: 4.6, speed: 0.9 },
+            { id: 41, x: 45, y: 100, type: 'teal', r: 5.0, phase: 5.4, speed: 1.1 },
+            { id: 42, x: 155, y: 105, type: 'grey', r: 4.0, phase: 0.4, speed: 1.2 },
+            { id: 43, x: 110, y: 155, type: 'teal', r: 5.0, phase: 1.3, speed: 0.8 },
+            { id: 44, x: 70, y: 160, type: 'teal', r: 5.0, phase: 2.4, speed: 1.0 },
+            { id: 45, x: 145, y: 45, type: 'teal', r: 5.0, phase: 3.3, speed: 1.1 },
+            { id: 46, x: 50, y: 50, type: 'grey', r: 4.5, phase: 4.5, speed: 0.9 },
+            { id: 47, x: 165, y: 140, type: 'teal', r: 4.5, phase: 5.1, speed: 1.0 },
+            { id: 48, x: 20, y: 15, type: 'teal', r: 5.0, phase: 0.9, speed: 0.9 },
+            { id: 49, x: -15, y: -20, type: 'teal', r: 5.0, phase: 2.0, speed: 1.0 }
         ];
 
-        // Amber flowing edges leading toward risky nodes
+        // Amber edges highlighting key dependencies
         const amberEdges: Array<[number, number]> = [
-            [0, 1],
-            [1, 3],
-            [0, 2],
-            [2, 4]
+            [0, 4],
+            [12, 15],
+            [24, 26],
+            [36, 39]
         ];
 
-        // Regular structural edges
+        // Regular intra-cluster and bridge edges
         const regularEdges: Array<[number, number]> = [
-            [0, 5],
-            [0, 6],
-            [1, 15],
-            [2, 17],
-            [3, 18],
-            [3, 22],
-            [4, 21],
-            [4, 26],
-            [5, 7],
-            [5, 8],
-            [5, 14],
-            [6, 9],
-            [6, 11],
-            [6, 12],
-            [7, 16],
-            [7, 19],
-            [8, 23],
-            [8, 27],
-            [9, 20],
-            [10, 15],
-            [10, 22],
-            [11, 17],
-            [11, 28],
-            [12, 23],
-            [13, 3],
-            [14, 25]
+            // Cluster 1
+            [0, 1], [0, 3], [1, 6], [1, 10], [2, 7], [2, 8], [3, 4], [3, 11], [4, 8], [5, 10], [6, 9], [7, 9], [8, 11],
+            // Cluster 2
+            [12, 13], [12, 16], [13, 17], [13, 20], [14, 18], [14, 19], [15, 16], [15, 23], [16, 22], [17, 20], [18, 21], [19, 20], [22, 23],
+            // Cluster 3
+            [24, 25], [24, 28], [25, 29], [25, 32], [26, 28], [26, 31], [27, 30], [27, 35], [28, 30], [28, 31], [29, 35], [30, 34], [32, 33],
+            // Cluster 4
+            [36, 37], [36, 40], [37, 41], [37, 46], [38, 42], [38, 45], [39, 40], [39, 44], [40, 43], [41, 46], [42, 47], [43, 44], [45, 47],
+            // Bridges
+            [4, 49], [15, 48], [26, 49], [39, 48], [48, 49], [11, 26], [17, 37]
         ];
 
         const allEdges = [...amberEdges, ...regularEdges];
@@ -169,7 +176,7 @@ export function LandingPage() {
             { u: 0.1, edgeIdx: 0, isAmber: true },
             { u: 0.5, edgeIdx: 1, isAmber: true },
             { u: 0.3, edgeIdx: 4, isAmber: false },
-            { u: 0.7, edgeIdx: 7, isAmber: false }
+            { u: 0.7, edgeIdx: 12, isAmber: false }
         ];
 
         function resize() {
@@ -221,54 +228,16 @@ export function LandingPage() {
 
             // Background ambient radial gradient
             const bgGrad = ctx!.createRadialGradient(cx, cy, 0, cx, cy, 250 * scale);
-            bgGrad.addColorStop(0, 'rgba(79, 209, 181, 0.14)');
+            bgGrad.addColorStop(0, 'rgba(79, 209, 181, 0.12)');
             bgGrad.addColorStop(1, 'rgba(79, 209, 181, 0)');
             ctx!.fillStyle = bgGrad;
             ctx!.beginPath();
             ctx!.arc(cx, cy, 250 * scale, 0, Math.PI * 2);
             ctx!.fill();
 
-            // Concentric reference blast radius rings
-            // Ring 1
-            ctx!.strokeStyle = 'rgba(79, 209, 181, 0.35)';
-            ctx!.lineWidth = 1;
-            ctx!.setLineDash([]);
-            ctx!.beginPath();
-            ctx!.arc(cx, cy, 92 * scale, 0, Math.PI * 2);
-            ctx!.stroke();
-
-            // Ring 2 (dashed)
-            ctx!.strokeStyle = 'rgba(79, 209, 181, 0.20)';
-            ctx!.setLineDash([3, 6]);
-            ctx!.beginPath();
-            ctx!.arc(cx, cy, 166 * scale, 0, Math.PI * 2);
-            ctx!.stroke();
-
-            // Ring 3 (dashed)
-            ctx!.strokeStyle = 'rgba(79, 209, 181, 0.12)';
-            ctx!.setLineDash([3, 8]);
-            ctx!.beginPath();
-            ctx!.arc(cx, cy, 238 * scale, 0, Math.PI * 2);
-            ctx!.stroke();
-
-            // Ripple waves expanding outward
-            if (!prefersReducedMotion) {
-                ctx!.setLineDash([]);
-                for (let i = 0; i < 3; i++) {
-                    const wavePhase = (t * 0.00016 + i * 0.33) % 1;
-                    const waveR = (40 + wavePhase * 200) * scale;
-                    const waveAlpha = Math.sin(wavePhase * Math.PI) * 0.38;
-                    ctx!.strokeStyle = `rgba(79, 209, 181, ${waveAlpha.toFixed(3)})`;
-                    ctx!.lineWidth = 1.2;
-                    ctx!.beginPath();
-                    ctx!.arc(cx, cy, waveR, 0, Math.PI * 2);
-                    ctx!.stroke();
-                }
-            }
-
-            // Calculate computed positions with parallax & drift
-            const pX = (mx - 0.5) * 20;
-            const pY = (my - 0.5) * 20;
+            // Calculate computed positions with slow drift & mouse parallax
+            const pX = (mx - 0.5) * 22;
+            const pY = (my - 0.5) * 22;
 
             const pos = nodesData.map((node) => {
                 if (prefersReducedMotion) {
@@ -277,17 +246,16 @@ export function LandingPage() {
                         y: cy + node.y * scale
                     };
                 }
-                const driftX = Math.sin(t * 0.0009 * node.speed + node.phase) * 3;
-                const driftY = Math.cos(t * 0.0008 * node.speed + node.phase) * 3;
-                const factor = node.id === 0 ? 0.3 : 0.8;
+                const driftX = Math.sin(t * 0.0007 * node.speed + node.phase) * 3.5;
+                const driftY = Math.cos(t * 0.0006 * node.speed + node.phase) * 3.5;
                 return {
-                    x: cx + (node.x + driftX) * scale + pX * factor,
-                    y: cy + (node.y + driftY) * scale + pY * factor
+                    x: cx + (node.x + driftX) * scale + pX * 0.7,
+                    y: cy + (node.y + driftY) * scale + pY * 0.7
                 };
             });
 
             // Draw regular edges
-            ctx!.strokeStyle = 'rgba(232, 234, 230, 0.14)';
+            ctx!.strokeStyle = 'rgba(232, 234, 230, 0.12)';
             ctx!.lineWidth = 1;
             ctx!.setLineDash([]);
             ctx!.beginPath();
@@ -320,11 +288,11 @@ export function LandingPage() {
 
             // Edge pulse particles
             if (!prefersReducedMotion) {
-                if (Math.random() < 0.03 && pulses.length < 7) {
+                if (Math.random() < 0.03 && pulses.length < 8) {
                     pulses.push({
                         u: 0,
                         edgeIdx: Math.floor(Math.random() * allEdges.length),
-                        isAmber: Math.random() < 0.4
+                        isAmber: Math.random() < 0.25
                     });
                 }
 
@@ -381,26 +349,10 @@ export function LandingPage() {
                 ctx!.restore();
             });
 
-            // Draw center repo root node (hollow ring in text color)
-            const cNode = pos[0];
-            // Outer hollow ring
-            ctx!.fillStyle = '#07090A';
-            ctx!.strokeStyle = '#E8EAE6';
-            ctx!.lineWidth = 1.5;
-            ctx!.beginPath();
-            ctx!.arc(cNode.x, cNode.y, 24 * scale, 0, Math.PI * 2);
-            ctx!.fill();
-            ctx!.stroke();
-            // Inner dot
-            ctx!.fillStyle = '#E8EAE6';
-            ctx!.beginPath();
-            ctx!.arc(cNode.x, cNode.y, 8 * scale, 0, Math.PI * 2);
-            ctx!.fill();
-
             if (!prefersReducedMotion) {
                 animationFrameId = requestAnimationFrame(renderFrame);
             }
-        }
+        };
 
         if (prefersReducedMotion) {
             renderFrame(0);
@@ -637,17 +589,17 @@ export function LandingPage() {
                             <>
                                 <div className="inline-flex items-center gap-2 px-3 py-1.5 border border-white/[0.08] rounded-full text-[13px] text-[#8A918C] bg-[rgba(16,20,21,0.66)]">
                                     <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5]" />
-                                    <span>Impact analysis for GitHub repositories</span>
+                                    <span>Code intelligence for GitHub repositories</span>
                                 </div>
                                 <h1 className="mt-6 text-5xl sm:text-6xl lg:text-[76px] leading-[1] tracking-[-0.035em] font-semibold text-[#E8EAE6]">
-                                    Know what <span className="text-[#E3A04A]">breaks</span>
+                                    Understand your <span className="text-[#E3A04A]">codebase</span>
                                     <br />
                                     before you
                                     <br />
                                     change it.
                                 </h1>
                                 <p className="mt-6 text-base sm:text-lg text-[#8A918C] leading-[1.55] max-w-[520px]">
-                                    Paste a repository. Engineering Memory maps every call, import and commit, then shows the blast radius of any edit.
+                                    Paste a repository. Explore dependencies, history, owners and health, ask questions with file evidence, and see what a change affects.
                                 </p>
 
                                 {/* URL Input with Glass Surface */}
@@ -758,7 +710,7 @@ export function LandingPage() {
                             ref={canvasRef}
                             className="w-full max-w-[560px] aspect-[560/520] block"
                             role="img"
-                            aria-label="Dependency graph with blast radius rings"
+                            aria-label="Interactive decorative dependency network"
                         />
                     </div>
                 </section>
@@ -801,16 +753,17 @@ export function LandingPage() {
                         Everything you need before you merge.
                     </h2>
                     <div className="mt-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                        {/* 1. Blast radius */}
+                        {/* 1. Graph */}
                         <div className="landing-card p-7 border border-white/[0.08] rounded-[18px] bg-[rgba(16,20,21,0.66)]">
-                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4FD1B5" strokeWidth="1.5" strokeLinecap="round">
-                                <circle cx="12" cy="12" r="2" />
-                                <circle cx="12" cy="12" r="6" />
-                                <circle cx="12" cy="12" r="10" strokeDasharray="2 3" />
+                            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4FD1B5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="6" cy="6" r="2.5" />
+                                <circle cx="18" cy="6" r="2.5" />
+                                <circle cx="12" cy="18" r="2.5" />
+                                <path d="M7.5 7.5l3 8.5M16.5 7.5l-3 8.5M8.5 6h7" />
                             </svg>
-                            <h3 className="mt-4 mb-2 text-xl font-semibold text-[#E8EAE6]">Blast radius</h3>
+                            <h3 className="mt-4 mb-2 text-xl font-semibold text-[#E8EAE6]">Graph</h3>
                             <p className="text-[15px] leading-relaxed text-[#8A918C]">
-                                Direct and transitive dependents in rings, ranked by risk, with the reasons behind each score.
+                                Explore how files connect and follow any dependency.
                             </p>
                         </div>
 
@@ -859,14 +812,14 @@ export function LandingPage() {
                             </p>
                         </div>
 
-                        {/* 6. Ask AI in your language */}
+                        {/* 6. Ask AI */}
                         <div className="landing-card p-7 border border-white/[0.08] rounded-[18px] bg-[rgba(16,20,21,0.66)]">
                             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4FD1B5" strokeWidth="1.5" strokeLinejoin="round">
                                 <path d="M4 5h16v11H9l-5 4z" />
                             </svg>
-                            <h3 className="mt-4 mb-2 text-xl font-semibold text-[#E8EAE6]">Ask AI in your language</h3>
+                            <h3 className="mt-4 mb-2 text-xl font-semibold text-[#E8EAE6]">Ask AI</h3>
                             <p className="text-[15px] leading-relaxed text-[#8A918C]">
-                                Ask questions about your code and get answers with file evidence.
+                                Ask about your code and get answers with file evidence.
                             </p>
                         </div>
                     </div>
@@ -878,7 +831,7 @@ export function LandingPage() {
                         Check the next change before it ships.
                     </h2>
                     <p className="mt-4 text-[#8A918C] text-base sm:text-lg max-w-[480px] mx-auto leading-[1.55]">
-                        Paste a repository and get your first blast radius in a minute.
+                        Paste a repository and see how everything connects in a minute.
                     </p>
                     <button
                         onClick={handleCtaClick}
