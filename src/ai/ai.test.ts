@@ -446,7 +446,7 @@ async function main(): Promise<void> {
     ) as Record<string, unknown>;
     assert.deepEqual(
         Object.keys(nonImpactFacts),
-        ["repository", "target", "files", "symbols", "imports", "callers", "commits", "symbolChanges"]
+        ["repository", "target", "files", "symbols", "imports", "callers", "commits", "symbolChanges", "risk"]
     );
     const inconsistentProvider = new FakeLlmProvider({
         status: "ok",
@@ -834,6 +834,21 @@ async function main(): Promise<void> {
     assert.equal(isGroundedQuestion("ye kya karta hai", { type: "file", path: "src/auth.ts" }), true);
     assert.equal(isGroundedQuestion("yeh code explain karo", { type: "file", path: "src/auth.ts" }), true);
     assert.equal(isGroundedQuestion("is file me kya functions hai", { type: "file", path: "src/auth.ts" }), true);
+
+    // Test risk score inclusion in context and instructions
+    const factsWithRisk = historyProvider.calls[0]?.facts as any;
+    assert.ok(factsWithRisk?.risk !== undefined, "Expected risk in facts context");
+    assert.equal(typeof factsWithRisk?.risk?.score, "number");
+    assert.ok(Array.isArray(factsWithRisk?.risk?.reasons));
+    assert.equal(typeof factsWithRisk?.risk?.directDependents, "number");
+    assert.equal(typeof factsWithRisk?.risk?.transitiveDependents, "number");
+    assert.equal(typeof factsWithRisk?.risk?.hasTests, "boolean");
+
+    const riskInstructions = historyProvider.calls[0]?.instructions;
+    assert.ok(
+        riskInstructions?.some((inst) => inst.includes("For risk questions, explain using the computed risk score")),
+        "Expected risk instruction in provider call"
+    );
 
     console.log("AI fixtures passed");
 }

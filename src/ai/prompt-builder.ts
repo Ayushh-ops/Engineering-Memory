@@ -11,7 +11,7 @@ export function detectLang(text: string): "hi" | "hinglish" | "en" {
     if (/[\u0900-\u097F]/.test(trimmed)) {
         return "hi";
     }
-    const HINDI_WORDS_REGEX = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi)\b/i;
+    const HINDI_WORDS_REGEX = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi)\b/i;
     if (HINDI_WORDS_REGEX.test(trimmed)) {
         return "hinglish";
     }
@@ -25,7 +25,7 @@ export function getLanguageDirective(lang: "hi" | "hinglish" | "en"): string {
     } else if (lang === "hi") {
         directive = "Reply in Hindi (Devanagari).";
     }
-    return `${directive} Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.`;
+    return `${directive} Keep file, function and variable names in English. Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.`;
 }
 
 export interface PromptInput {
@@ -46,6 +46,9 @@ export function buildPrompt(input: PromptInput): string {
         "Do not claim information that is absent from the supplied context.",
         "If the context is insufficient, explicitly say so.",
         "Cite relevant file paths, symbol names, or commit SHAs when possible.",
+        "Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English.",
+        "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+        "For greetings or small talk, reply briefly and do not explain the file.",
         ...(input.instructions ?? [])
     ];
 

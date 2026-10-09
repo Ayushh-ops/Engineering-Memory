@@ -104,7 +104,7 @@ export function getGreetingOrSmallTalkResponse(question: string): string | null 
         return "Hello! How can I help you explore this codebase today?";
     }
     // Hinglish greetings
-    if (/^(namaste|namaskar|kya\s+haal|kaise\s+ho|kya\s+chal\s+raha\s+hai)$/.test(q)) {
+    if (/^(namaste|namaskar|kya\s+haal(\s+hai)?|kaise\s+ho(\s+bhai)?|kya\s+chal\s+raha\s+hai|(hello|hi)\s+bhai)$/.test(q)) {
         return "Namaste! Main is codebase ko samajhne me aapki kya madad kar sakta hoon?";
     }
     // Devanagari greetings
@@ -188,7 +188,7 @@ export class AiAnswerService {
             };
         }
 
-        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
+        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent, request.graph);
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             // Trim fileContent or evidence to fit within MAX_AI_CONTEXT_BYTES instead of refusing
@@ -225,8 +225,9 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
-            "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
-            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks'), reply with a single friendly line in the user's language and script, with no code explanation, no citations, and no follow-ups.",
+            "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
+            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
             'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
             directive
         ];
@@ -361,7 +362,7 @@ export class AiAnswerService {
             };
         }
 
-        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent);
+        let aiContext = buildAiContext(result.context, request.repository, request.evidence, request.impact, request.fileContent, request.graph);
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
             if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
@@ -397,8 +398,9 @@ export class AiAnswerService {
         const instructions = [
             "Answer only from the supplied repository facts.",
             "If the context is insufficient, say so explicitly.",
-            "Match the script of the user's latest message. Roman-script Hindi (Hinglish, e.g. 'ye kya krta hai') must be answered in Roman-script Hinglish, never Devanagari. Use Devanagari only if the user writes in Devanagari. English gets English. Keep code, file names and identifiers unchanged.",
-            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks'), reply with a single friendly line in the user's language and script, with no code explanation, no citations, and no follow-ups.",
+            "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
+            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first.",
+            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
             'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
             directive
         ];

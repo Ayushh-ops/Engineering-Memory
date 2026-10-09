@@ -1,4 +1,5 @@
 import type { RepositoryContext } from "../graph/repository-context";
+import type { RepositoryGraph } from "../graph/repository-graph";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 import { buildAiImpactContext, type AiImpactContext } from "./impact-context";
@@ -38,6 +39,16 @@ export interface AiSymbolChangeContext {
     sha?: string;
 }
 
+export interface AiRiskContext {
+    score: number;
+    directDependents: number;
+    transitiveDependents: number;
+    hasTests: boolean;
+    commitCount: number;
+    ownersCount: number;
+    reasons: Array<{ label: string; value: string }>;
+}
+
 export interface AiRepositoryContext {
     repository: string;
     target: AiTarget;
@@ -54,6 +65,7 @@ export interface AiRepositoryContext {
     fileTruncatedLines?: number;
     directImports?: string[];
     directDependents?: string[];
+    risk?: AiRiskContext;
 }
 
 /**
@@ -86,12 +98,107 @@ function decodeGraphFileId(id: string): string | null {
     return decodeURIComponent(id.slice("file:".length));
 }
 
+export function computeFileRisk(
+    filePath: string,
+    graph?: RepositoryGraph,
+    commits: Array<{ sha: string; authorName?: string; [key: string]: any }> = []
+): AiRiskContext {
+    const fileId = `file:${encodeURIComponent(filePath)}`;
+    const allEdges = graph?.edges || [];
+    const allNodes = graph?.nodes || [];
+
+    // 1. Direct dependents (incoming imports or calls to filePath)
+    const directSet = new Set<string>();
+    for (const edge of allEdges) {
+        const toDecoded = decodeGraphFileId(edge.to) ?? edge.to;
+        if ((toDecoded === filePath || edge.to === filePath || edge.to === fileId) && (edge.type === "imports" || edge.type === "calls")) {
+            const fromDecoded = decodeGraphFileId(edge.from) ?? edge.from;
+            directSet.add(fromDecoded);
+        }
+    }
+
+    // 2. Transitive dependents (reverse BFS excluding target file and direct dependents)
+    const visited = new Set<string>([filePath, fileId, ...directSet]);
+    const queue = Array.from(directSet);
+    const transitiveSet = new Set<string>();
+
+    while (queue.length > 0) {
+        const curr = queue.shift()!;
+        const currId = `file:${encodeURIComponent(curr)}`;
+        for (const edge of allEdges) {
+            const toDecoded = decodeGraphFileId(edge.to) ?? edge.to;
+            if ((toDecoded === curr || edge.to === curr || edge.to === currId) && (edge.type === "imports" || edge.type === "calls")) {
+                const fromDecoded = decodeGraphFileId(edge.from) ?? edge.from;
+                if (!visited.has(fromDecoded) && !visited.has(edge.from)) {
+                    visited.add(fromDecoded);
+                    visited.add(edge.from);
+                    transitiveSet.add(fromDecoded);
+                    queue.push(fromDecoded);
+                }
+            }
+        }
+    }
+
+    const directDependents = directSet.size;
+    const transitiveDependents = transitiveSet.size;
+
+    // 3. Test presence
+    const baseName = filePath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
+    const hasTests = allNodes.some((n: any) => {
+        if (n.type !== "file") return false;
+        const p = n.path || (typeof n.id === "string" ? decodeGraphFileId(n.id) : undefined);
+        if (!p) return false;
+        const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
+        if (!isTest) return false;
+        const testBase = p.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
+        return testBase === baseName || p.includes(baseName);
+    });
+    const hasNoTests = !hasTests;
+
+    // 4. Commits and owners
+    const touchingCommits = commits.filter((c: any) => {
+        if (c.files && Array.isArray(c.files)) {
+            return c.files.some((f: any) => (f.filename || f.path) === filePath);
+        }
+        return true;
+    });
+    const commitCount = touchingCommits.length;
+    const ownersCount = new Set(touchingCommits.map((c: any) => c.authorName).filter(Boolean)).size || (commitCount > 0 ? 1 : 0);
+    const totalCommits = Math.max(1, commits.length);
+    const churnPercent = Math.min(100, Math.round((commitCount / totalCommits) * 100));
+
+    let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
+    if (directDependents === 0 && transitiveDependents === 0) {
+        rawScore = Math.min(15, rawScore);
+    }
+    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+
+    const reasons: Array<{ label: string; value: string }> = [
+        { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
+        { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
+        { label: "Commit churn", value: `${commitCount} commit${commitCount === 1 ? "" : "s"} (${churnPercent}%)` },
+        { label: "Owners count", value: `${ownersCount} owner${ownersCount === 1 ? "" : "s"}` },
+        { label: "Test coverage", value: hasTests ? "Tests found (+0 risk)" : "No test found (+10 risk)" }
+    ];
+
+    return {
+        score,
+        directDependents,
+        transitiveDependents,
+        hasTests,
+        commitCount,
+        ownersCount,
+        reasons
+    };
+}
+
 export function buildAiContext(
     context: RepositoryContext,
     repository: string,
     evidence: RepositorySourceEvidence[] = [],
     impact?: ChangeImpactAnalysisResult,
-    fileContent?: string
+    fileContent?: string,
+    graph?: RepositoryGraph
 ): AiRepositoryContext {
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
@@ -227,6 +334,10 @@ export function buildAiContext(
         cappedContent = assembled;
     }
 
+    const risk = targetPath
+        ? computeFileRisk(targetPath, graph, context.commits)
+        : undefined;
+
     const base: AiRepositoryContext = {
         repository,
         target: toTarget(context.target.request),
@@ -241,6 +352,7 @@ export function buildAiContext(
         callers,
         commits,
         symbolChanges,
+        ...(risk ? { risk } : {}),
         ...(fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
         ...(fileContent && directDependentPaths.length > 0 ? { directDependents: directDependentPaths } : {}),
         ...(evidence.length > 0 ? { evidence } : {}),

@@ -436,7 +436,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             // Render double-backtick inline code as plain text without interpolation
             const codeContent = m.slice(2, -2).trim();
             parts.push(
-                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
+                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5]">
                     {codeContent}
                 </code>
             );
@@ -444,7 +444,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             // Render single-backtick inline code as plain text without interpolation
             const codeContent = m.slice(1, -1);
             parts.push(
-                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5] border border-white/10">
+                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5]">
                     {codeContent}
                 </code>
             );
@@ -2676,6 +2676,45 @@ ${lastAssistant?.content || 'No response recorded.'}
                 }
             }
         }
+
+        // Strip any "Follow-up questions:" / "FOLLOWUPS:" line and trailing question list from the rendered answer
+        const followUpHeaderRegex = /(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|suggested\s*questions?|recommended\s*questions?|next\s*questions?|followups)[ \t]*[:：]?[ \t]*([\s\S]*)$/i;
+        const headerMatch = cleanAnswer.match(followUpHeaderRegex);
+        if (headerMatch && headerMatch.index !== undefined) {
+            const trailing = (headerMatch[1] || '').trim();
+            cleanAnswer = cleanAnswer.slice(0, headerMatch.index).trim();
+
+            if (followups.length === 0 && trailing) {
+                try {
+                    let cleanedTrailing = trailing;
+                    if (cleanedTrailing.startsWith('```')) {
+                        cleanedTrailing = cleanedTrailing.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+                    }
+                    const parsed = JSON.parse(cleanedTrailing);
+                    if (Array.isArray(parsed)) {
+                        followups = parsed
+                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
+                            .map(item => item.trim())
+                            .slice(0, 3);
+                    }
+                } catch {
+                    // Try parsing numbered or bulleted lines: 1. Question? or - Question?
+                    const lines = trailing
+                        .split(/\r?\n/)
+                        .map(l => l.replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]*/, '').trim())
+                        .filter(l => l.length > 0 && !isPlaceholder(l));
+                    if (lines.length > 0) {
+                        followups = lines.slice(0, 3);
+                    }
+                }
+            }
+        }
+
+        // Final safety cleanup of any stray follow-up tokens or headers
+        cleanAnswer = cleanAnswer
+            .replace(/<<<FOLLOWUPS>>>[\s\S]*?(?:<<<END_FOLLOWUPS>>>|$)/gi, '')
+            .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[ \t]*$/gim, '')
+            .trim();
 
         return {
             cleanAnswer,
