@@ -4664,7 +4664,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
                                     .filter(Boolean) as string[];
                                 const testCount = tests.length;
-                                const targetDisplayName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'file');
+                                const targetDisplayName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'file') || 'file';
 
                                 // Combine and rank all affected files by score
                                 const rankedAll = [
@@ -4701,13 +4701,30 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-[500px]">
                                             {/* Left (about 60%): blast radius rings filling whole card */}
                                             <div
-                                                className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full min-h-0 select-none"
+                                                className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-between relative overflow-hidden h-full min-h-0 select-none"
                                                 onMouseLeave={() => setHoveredImpactNode(null)}
                                             >
+                                                {/* Legend row above the rings (outside the SVG) */}
+                                                <div className="w-full flex items-center justify-between px-2 py-1 mb-1 text-xs border-b border-white/[0.06] shrink-0">
+                                                    <div className="flex items-center gap-4">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="w-2.5 h-2.5 rounded-full bg-[#E3A04A] inline-block shrink-0" />
+                                                            <span className="font-medium text-[#E8EAE6]">Direct ({directCount})</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className="w-2.5 h-2.5 rounded-full bg-[#8A918C] inline-block shrink-0" />
+                                                            <span className="font-medium text-[#8A918C]">Indirect ({indirectCount})</span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-[11px] text-[#8A918C] font-mono">
+                                                        Size indicates risk
+                                                    </div>
+                                                </div>
+
                                                 <svg
-                                                    viewBox="0 0 540 540"
+                                                    viewBox="0 0 540 500"
                                                     preserveAspectRatio="xMidYMid meet"
-                                                    className="w-full h-full max-h-[540px] max-w-[540px]"
+                                                    className="w-full flex-1 max-h-[460px] max-w-[500px] overflow-visible"
                                                     role="img"
                                                 >
                                                     <title>Blast radius rings</title>
@@ -4715,19 +4732,19 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     {/* Animated ripple wave on rings (off for reduced motion via CSS .blast-ripple) */}
                                                     <circle
                                                         cx="270"
-                                                        cy="270"
-                                                        r="110"
+                                                        cy="235"
+                                                        r="95"
                                                         fill="none"
-                                                        stroke="rgba(79, 209, 181, 0.25)"
+                                                        stroke="rgba(227, 160, 74, 0.25)"
                                                         strokeWidth="1.5"
                                                         className="rpl blast-ripple"
                                                     />
                                                     <circle
                                                         cx="270"
-                                                        cy="270"
-                                                        r="215"
+                                                        cy="235"
+                                                        r="180"
                                                         fill="none"
-                                                        stroke="rgba(227, 160, 74, 0.2)"
+                                                        stroke="rgba(138, 145, 140, 0.2)"
                                                         strokeWidth="1.5"
                                                         className="rpl blast-ripple"
                                                         style={{ animationDelay: '2.25s' }}
@@ -4736,97 +4753,85 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     {/* Static Ring 1 guide (Direct) */}
                                                     <circle
                                                         cx="270"
-                                                        cy="270"
-                                                        r="110"
+                                                        cy="235"
+                                                        r="95"
                                                         fill="none"
                                                         stroke="rgba(255, 255, 255, 0.08)"
                                                         strokeDasharray="4 6"
                                                     />
-                                                    <text
-                                                        x="270"
-                                                        y={270 - 110 - 6}
-                                                        fontSize="9"
-                                                        fill="#8A918C"
-                                                        textAnchor="middle"
-                                                        fontFamily="'IBM Plex Mono', monospace"
-                                                    >
-                                                        Ring 1 · Direct ({directCount})
-                                                    </text>
 
                                                     {/* Static Ring 2 guide (Indirect) */}
                                                     <circle
                                                         cx="270"
-                                                        cy="270"
-                                                        r="215"
+                                                        cy="235"
+                                                        r="180"
                                                         fill="none"
                                                         stroke="rgba(255, 255, 255, 0.08)"
                                                         strokeDasharray="4 6"
                                                     />
-                                                    <text
-                                                        x="270"
-                                                        y={270 - 215 - 6}
-                                                        fontSize="9"
-                                                        fill="#8A918C"
-                                                        textAnchor="middle"
-                                                        fontFamily="'IBM Plex Mono', monospace"
-                                                    >
-                                                        Ring 2 · Indirect ({indirectCount})
-                                                    </text>
 
                                                     {/* Highlighted path connecting to hovered node */}
                                                     {hoveredImpactNode && (
                                                         <line
                                                             x1="270"
-                                                            y1="270"
+                                                            y1="235"
                                                             x2={hoveredImpactNode.x}
                                                             y2={hoveredImpactNode.y}
-                                                            stroke={getRiskColor(hoveredImpactNode.score)}
+                                                            stroke={hoveredImpactNode.type === 'direct' ? "#E3A04A" : "#8A918C"}
                                                             strokeWidth="2.5"
                                                             strokeDasharray={hoveredImpactNode.type === 'indirect' ? "5 4" : undefined}
                                                             opacity="0.9"
                                                         />
                                                     )}
 
-                                                    {/* Center Target Node */}
+                                                    {/* Center Target Node (near-white with teal ring) */}
                                                     <g className="cursor-default">
-                                                        <circle cx="270" cy="270" r="14" fill="#07090A" stroke="#E8EAE6" strokeWidth="2" />
-                                                        <circle cx="270" cy="270" r="8" fill="#4FD1B5" />
+                                                        <circle cx="270" cy="235" r="16" fill="#07090A" stroke="#4FD1B5" strokeWidth="2.5" />
+                                                        <circle cx="270" cy="235" r="9" fill="#FAFAFA" />
                                                         <text
                                                             x="270"
-                                                            y="302"
-                                                            fontSize="12"
+                                                            y="266"
+                                                            fontSize="11"
                                                             fontWeight="600"
                                                             fill="#E8EAE6"
                                                             textAnchor="middle"
                                                             fontFamily="'IBM Plex Mono', monospace"
                                                         >
-                                                            {targetDisplayName}
+                                                            {targetDisplayName.length > 24 ? `${targetDisplayName.slice(0, 23)}…` : targetDisplayName}
                                                         </text>
                                                     </g>
 
-                                                    {/* Ring 1 (Direct) nodes */}
+                                                    {/* Ring 1 (Direct) nodes - Amber #E3A04A, size by risk */}
                                                     {(() => {
                                                         const maxNodes = 10;
                                                         const visible = directList.slice(0, maxNodes);
-                                                        const remaining = directList.length - maxNodes;
-                                                        const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
-                                                        const r = 110;
+                                                        const r = 95;
 
                                                         return (
                                                             <>
                                                                 {visible.map((node, i) => {
-                                                                    const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2;
+                                                                    const angle = (i / Math.max(1, visible.length)) * 2 * Math.PI - Math.PI / 2;
                                                                     const px = 270 + Math.cos(angle) * r;
-                                                                    const py = 270 + Math.sin(angle) * r;
-                                                                    const riskColor = getRiskColor(node.score);
+                                                                    const py = 235 + Math.sin(angle) * r;
                                                                     const nodeRadius = getRiskRadius(node.score, true);
                                                                     const isHovered = hoveredImpactNode?.path === node.path;
+                                                                    const displayName = node.name.length > 24 ? `${node.name.slice(0, 23)}…` : node.name;
 
-                                                                    // Offset label outside the node radially to avoid overlap
-                                                                    const labelOffset = nodeRadius + 14;
-                                                                    const lx = px + Math.cos(angle) * labelOffset;
-                                                                    const ly = py + Math.sin(angle) * labelOffset + 4;
-                                                                    const anchor = Math.cos(angle) > 0.25 ? 'start' : Math.cos(angle) < -0.25 ? 'end' : 'middle';
+                                                                    // Measure available space and flip label if it would leave canvas or overlap center
+                                                                    const cosA = Math.cos(angle);
+                                                                    const sinA = Math.sin(angle);
+                                                                    const labelOffset = nodeRadius + 8;
+                                                                    let lx = px + cosA * labelOffset;
+                                                                    let ly = py + sinA * labelOffset + 4;
+                                                                    let anchor: 'start' | 'end' | 'middle' = cosA > 0.2 ? 'start' : cosA < -0.2 ? 'end' : 'middle';
+
+                                                                    if (lx > 480) {
+                                                                        lx = px - labelOffset;
+                                                                        anchor = 'end';
+                                                                    } else if (lx < 60) {
+                                                                        lx = px + labelOffset;
+                                                                        anchor = 'start';
+                                                                    }
 
                                                                     return (
                                                                         <g
@@ -4835,13 +4840,12 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'direct', x: px, y: py })}
                                                                             className="cursor-pointer group"
                                                                         >
-                                                                            {/* Base connector line */}
                                                                             <line
                                                                                 x1="270"
-                                                                                y1="270"
+                                                                                y1="235"
                                                                                 x2={px}
                                                                                 y2={py}
-                                                                                stroke={riskColor}
+                                                                                stroke="#E3A04A"
                                                                                 strokeOpacity={isHovered ? "0.8" : "0.2"}
                                                                                 strokeWidth={isHovered ? "2" : "1"}
                                                                             />
@@ -4849,82 +4853,59 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                                 cx={px}
                                                                                 cy={py}
                                                                                 r={nodeRadius}
-                                                                                fill={riskColor}
+                                                                                fill="#E3A04A"
                                                                                 stroke="#07090A"
                                                                                 strokeWidth={isHovered ? "2.5" : "1.5"}
                                                                             />
                                                                             <text
                                                                                 x={lx}
                                                                                 y={ly}
-                                                                                fontSize="12"
+                                                                                fontSize="11"
                                                                                 fill={isHovered ? "#FFFFFF" : "#E8EAE6"}
                                                                                 textAnchor={anchor}
                                                                                 fontFamily="'IBM Plex Mono', monospace"
                                                                                 className="pointer-events-none transition-colors"
                                                                             >
-                                                                                {node.name}
+                                                                                {displayName}
                                                                             </text>
                                                                         </g>
                                                                     );
                                                                 })}
-
-                                                                {/* "+N more" pill placed outside the ring */}
-                                                                {remaining > 0 && (() => {
-                                                                    const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2;
-                                                                    const px = 270 + Math.cos(angle) * (r + 18);
-                                                                    const py = 270 + Math.sin(angle) * (r + 18);
-                                                                    return (
-                                                                        <g key="ring1-more">
-                                                                            <rect
-                                                                                x={px - 26}
-                                                                                y={py - 10}
-                                                                                width="52"
-                                                                                height="20"
-                                                                                rx="10"
-                                                                                fill="#10161A"
-                                                                                stroke="#E3A04A"
-                                                                                strokeWidth="1"
-                                                                            />
-                                                                            <text
-                                                                                x={px}
-                                                                                y={py + 4}
-                                                                                fontSize="10"
-                                                                                fill="#E3A04A"
-                                                                                textAnchor="middle"
-                                                                                fontFamily="'IBM Plex Mono', monospace"
-                                                                            >
-                                                                                +{remaining} more
-                                                                            </text>
-                                                                        </g>
-                                                                    );
-                                                                })()}
                                                             </>
                                                         );
                                                     })()}
 
-                                                    {/* Ring 2 (Indirect) nodes */}
+                                                    {/* Ring 2 (Indirect) nodes - Grey #8A918C, size by risk */}
                                                     {(() => {
                                                         const maxNodes = 12;
                                                         const visible = indirectList.slice(0, maxNodes);
-                                                        const remaining = indirectList.length - maxNodes;
-                                                        const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
-                                                        const r = 215;
+                                                        const r = 180;
 
                                                         return (
                                                             <>
                                                                 {visible.map((node, i) => {
-                                                                    const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2 + 0.22;
+                                                                    const angle = (i / Math.max(1, visible.length)) * 2 * Math.PI - Math.PI / 2 + 0.22;
                                                                     const px = 270 + Math.cos(angle) * r;
-                                                                    const py = 270 + Math.sin(angle) * r;
-                                                                    const riskColor = getRiskColor(node.score);
+                                                                    const py = 235 + Math.sin(angle) * r;
                                                                     const nodeRadius = getRiskRadius(node.score, false);
                                                                     const isHovered = hoveredImpactNode?.path === node.path;
+                                                                    const displayName = node.name.length > 24 ? `${node.name.slice(0, 23)}…` : node.name;
 
-                                                                    // Offset label outside the node radially to avoid overlap
-                                                                    const labelOffset = nodeRadius + 14;
-                                                                    const lx = px + Math.cos(angle) * labelOffset;
-                                                                    const ly = py + Math.sin(angle) * labelOffset + 4;
-                                                                    const anchor = Math.cos(angle) > 0.25 ? 'start' : Math.cos(angle) < -0.25 ? 'end' : 'middle';
+                                                                    // Measure available space and flip label if it would leave canvas
+                                                                    const cosA = Math.cos(angle);
+                                                                    const sinA = Math.sin(angle);
+                                                                    const labelOffset = nodeRadius + 8;
+                                                                    let lx = px + cosA * labelOffset;
+                                                                    let ly = py + sinA * labelOffset + 4;
+                                                                    let anchor: 'start' | 'end' | 'middle' = cosA > 0.2 ? 'start' : cosA < -0.2 ? 'end' : 'middle';
+
+                                                                    if (lx > 480) {
+                                                                        lx = px - labelOffset;
+                                                                        anchor = 'end';
+                                                                    } else if (lx < 60) {
+                                                                        lx = px + labelOffset;
+                                                                        anchor = 'start';
+                                                                    }
 
                                                                     return (
                                                                         <g
@@ -4933,13 +4914,12 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'indirect', x: px, y: py })}
                                                                             className="cursor-pointer group"
                                                                         >
-                                                                            {/* Base connector line */}
                                                                             <line
                                                                                 x1="270"
-                                                                                y1="270"
+                                                                                y1="235"
                                                                                 x2={px}
                                                                                 y2={py}
-                                                                                stroke={riskColor}
+                                                                                stroke="#8A918C"
                                                                                 strokeOpacity={isHovered ? "0.8" : "0.15"}
                                                                                 strokeWidth={isHovered ? "2" : "1"}
                                                                                 strokeDasharray="4 4"
@@ -4948,59 +4928,44 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                                 cx={px}
                                                                                 cy={py}
                                                                                 r={nodeRadius}
-                                                                                fill={riskColor}
+                                                                                fill="#8A918C"
                                                                                 stroke="#07090A"
                                                                                 strokeWidth={isHovered ? "2.5" : "1.5"}
                                                                             />
                                                                             <text
                                                                                 x={lx}
                                                                                 y={ly}
-                                                                                fontSize="12"
+                                                                                fontSize="11"
                                                                                 fill={isHovered ? "#FFFFFF" : "#8A918C"}
                                                                                 textAnchor={anchor}
                                                                                 fontFamily="'IBM Plex Mono', monospace"
                                                                                 className="pointer-events-none transition-colors"
                                                                             >
-                                                                                {node.name}
+                                                                                {displayName}
                                                                             </text>
                                                                         </g>
                                                                     );
                                                                 })}
-
-                                                                {/* "+N more" pill placed outside the ring */}
-                                                                {remaining > 0 && (() => {
-                                                                    const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2 + 0.22;
-                                                                    const px = 270 + Math.cos(angle) * (r + 18);
-                                                                    const py = 270 + Math.sin(angle) * (r + 18);
-                                                                    return (
-                                                                        <g key="ring2-more">
-                                                                            <rect
-                                                                                x={px - 26}
-                                                                                y={py - 10}
-                                                                                width="52"
-                                                                                height="20"
-                                                                                rx="10"
-                                                                                fill="#10161A"
-                                                                                stroke="#4FD1B5"
-                                                                                strokeWidth="1"
-                                                                            />
-                                                                            <text
-                                                                                x={px}
-                                                                                y={py + 4}
-                                                                                fontSize="10"
-                                                                                fill="#4FD1B5"
-                                                                                textAnchor="middle"
-                                                                                fontFamily="'IBM Plex Mono', monospace"
-                                                                            >
-                                                                                +{remaining} more
-                                                                            </text>
-                                                                        </g>
-                                                                    );
-                                                                })()}
                                                             </>
                                                         );
                                                     })()}
                                                 </svg>
+
+                                                {/* Bottom pill row for +N more placed outside the outer ring at the bottom */}
+                                                {(directList.length > 10 || indirectList.length > 12) && (
+                                                    <div className="w-full flex items-center justify-center gap-3 py-1.5 shrink-0">
+                                                        {directList.length > 10 && (
+                                                            <div className="px-3 py-1 rounded-full bg-[#10161A] border border-[#E3A04A]/40 text-[#E3A04A] font-mono text-[11px] shadow-sm">
+                                                                +{directList.length - 10} more direct
+                                                            </div>
+                                                        )}
+                                                        {indirectList.length > 12 && (
+                                                            <div className="px-3 py-1 rounded-full bg-[#10161A] border border-[#8A918C]/40 text-[#8A918C] font-mono text-[11px] shadow-sm">
+                                                                +{indirectList.length - 12} more indirect
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
 
                                                 {/* Tooltip on node hover */}
                                                 {hoveredImpactNode && (
@@ -5008,7 +4973,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         <div className="flex items-center gap-2 mb-1">
                                                             <span
                                                                 className="w-2.5 h-2.5 rounded-full shrink-0"
-                                                                style={{ backgroundColor: getRiskColor(hoveredImpactNode.score) }}
+                                                                style={{ backgroundColor: hoveredImpactNode.type === 'direct' ? '#E3A04A' : '#8A918C' }}
                                                             />
                                                             <span className="font-mono text-xs font-semibold text-[#E8EAE6] truncate">
                                                                 {hoveredImpactNode.name}
@@ -5029,11 +4994,11 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 )}
                                             </div>
 
-                                            {/* Right (about 40%): ranked list "Files that could break" + "Tests to run" + "Why this score" */}
+                                            {/* Right (about 40%): ranked list "Files that could break" + Collapsible footer */}
                                             <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
                                                 <div className="flex-1 flex flex-col min-h-0">
-                                                    {/* Header: Files that could break */}
-                                                    <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] shrink-0">
+                                                    {/* Sticky Header: Files that could break */}
+                                                    <div className="sticky top-0 z-10 flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] bg-[#07090A]/95 backdrop-blur-sm shrink-0">
                                                         <div>
                                                             <h3 className="text-xs font-semibold text-[#8A918C]">Files that could break</h3>
                                                             <div className="text-[11px] text-[#8A918C] mt-0.5">
@@ -5048,8 +5013,8 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         </div>
                                                     </div>
 
-                                                    {/* Scrollable Ranked list */}
-                                                    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
+                                                    {/* Scrollable Ranked list (shows at least 6 rows) */}
+                                                    <div className="flex-1 min-h-[260px] overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
                                                         {rankedAll.length === 0 ? (
                                                             <div className="text-xs text-[#8A918C] py-4 text-center">
                                                                 No dependents found.
@@ -5067,7 +5032,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                         type: item.type,
                                                                         hops: item.hops,
                                                                         x: 270,
-                                                                        y: 270
+                                                                        y: 235
                                                                     })}
                                                                     onMouseLeave={() => setHoveredImpactNode(null)}
                                                                     className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/15 transition-colors cursor-pointer group text-xs"
@@ -5080,7 +5045,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                     {/* File name & folder */}
                                                                     <div className="min-w-0 flex-1 mr-2">
                                                                         <div className="flex items-center gap-1.5">
-                                                                            <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate">
+                                                                            <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate" title={item.path}>
                                                                                 {item.name}
                                                                             </span>
                                                                             {/* Direct or 2 hops tag */}
@@ -5094,7 +5059,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             </span>
                                                                         </div>
                                                                         {item.folder && (
-                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
+                                                                            <span className="text-[11px] text-[#8A918C] truncate block" title={item.folder}>
                                                                                 {item.folder}
                                                                             </span>
                                                                         )}
@@ -5107,7 +5072,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                                 className="h-full rounded-full"
                                                                                 style={{
                                                                                     width: `${item.score}%`,
-                                                                                    backgroundColor: getRiskColor(item.score)
+                                                                                    backgroundColor: item.type === 'direct' ? '#E3A04A' : '#8A918C'
                                                                                 }}
                                                                             />
                                                                         </div>
@@ -5121,68 +5086,63 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     </div>
                                                 </div>
 
-                                                {/* Tests to run block */}
-                                                <div className="pt-3 border-t border-white/[0.08] mt-3 shrink-0">
-                                                    <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
-                                                    {tests.length === 0 ? (
-                                                        <div className="p-2.5 rounded-lg border border-[#E3A04A]/25 bg-[#E3A04A]/5 text-xs text-[#E3A04A] flex flex-col gap-1">
-                                                            <div className="flex items-center gap-1.5 font-medium">
-                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0 inline-block" />
-                                                                <span>No test covers this file</span>
-                                                            </div>
-                                                            <div className="text-[11px] text-[#8A918C]">
-                                                                Add a unit test covering this module before modifying to prevent regressions.
-                                                            </div>
+                                                {/* Collapsible Footer: Tests to run & Why this score */}
+                                                <div className="pt-2.5 border-t border-white/[0.08] mt-2 shrink-0 space-y-1.5">
+                                                    <details className="group/tests text-xs rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                                                        <summary className="p-2 cursor-pointer font-medium text-[#8A918C] flex items-center justify-between select-none hover:text-[#E8EAE6]">
+                                                            <span>Tests to run ({testCount})</span>
+                                                            <span className="text-[10px] font-mono opacity-60 group-open/tests:rotate-180 transition-transform">▼</span>
+                                                        </summary>
+                                                        <div className="p-2.5 pt-0">
+                                                            {tests.length === 0 ? (
+                                                                <div className="p-2 rounded border border-[#E3A04A]/25 bg-[#E3A04A]/5 text-[11px] text-[#E3A04A]">
+                                                                    No test covers this file. Add a unit test to prevent regressions.
+                                                                </div>
+                                                            ) : (
+                                                                <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-custom">
+                                                                    {tests.map((testPath, i) => (
+                                                                        <button
+                                                                            key={i}
+                                                                            onClick={() => selectFile(testPath)}
+                                                                            className="w-full text-left font-mono text-[11px] text-[#E8EAE6] hover:text-[#4FD1B5] p-1 rounded glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
+                                                                            title={testPath}
+                                                                        >
+                                                                            {testPath.split('/').pop()}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
                                                         </div>
-                                                    ) : (
-                                                        <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-custom">
-                                                            {tests.map((testPath, i) => (
-                                                                <button
-                                                                    key={i}
-                                                                    onClick={() => selectFile(testPath)}
-                                                                    className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
-                                                                    title={testPath}
-                                                                >
-                                                                    {testPath.split('/').pop()}
-                                                                </button>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
+                                                    </details>
 
-                                                {/* Why this score (3-4 plain lines with formula behind info tooltip) */}
-                                                <div className="pt-3 border-t border-white/[0.08] mt-3 shrink-0">
-                                                    <div className="flex items-center justify-between mb-2">
-                                                        <span className="text-[11px] font-medium text-[#8A918C]">Why this score</span>
-                                                        <span
-                                                            className="text-[10px] text-[#8A918C] px-1.5 py-0.5 rounded border border-white/10 hover:border-[#4FD1B5]/40 hover:text-[#4FD1B5] cursor-help transition-colors"
-                                                            title="Formula: min(100, 4 × direct + 2 × transitive + 0.25 × churn% + tests)"
-                                                        >
-                                                            Formula ?
-                                                        </span>
-                                                    </div>
-                                                    <div className="space-y-1 text-xs text-[#8A918C]">
-                                                        <div className="flex items-center justify-between">
-                                                            <span>Direct importers</span>
-                                                            <span className="font-mono text-[#E8EAE6]">{directCount} file{directCount === 1 ? '' : 's'}</span>
+                                                    <details className="group/why text-xs rounded-lg border border-white/[0.06] bg-white/[0.02]">
+                                                        <summary className="p-2 cursor-pointer font-medium text-[#8A918C] flex items-center justify-between select-none hover:text-[#E8EAE6]">
+                                                            <span>Why this score</span>
+                                                            <span className="text-[10px] font-mono opacity-60 group-open/why:rotate-180 transition-transform">▼</span>
+                                                        </summary>
+                                                        <div className="p-2.5 pt-0 space-y-1 text-[11px] text-[#8A918C]">
+                                                            <div className="flex items-center justify-between">
+                                                                <span>Direct importers</span>
+                                                                <span className="font-mono text-[#E8EAE6]">{directCount} file{directCount === 1 ? '' : 's'}</span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between">
+                                                                <span>Indirect reach</span>
+                                                                <span className="font-mono text-[#E8EAE6]">{indirectCount} file{indirectCount === 1 ? '' : 's'}</span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between">
+                                                                <span>Test coverage</span>
+                                                                <span className="font-mono text-[#E8EAE6]">
+                                                                    {testCount === 0 ? "No test found" : `${testCount} tests found`}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between">
+                                                                <span>Commit churn</span>
+                                                                <span className="font-mono text-[#E8EAE6]">
+                                                                    {fileRisk?.churnPercent ?? 0}%
+                                                                </span>
+                                                            </div>
                                                         </div>
-                                                        <div className="flex items-center justify-between">
-                                                            <span>Indirect reach</span>
-                                                            <span className="font-mono text-[#E8EAE6]">{indirectCount} file{indirectCount === 1 ? '' : 's'}</span>
-                                                        </div>
-                                                        <div className="flex items-center justify-between">
-                                                            <span>Test coverage</span>
-                                                            <span className="font-mono text-[#E8EAE6]">
-                                                                {testCount === 0 ? "No test found" : `${testCount} tests found`}
-                                                            </span>
-                                                        </div>
-                                                        <div className="flex items-center justify-between">
-                                                            <span>Commit churn</span>
-                                                            <span className="font-mono text-[#E8EAE6]">
-                                                                {fileRisk?.churnPercent ?? 0}%
-                                                            </span>
-                                                        </div>
-                                                    </div>
+                                                    </details>
                                                 </div>
                                             </div>
                                         </div>

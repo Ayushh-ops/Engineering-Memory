@@ -492,74 +492,78 @@ function FileInspector({ className }: { className?: string }) {
             {/* Tab 1: Overview */}
             {(inspectorTab === 'Overview' || (activeTab === 'Impact' && inspectorTab === 'Impact')) && (
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                    {/* Big risk number in amber with "/ 100 risk" */}
-                    <div>
-                        <div className="flex items-baseline gap-1.5">
-                            <span className="text-3xl font-bold font-mono text-[#E3A04A]">
-                                {fileRisk ? fileRisk.score : 0}
-                            </span>
-                            <span className="text-xs font-mono text-[#8A918C]">
-                                / 100 risk
-                            </span>
-                        </div>
-                        {reasonSentence && (
-                            <p className="text-[11px] text-[#8A918C] leading-relaxed mt-1.5 font-sans">
-                                {reasonSentence}
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Three ruled rows: Imports, Imported by, Commits */}
-                    <div className="divide-y divide-white/[0.08] border-y border-white/[0.08]">
-                        <div className="flex items-center justify-between py-2 text-xs">
-                            <span className="text-[#8A918C]">Imports</span>
-                            <span className="font-mono text-[#E8EAE6]">{connected?.imports?.length || 0}</span>
-                        </div>
-                        <div className="flex items-center justify-between py-2 text-xs">
-                            <span className="text-[#8A918C]">Imported by</span>
-                            <span className="font-mono text-[#E8EAE6]">{connected?.importedBy?.length || 0}</span>
-                        </div>
-                        <div className="flex items-center justify-between py-2 text-xs">
-                            <span className="text-[#8A918C]">Commits</span>
-                            <span className="font-mono text-[#E8EAE6]">{fileCommitsCount}</span>
-                        </div>
-                    </div>
-
-                    {/* "Imported by" list showing 4 rows (file name mono + muted folder) with "View all 24" link */}
-                    {(connected?.importedBy?.length || 0) > 0 && (
-                        <div className="space-y-2">
-                            <div className="flex items-center justify-between text-xs">
-                                <span className="text-[#8A918C]">Imported by</span>
-                                <button
-                                    onClick={() => setInspectorTab('Dependencies')}
-                                    className="text-[11px] text-[#4FD1B5] hover:underline cursor-pointer"
-                                >
-                                    View all {connected?.importedBy?.length || 0}
-                                </button>
+                    {/* When activeTab is Impact, hide the duplicated risk number and stats shown on the main page */}
+                    {activeTab !== 'Impact' && (
+                        <>
+                            <div>
+                                <div className="flex items-baseline gap-1.5">
+                                    <span className="text-3xl font-bold font-mono text-[#E3A04A]">
+                                        {fileRisk ? fileRisk.score : 0}
+                                    </span>
+                                    <span className="text-xs font-mono text-[#8A918C]">
+                                        / 100 risk
+                                    </span>
+                                </div>
+                                {reasonSentence && (
+                                    <p className="text-[11px] text-[#8A918C] leading-relaxed mt-1.5 font-sans">
+                                        {reasonSentence}
+                                    </p>
+                                )}
                             </div>
-                            <div className="space-y-1">
-                                {(connected?.importedBy || []).slice(0, 4).map(f => {
-                                    const fileName = f?.split('/').pop() || f;
-                                    const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
-                                    return (
-                                        <div
-                                            key={f}
-                                            onClick={() => selectFile(f)}
-                                            className="p-2 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.05] hover:border-white/15 cursor-pointer transition-colors"
+
+                            {/* Three ruled rows: Imports, Imported by, Commits */}
+                            <div className="divide-y divide-white/[0.08] border-y border-white/[0.08]">
+                                <div className="flex items-center justify-between py-2 text-xs">
+                                    <span className="text-[#8A918C]">Imports</span>
+                                    <span className="font-mono text-[#E8EAE6]">{connected?.imports?.length || 0}</span>
+                                </div>
+                                <div className="flex items-center justify-between py-2 text-xs">
+                                    <span className="text-[#8A918C]">Imported by</span>
+                                    <span className="font-mono text-[#E8EAE6]">{connected?.importedBy?.length || 0}</span>
+                                </div>
+                                <div className="flex items-center justify-between py-2 text-xs">
+                                    <span className="text-[#8A918C]">Commits</span>
+                                    <span className="font-mono text-[#E8EAE6]">{fileCommitsCount}</span>
+                                </div>
+                            </div>
+
+                            {/* "Imported by" list showing 4 rows (file name mono + muted folder) with "View all 24" link */}
+                            {(connected?.importedBy?.length || 0) > 0 && (
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between text-xs">
+                                        <span className="text-[#8A918C]">Imported by</span>
+                                        <button
+                                            onClick={() => setInspectorTab('Dependencies')}
+                                            className="text-[11px] text-[#4FD1B5] hover:underline cursor-pointer"
                                         >
-                                            <div className="font-mono text-xs text-[#E8EAE6] truncate" title={f}>
-                                                {fileName}
-                                            </div>
-                                            {folder && (
-                                                <div className="text-[11px] text-[#8A918C] truncate" title={folder}>
-                                                    {folder}
+                                            View all {connected?.importedBy?.length || 0}
+                                        </button>
+                                    </div>
+                                    <div className="space-y-1">
+                                        {(connected?.importedBy || []).slice(0, 4).map(f => {
+                                            const fileName = f?.split('/').pop() || f;
+                                            const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+                                            return (
+                                                <div
+                                                    key={f}
+                                                    onClick={() => selectFile(f)}
+                                                    className="p-2 rounded-lg bg-white/[0.02] border border-white/[0.06] hover:bg-white/[0.05] hover:border-white/15 cursor-pointer transition-colors"
+                                                >
+                                                    <div className="font-mono text-xs text-[#E8EAE6] truncate" title={f}>
+                                                        {fileName}
+                                                    </div>
+                                                    {folder && (
+                                                        <div className="text-[11px] text-[#8A918C] truncate" title={folder}>
+                                                            {folder}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            )}
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </>
                     )}
 
                     {/* Owners (name, share bar) max 3. Hide any section with 0 items instead of showing "None". */}
