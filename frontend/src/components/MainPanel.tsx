@@ -1201,6 +1201,159 @@ function OverviewGraph2D({
     );
 }
 
+interface Hub3DNodePos {
+    x: number;
+    y: number;
+    z: number;
+    role: 'center' | 'imports' | 'importedBy' | 'indirect' | 'calls' | 'default';
+}
+
+function fibonacciCap(index: number, count: number, radius: number, direction: 1 | -1, maxAngleDeg = 60): { x: number; y: number; z: number } {
+    if (count <= 1) {
+        return { x: direction * radius, y: 0, z: 0 };
+    }
+    const thetaMax = (maxAngleDeg * Math.PI) / 180;
+    const cosThetaMax = Math.cos(thetaMax);
+    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+
+    const t = (index + 0.5) / count;
+    const cosTheta = 1 - t * (1 - cosThetaMax);
+    const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+    const phi = index * goldenAngle;
+
+    const x = direction * radius * cosTheta;
+    const y = radius * sinTheta * Math.cos(phi);
+    const z = radius * sinTheta * Math.sin(phi);
+
+    return { x, y, z };
+}
+
+function compute3DHubLayout(
+    nodes: any[],
+    edges: any[],
+    selectedNodeId: string | null
+): Map<string, Hub3DNodePos> {
+    const positions = new Map<string, Hub3DNodePos>();
+    if (!nodes || nodes.length === 0) return positions;
+
+    if (!selectedNodeId) {
+        const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+        const count = sorted.length;
+        const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+        const radius = 140;
+
+        sorted.forEach((node, i) => {
+            const y = count <= 1 ? 0 : 1 - (i / (count - 1)) * 2;
+            const rCircle = Math.sqrt(Math.max(0, 1 - y * y));
+            const theta = i * goldenAngle;
+            positions.set(node.id, {
+                x: radius * rCircle * Math.cos(theta),
+                y: radius * y,
+                z: radius * rCircle * Math.sin(theta),
+                role: 'default'
+            });
+        });
+        return positions;
+    }
+
+    positions.set(selectedNodeId, { x: 0, y: 0, z: 0, role: 'center' });
+
+    const directImports: string[] = [];
+    const directImportedBy: string[] = [];
+    const callNodes: string[] = [];
+    const indirectNodes: string[] = [];
+    const directNodeIds = new Set<string>([selectedNodeId]);
+
+    for (const edge of edges) {
+        const from = typeof edge.from === 'object' ? edge.from.id : edge.from;
+        const to = typeof edge.to === 'object' ? edge.to.id : edge.to;
+        if (edge.type === 'calls') {
+            if (from === selectedNodeId && to !== selectedNodeId) {
+                callNodes.push(to);
+                directNodeIds.add(to);
+            } else if (to === selectedNodeId && from !== selectedNodeId) {
+                callNodes.push(from);
+                directNodeIds.add(from);
+            }
+        } else {
+            if (from === selectedNodeId && to !== selectedNodeId) {
+                directImports.push(to);
+                directNodeIds.add(to);
+            } else if (to === selectedNodeId && from !== selectedNodeId) {
+                directImportedBy.push(from);
+                directNodeIds.add(from);
+            }
+        }
+    }
+
+    for (const node of nodes) {
+        if (!directNodeIds.has(node.id)) {
+            indirectNodes.push(node.id);
+        }
+    }
+
+    const uniqueImports = Array.from(new Set(directImports)).sort();
+    const uniqueImportedBy = Array.from(new Set(directImportedBy)).sort();
+    const uniqueCalls = Array.from(new Set(callNodes)).sort();
+    const uniqueIndirect = Array.from(new Set(indirectNodes)).sort();
+
+    uniqueImports.forEach((id, i) => {
+        const p = fibonacciCap(i, uniqueImports.length, 140, -1, 60);
+        positions.set(id, { ...p, role: 'imports' });
+    });
+
+    uniqueImportedBy.forEach((id, i) => {
+        const p = fibonacciCap(i, uniqueImportedBy.length, 140, 1, 60);
+        positions.set(id, { ...p, role: 'importedBy' });
+    });
+
+    uniqueCalls.forEach((id, i) => {
+        const p = fibonacciCap(i, uniqueCalls.length, 140, -1, 45);
+        positions.set(id, { ...p, role: 'calls' });
+    });
+
+    const indirectToNegativeX: string[] = [];
+    const indirectToPositiveX: string[] = [];
+    uniqueIndirect.forEach((id) => {
+        let negCount = 0;
+        let posCount = 0;
+        for (const e of edges) {
+            const f = typeof e.from === 'object' ? e.from.id : e.from;
+            const t = typeof e.to === 'object' ? e.to.id : e.to;
+            if (f === id) {
+                if (uniqueImports.includes(t)) negCount++;
+                if (uniqueImportedBy.includes(t)) posCount++;
+            } else if (t === id) {
+                if (uniqueImports.includes(f)) negCount++;
+                if (uniqueImportedBy.includes(f)) posCount++;
+            }
+        }
+        if (negCount > posCount) {
+            indirectToNegativeX.push(id);
+        } else if (posCount > negCount) {
+            indirectToPositiveX.push(id);
+        } else {
+            if (indirectToNegativeX.length <= indirectToPositiveX.length) {
+                indirectToNegativeX.push(id);
+            } else {
+                indirectToPositiveX.push(id);
+            }
+        }
+    });
+
+    indirectToNegativeX.forEach((id, i) => {
+        const p = fibonacciCap(i, indirectToNegativeX.length, 260, -1, 65);
+        positions.set(id, { ...p, role: 'indirect' });
+    });
+
+    indirectToPositiveX.forEach((id, i) => {
+        const p = fibonacciCap(i, indirectToPositiveX.length, 260, 1, 65);
+        positions.set(id, { ...p, role: 'indirect' });
+    });
+
+    return positions;
+}
+
 function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const {
         selectedFile,
@@ -1225,6 +1378,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const containerRef = useRef<HTMLDivElement>(null);
     const fgInstanceRef = useRef<any>(null);
     const fitCameraToVisibleNodesRef = useRef<any>(null);
+    const [hovered3DNodeId, setHovered3DNodeId] = useState<string | null>(null);
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
     const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
 
@@ -1668,7 +1822,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         let centerY = (minY + maxY) / 2;
         let centerZ = (minZ + maxZ) / 2;
 
-        // When a node is selected, center the camera and viewport directly on it
         if (selectedFile) {
             const selectedNodeObj = targetNodes.find((n: any) =>
                 n.path === selectedFile ||
@@ -1691,7 +1844,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const nodeRadiusWorld = 6;
             distance = (nodeRadiusWorld * domHeight) / (16 * Math.tan(fovRad / 2));
         } else {
-            // Compute bounding sphere radius from center
             let maxDistSq = 0;
             for (const n of targetNodes) {
                 if (typeof n.x === 'number' && typeof n.y === 'number' && typeof n.z === 'number') {
@@ -1700,7 +1852,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 }
             }
             const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 4, 15);
-            // Clamp camera distance to a minimum so the bounding sphere fills ~55% (fillFraction) of canvas height:
             const minDistanceForSphere = sphereRadius / (fillFraction * Math.tan(fovRad / 2));
 
             const sizeX = Math.max(maxX - minX, 20);
@@ -1713,9 +1864,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
 
         const currentPos = camera.position;
-        const dir = new THREE.Vector3().subVectors(currentPos, new THREE.Vector3(centerX, centerY, centerZ)).normalize();
-        if (dir.lengthSq() < 0.001) {
-            dir.set(0, 0, 1);
+        let dir = new THREE.Vector3().subVectors(currentPos, new THREE.Vector3(centerX, centerY, centerZ)).normalize();
+        if (dir.lengthSq() < 0.001 || (Math.abs(dir.x) < 0.05 && Math.abs(dir.y) < 0.05 && Math.abs(dir.z) < 0.05)) {
+            dir = new THREE.Vector3(0, 0.08, 1).normalize();
         }
 
         const targetPos = {
@@ -1736,22 +1887,42 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const fgRef = useCallback((fg: any) => {
         if (fg) {
             fgInstanceRef.current = fg;
-            fg.d3Force('charge').strength(-1400);
-            fg.d3Force('link').distance(260);
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fg.controls().autoRotate = !prefersReducedMotion;
-            fg.controls().autoRotateSpeed = 0.5;
-            fg.controls().addEventListener('start', () => { fg.controls().autoRotate = false; });
+            try {
+                if (typeof fg.d3Force === 'function') {
+                    fg.d3Force('charge', null);
+                    fg.d3Force('link', null);
+                    fg.d3Force('center', null);
+                }
+            } catch {
+                // ignore
+            }
+            if (fg.controls && typeof fg.controls === 'function') {
+                const controls = fg.controls();
+                if (controls) {
+                    controls.autoRotate = false;
+                }
+            }
             setTimeout(() => {
                 fitCameraToVisibleNodes(graphData.nodes, 0.55);
             }, 300);
         }
     }, [graphData.nodes, fitCameraToVisibleNodes]);
 
-    // Keep 3D graphData in sync with displayGraph - only visible nodes, no hidden nodes
+    // Keep 3D graphData in sync with displayGraph - fixed deterministic layout
     useEffect(() => {
         const visible3DNodes = displayGraph.nodes;
         const visibleIdSet = new Set(visible3DNodes.map(n => n.id));
+
+        let selectedNodeId: string | null = null;
+        if (selectedFile) {
+            const found = visible3DNodes.find((n: any) => {
+                const nPath = n.path || (n.type === 'file' ? n.id : undefined);
+                return nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
+            });
+            if (found) selectedNodeId = found.id;
+        }
+
+        const layoutPositions = compute3DHubLayout(visible3DNodes, displayGraph.edges, selectedNodeId);
 
         const nodeConnMap = new Map<string, number>();
         displayGraph.edges.forEach((e: any) => {
@@ -1762,20 +1933,24 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         });
 
         const nodes = visible3DNodes.map((n: any) => {
+            const pos = layoutPositions.get(n.id) || { x: 0, y: 0, z: 0, role: 'default' };
+            const role = pos.role;
             let color = '#8A918C';
-            let val = 1;
-            if (n.type === 'repository') {
-                color = '#E8EAE6';
-                val = 3;
-            } else if (n.type === 'file') {
+            if (role === 'center') {
+                color = '#FAFAFA';
+            } else if (role === 'imports') {
                 color = '#4FD1B5';
-                val = 4;
-            } else if (n.type === 'class') {
+            } else if (role === 'importedBy') {
                 color = '#E3A04A';
-                val = 2;
-            } else if (n.type === 'function' || n.type === 'method') {
+            } else if (role === 'calls') {
+                color = '#6F8F9A';
+            } else if (role === 'indirect') {
                 color = '#8A918C';
-                val = 1;
+            } else {
+                if (n.type === 'repository') color = '#E8EAE6';
+                else if (n.type === 'file') color = '#4FD1B5';
+                else if (n.type === 'class') color = '#E3A04A';
+                else color = '#8A918C';
             }
 
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
@@ -1787,8 +1962,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 name: baseName,
                 path: nodePath,
                 color,
-                val,
+                role,
                 type: n.type,
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                fx: pos.x,
+                fy: pos.y,
+                fz: pos.z,
                 connections: nodeConnMap.get(n.id) || 0,
                 neighbors: new Set<string>(),
                 links: [] as any[]
@@ -1800,19 +1981,53 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         const links = displayGraph.edges
             .filter((e: any) => visibleIdSet.has(e.from) && visibleIdSet.has(e.to))
             .map((e: any) => {
-                const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+                const edgeId = e.id || (e.from + '->' + e.to + ':' + e.type);
                 let color = '#8A918C';
-                if (neighborInfo.hasSelection) {
-                    if (neighborInfo.incomingEdgeIds.has(edgeId)) color = '#E3A04A';
-                    else if (neighborInfo.outgoingEdgeIds.has(edgeId)) color = '#4FD1B5';
-                    else if (e.type === 'contains') color = '#8A918C';
-                    else color = '#4FD1B5';
+                let edgeRole = 'indirect';
+
+                if (selectedNodeId) {
+                    if (e.type === 'calls') {
+                        color = '#6F8F9A';
+                        edgeRole = 'calls';
+                    } else if (e.from === selectedNodeId) {
+                        color = '#4FD1B5';
+                        edgeRole = 'imports';
+                    } else if (e.to === selectedNodeId) {
+                        color = '#E3A04A';
+                        edgeRole = 'importedBy';
+                    } else {
+                        color = '#8A918C';
+                        edgeRole = 'indirect';
+                    }
                 } else {
-                    if (e.type === 'contains') color = '#8A918C';
-                    else if (e.type === 'imports' || e.type === 'calls') color = '#4FD1B5';
+                    if (e.type === 'calls') color = '#6F8F9A';
+                    else if (e.type === 'imports') color = '#4FD1B5';
+                    else color = '#8A918C';
                 }
 
-                const link = { source: e.from, target: e.to, type: e.type, color, id: edgeId };
+                let linkSource = e.from;
+                let linkTarget = e.to;
+                if (selectedNodeId) {
+                    if (edgeRole === 'imports') {
+                        linkSource = selectedNodeId;
+                        linkTarget = e.to === selectedNodeId ? e.from : e.to;
+                    } else if (edgeRole === 'importedBy') {
+                        linkSource = e.from === selectedNodeId ? e.to : e.from;
+                        linkTarget = selectedNodeId;
+                    }
+                }
+
+                const link = {
+                    source: linkSource,
+                    target: linkTarget,
+                    originalFrom: e.from,
+                    originalTo: e.to,
+                    type: e.type,
+                    color,
+                    edgeRole,
+                    id: edgeId
+                };
+
                 if (nodeMap.has(e.from) && nodeMap.has(e.to)) {
                     nodeMap.get(e.from)!.neighbors.add(e.to);
                     nodeMap.get(e.to)!.neighbors.add(e.from);
@@ -1823,7 +2038,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             });
 
         setGraphData({ nodes, links });
-    }, [displayGraph, neighborInfo, hoveredGraphNode]);
+    }, [displayGraph, selectedFile]);
 
     // Precompute top 8 highest-degree nodes for 3D label display
     const top8DegreeNodeIds = useMemo(() => {
@@ -1835,18 +2050,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     // Center 3D camera on visible nodes bounding box (~55% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
-        fgInstanceRef.current.d3Force('charge')?.strength(-1400);
-        fgInstanceRef.current.d3Force('link')?.distance(260);
         const timer = setTimeout(() => {
             fitCameraToVisibleNodes(graphData.nodes, 0.55);
-        }, 200);
+        }, 150);
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
 
-    // Keep 3D sprite labels constant screen size (fixed 12px font) and hide overlapping ones (priority: selected > hovered > neighbors)
+    // Keep 3D sprite labels constant screen size (fixed 12px font) and hide overlapping ones (check every ~200ms)
     useEffect(() => {
         if (viewMode !== '3D') return;
-        let animId: number;
         const tmpVec = new THREE.Vector3();
 
         const updateSprites = () => {
@@ -1882,7 +2094,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                     const drawn: Array<{ x: number; y: number }> = [];
                     for (const item of screenPositions) {
-                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 75 && Math.abs(d.y - item.y) < 22);
+                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 80 && Math.abs(d.y - item.y) < 24);
                         if (overlaps) {
                             item.sprite.visible = false;
                         } else {
@@ -1892,11 +2104,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     }
                 }
             }
-            animId = requestAnimationFrame(updateSprites);
         };
 
-        animId = requestAnimationFrame(updateSprites);
-        return () => cancelAnimationFrame(animId);
+        updateSprites();
+        const intervalId = setInterval(updateSprites, 200);
+        return () => clearInterval(intervalId);
     }, [viewMode, dimensions]);
 
     return (
@@ -2095,99 +2307,147 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     graphData={graphData}
                     width={dimensions.width > 0 ? dimensions.width : undefined}
                     height={dimensions.height > 0 ? dimensions.height : undefined}
-                    nodeRelSize={4}
-                    nodeVal={(node: any) => node.val}
+                    enableNodeDrag={false}
+                    cooldownTicks={0}
+                    warmupTicks={0}
                     linkDirectionalArrowLength={6}
                     linkDirectionalArrowRelPos={1}
-                    linkDirectionalArrowColor={(link: any) => link.color}
-                    linkColor={(link: any) => link.color}
-                    linkWidth={1}
-                    linkOpacity={0.4}
+                    linkDirectionalArrowColor={(link: any) => {
+                        if (hovered3DNodeId) {
+                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
+                            return isConnected ? (link.color || '#E8EAE6') : 'rgba(138, 145, 140, 0.15)';
+                        }
+                        return link.color || '#8A918C';
+                    }}
+                    linkColor={(link: any) => {
+                        if (hovered3DNodeId) {
+                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
+                            return isConnected ? (link.color || '#E8EAE6') : 'rgba(138, 145, 140, 0.15)';
+                        }
+                        return link.color || '#8A918C';
+                    }}
+                    linkWidth={(link: any) => {
+                        if (hovered3DNodeId) {
+                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
+                            return isConnected ? 2.2 : 1.2;
+                        }
+                        return 1.2;
+                    }}
+                    linkOpacity={hovered3DNodeId ? 0.95 : 0.55}
                     linkDirectionalParticles={0}
                     backgroundColor="#07090A"
+                    onNodeHover={(node: any) => {
+                        setHovered3DNodeId(node ? node.id : null);
+                    }}
+                    nodeLabel={(node: any) => {
+                        if (!node) return '';
+                        const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
+                        const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
+                        const nodeName = rawName.includes('/') ? rawName.split('/').pop() : rawName;
+                        if (!selectedFile) return nodeName;
+                        const selName = selectedFile.split('/').pop() || selectedFile;
+                        if (node.role === 'imports') {
+                            return `${selName} imports ${nodeName}`;
+                        } else if (node.role === 'importedBy') {
+                            return `${nodeName} imports ${selName}`;
+                        } else if (node.role === 'calls') {
+                            return `${nodeName} calls ${selName}`;
+                        } else if (node.role === 'center') {
+                            return nodeName;
+                        } else {
+                            return `${nodeName} (indirect)`;
+                        }
+                    }}
                     onNodeClick={handleNodeClick3D}
                     onBackgroundClick={() => handleSelectNode(null)}
                     onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.55)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
-                        const isSelected = neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
-                        const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
-                        const isTop8Degree = top8DegreeNodeIds.has(node.id);
-                        const isRepo = node.type === 'repository';
+                        const isSelected = node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
+                        const isHovered = hovered3DNodeId === node.id;
+                        const isIndirect = node.role === 'indirect';
+                        const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
 
-                        const baseColor = isRepo ? '#E8EAE6' : node.type === 'file' ? '#4FD1B5' : node.type === 'class' ? '#E3A04A' : '#8A918C';
+                        const radius = isSelected ? 14 : isDirect ? 8 : 5;
 
-                        const connCount = Number(node.connections || 0);
-                        // Bigger node spheres (radius by degree, min 6px)
-                        const baseRadius = Math.max(6, Math.min(18, 6 + Math.sqrt(connCount) * 2));
-                        const radius = isSelected ? Math.max(20, baseRadius * 1.5) : baseRadius;
+                        let baseColor = node.color || '#8A918C';
+                        if (node.role === 'imports') baseColor = '#4FD1B5';
+                        else if (node.role === 'importedBy') baseColor = '#E3A04A';
+                        else if (node.role === 'indirect') baseColor = '#8A918C';
+                        else if (node.role === 'calls') baseColor = '#6F8F9A';
+                        else if (node.role === 'center') baseColor = '#FAFAFA';
 
-                        // Labels only for selected, hovered and the 8 highest-degree nodes
-                        const shouldShowLabel = isSelected || isHovered || isTop8Degree;
-
-                        if (!shouldShowLabel) {
-                            const dotGeometry = new THREE.SphereGeometry(radius, 16, 16);
-                            const dotMaterial = new THREE.MeshLambertMaterial({
-                                color: baseColor,
-                                opacity: 0.9,
-                                transparent: true
-                            });
-                            return new THREE.Mesh(dotGeometry, dotMaterial);
-                        }
-
-                        // Selected, hovered, or eligible high-degree node: node sphere + pill label
-                        const group = new THREE.Group();
-
-                        if (isRepo) {
-                            const ringGeo = new THREE.TorusGeometry(radius, radius * 0.25, 16, 32);
-                            const ringMat = new THREE.MeshBasicMaterial({ color: 0xE8EAE6 });
-                            group.add(new THREE.Mesh(ringGeo, ringMat));
-                        } else {
-                            // Selected file: brightest node (white fill, teal glow)
-                            const material = new THREE.MeshLambertMaterial({
-                                color: isSelected ? 0xFFFFFF : baseColor,
-                                emissive: isSelected ? 0x4FD1B5 : (isHovered ? baseColor : 0x000000),
-                                emissiveIntensity: isSelected ? 0.8 : (isHovered ? 0.4 : 0.1)
-                            });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 18, 18), material));
-
-                            // Highlight selected node with prominent wireframe halo
-                            if (isSelected) {
-                                const haloGeo = new THREE.SphereGeometry(radius * 1.3, 16, 16);
-                                const haloMat = new THREE.MeshBasicMaterial({
-                                    color: 0x4FD1B5,
-                                    wireframe: true,
-                                    transparent: true,
-                                    opacity: 0.6
-                                });
-                                group.add(new THREE.Mesh(haloGeo, haloMat));
+                        let opacity = 0.95;
+                        if (hovered3DNodeId) {
+                            const isConnectedToHovered = isHovered || (node.links && node.links.some((l: any) => l.source === hovered3DNodeId || l.target === hovered3DNodeId || l.source?.id === hovered3DNodeId || l.target?.id === hovered3DNodeId));
+                            if (!isConnectedToHovered) {
+                                opacity = 0.15;
                             }
                         }
 
-                        // Labels: base name only
-                        const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
-                        const baseName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
+                        const group = new THREE.Group();
 
-                        const sprite = new SpriteText(baseName);
-                        sprite.fontFace = 'IBM Plex Mono';
-                        sprite.textHeight = 3.2;
-                        sprite.color = '#E8EAE6';
-                        sprite.backgroundColor = 'rgba(16, 20, 21, 0.9)';
-                        sprite.borderRadius = 4;
-                        sprite.padding = [4, 2];
-                        sprite.borderColor = 'rgba(255, 255, 255, 0.1)';
-                        sprite.borderWidth = 0.5;
-                        sprite.position.y = radius + 5;
-                        sprite.renderOrder = 999;
-                        sprite.material.depthTest = false;
-                        // Priority: selected > hovered > highest degree
-                        let priority = connCount;
-                        if (isHovered) priority += 500000;
-                        if (isSelected) priority += 1000000;
-                        (sprite as any).userData = {
-                            priority
-                        };
-                        group.add(sprite);
+                        if (isSelected) {
+                            const sphereMat = new THREE.MeshLambertMaterial({
+                                color: 0xFAFAFA,
+                                emissive: 0x4FD1B5,
+                                emissiveIntensity: 0.6,
+                                transparent: true,
+                                opacity
+                            });
+                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 24), sphereMat));
+
+                            const torusGeo = new THREE.TorusGeometry(radius * 1.35, 1.2, 16, 40);
+                            const torusMat = new THREE.MeshBasicMaterial({
+                                color: 0x4FD1B5,
+                                transparent: true,
+                                opacity: Math.max(0.2, opacity)
+                            });
+                            const torusMesh = new THREE.Mesh(torusGeo, torusMat);
+                            torusMesh.rotation.x = Math.PI / 4;
+                            torusMesh.rotation.y = Math.PI / 4;
+                            group.add(torusMesh);
+                        } else {
+                            const mat = new THREE.MeshLambertMaterial({
+                                color: baseColor,
+                                emissive: isHovered ? baseColor : 0x000000,
+                                emissiveIntensity: isHovered ? 0.4 : 0.05,
+                                transparent: true,
+                                opacity
+                            });
+                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 18, 18), mat));
+                        }
+
+                        const shouldShowLabel = isSelected || isHovered || isDirect;
+
+                        if (shouldShowLabel && (!isIndirect || isHovered)) {
+                            const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
+                            const baseName = node.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
+
+                            const sprite = new SpriteText(baseName);
+                            sprite.fontFace = 'IBM Plex Mono';
+                            sprite.textHeight = 3.2;
+                            sprite.color = '#E8EAE6';
+                            sprite.backgroundColor = '#10161A';
+                            sprite.borderRadius = 3;
+                            sprite.padding = [4, 2];
+                            sprite.borderColor = 'rgba(255, 255, 255, 0.12)';
+                            sprite.borderWidth = 0.5;
+                            sprite.position.y = radius + 5;
+                            sprite.renderOrder = 999;
+                            sprite.material.depthTest = false;
+                            if (opacity < 0.5) {
+                                sprite.material.opacity = opacity;
+                            }
+
+                            let priority = Number(node.connections || 0);
+                            if (isDirect) priority += 1000;
+                            if (isHovered) priority += 500000;
+                            if (isSelected) priority += 1000000;
+
+                            (sprite as any).userData = { priority };
+                            group.add(sprite);
+                        }
 
                         return group;
                     }}
