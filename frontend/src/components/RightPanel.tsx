@@ -1,9 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store';
-import { Badge, cn, Button } from '../ui';
-import { Activity, Clock, MessageSquare, Hexagon, ShieldAlert, GitCommit, FileCode, Check, ChevronDown, ChevronUp, Users, AlertTriangle } from 'lucide-react';
+import { Badge, cn } from '../ui';
+import { Activity, Clock, MessageSquare } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
-import { ConnectedFilesList } from './ConnectedFilesList';
 import { computeRisk, getConnectedFiles } from '../graph-helpers';
 import { CodeViewer } from './CodeViewer';
 
@@ -29,44 +28,290 @@ function getFileLanguage(filePath: string): string {
     return 'File';
 }
 
-export function RightPanel({ className }: { className?: string }) {
-    const {
-        selectedSymbol,
-        selectedFile,
-        activeTab,
-        setActiveTab,
-        commits,
-        selectedSha,
-        graph,
-        selectFile,
-        repoUrl,
-        selectedHistoryCommit,
-        aiCitations,
-        setCodeHighlightLine,
-        impactResult,
-        setImpactResult
-    } = useAppStore();
-    const [inspectorTab, setInspectorTab] = useState<'Overview' | 'Dependencies' | 'Source' | 'Impact'>('Overview');
-    const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
-    const [ownersLoading, setOwnersLoading] = useState(false);
-    const [rateLimited, setRateLimited] = useState(false);
+function renderEmptyState(message = "Select a node to see what depends on it", className?: string) {
+    return (
+        <div className={cn("p-6 border-l border-white/10 bg-[#07090A] flex flex-col items-center justify-center text-center text-[#8A918C] h-full select-none", className)}>
+            <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
+                <Activity size={18} />
+            </div>
+            <div className="text-xs font-medium text-[#E8EAE6] mb-1">No node selected</div>
+            <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">{message}</div>
+        </div>
+    );
+}
+
+function CommitDetails({ className }: { className?: string }) {
+    const { selectedHistoryCommit, commits, selectedSha, graph, selectedFile } = useAppStore();
 
     const hotspotFiles = useMemo(() => {
-        if (!graph) return new Set<string>();
-        const files = graph.nodes.filter((n: any) => n.type === 'file');
+        if (!graph?.nodes) return new Set<string>();
+        const files = graph.nodes.filter((n: any) => n?.type === 'file');
         const scored = files
             .filter((f: any) => {
-                const p = (f.path || f.id || '').toLowerCase();
+                const p = (f?.path || f?.id || '').toLowerCase();
                 const fn = p.split('/').pop() || '';
                 if (fn.includes('eslint') || fn.includes('postcss') || fn.includes('tailwind') || fn.includes('vite') || fn.includes('.config.')) return false;
                 return true;
             })
             .map((f: any) => ({
-                path: f.path || f.id,
-                risk: computeRisk(f.path || f.id, graph, commits).score
+                path: f?.path || f?.id,
+                risk: computeRisk(f?.path || f?.id, graph, commits).score
             })).sort((a: any, b: any) => b.risk - a.risk);
         return new Set<string>(scored.slice(0, 5).map((f: any) => f.path));
     }, [graph, commits]);
+
+    const currentCommit = selectedHistoryCommit || commits?.find(c => c?.sha === selectedSha) || commits?.[0];
+
+    if (!currentCommit) {
+        return renderEmptyState("Select a commit to inspect its details", className);
+    }
+
+    const isHotspot = Boolean(
+        (currentCommit.files && currentCommit.files.some((f: any) => hotspotFiles.has(f?.filename || f?.path))) ||
+        (selectedFile && hotspotFiles.has(selectedFile))
+    );
+
+    return (
+        <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+            <div className="p-3.5 border-b border-white/10">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                        <Clock size={13} className="text-[#4FD1B5]" />
+                        <span>Commit details</span>
+                        {isHotspot && (
+                            <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" title="Touched a hotspot file" />
+                        )}
+                    </h3>
+                    <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
+                        {currentCommit.sha ? currentCommit.sha.substring(0, 7) : 'HEAD'}
+                    </span>
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
+                <div>
+                    <div className="text-[11px] text-[#8A918C] mb-1 font-normal">Message</div>
+                    <div className="glass-surface p-3 rounded-lg border-white/10 text-xs text-[#E8EAE6] leading-relaxed font-sans">
+                        {currentCommit.message}
+                    </div>
+                </div>
+
+                <div className="space-y-2 border-t border-white/[0.08] pt-3">
+                    <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                        <span>Author</span>
+                        <span className="text-[#E8EAE6] font-mono">{currentCommit.authorName || currentCommit.author?.name || 'Unknown'}</span>
+                    </div>
+                    <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
+                        <span>Hash</span>
+                        <span className="text-[#4FD1B5] font-mono">{currentCommit.sha ? currentCommit.sha.substring(0, 10) : '-'}</span>
+                    </div>
+                    {(currentCommit.authorDate || currentCommit.commit?.author?.date) && (
+                        <div className="flex justify-between py-1 text-[#8A918C]">
+                            <span>Committed</span>
+                            <span className="text-[#E8EAE6] font-mono">{new Date(currentCommit.authorDate || currentCommit.commit?.author?.date).toLocaleDateString()}</span>
+                        </div>
+                    )}
+                </div>
+
+                <div className="border-t border-white/[0.08] pt-3">
+                    <div className="text-[11px] text-[#8A918C] mb-2 font-normal">
+                        Files changed ({currentCommit.files?.length || (selectedFile ? 1 : 0)})
+                    </div>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
+                        {currentCommit.files && currentCommit.files.length > 0 ? (
+                            currentCommit.files.map((f: any, idx: number) => {
+                                const fname = f?.filename || f?.path || (typeof f === 'string' ? f : '');
+                                const isHot = hotspotFiles.has(fname);
+                                return (
+                                    <div key={idx} className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
+                                        <div className="flex items-center gap-1.5 truncate min-w-0">
+                                            {isHot && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
+                                            <span className="font-mono text-[#E8EAE6] truncate" title={fname}>{fname?.split('/').pop()}</span>
+                                        </div>
+                                        {(f?.additions !== undefined || f?.deletions !== undefined) && (
+                                            <span className="text-[10px] font-mono text-[#8A918C] shrink-0 ml-2">
+                                                <span className="text-[#4FD1B5]">+{f?.additions || 0}</span> <span className="text-red-400">-{f?.deletions || 0}</span>
+                                            </span>
+                                        )}
+                                    </div>
+                                );
+                            })
+                        ) : selectedFile ? (
+                            <div className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
+                                <div className="flex items-center gap-1.5 truncate min-w-0">
+                                    {hotspotFiles.has(selectedFile) && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
+                                    <span className="font-mono text-[#E8EAE6] truncate" title={selectedFile}>{selectedFile.split('/').pop()}</span>
+                                </div>
+                            </div>
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function EvidenceList({ className }: { className?: string }) {
+    const { selectedFile, aiCitations, selectFile, setCodeHighlightLine, setActiveTab } = useAppStore();
+
+    if (!selectedFile) {
+        return (
+            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+                <div className="p-3.5 border-b border-white/10">
+                    <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                            <MessageSquare size={13} className="text-[#4FD1B5]" />
+                            <span>Evidence list</span>
+                        </h3>
+                        <Badge variant="default">0 cited</Badge>
+                    </div>
+                    <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
+                        No file selected
+                    </div>
+                </div>
+                <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[#8A918C]">
+                    <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
+                        <MessageSquare size={18} />
+                    </div>
+                    <div className="text-xs font-medium text-[#E8EAE6] mb-1">No file selected</div>
+                    <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">
+                        Select a file to inspect its cited evidence and sources.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    const citations = aiCitations || [];
+    return (
+        <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+            <div className="p-3.5 border-b border-white/10">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
+                        <MessageSquare size={13} className="text-[#4FD1B5]" />
+                        <span>Evidence list</span>
+                    </h3>
+                    <Badge variant="default">{citations.length} cited</Badge>
+                </div>
+                <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
+                    {selectedFile ? selectedFile.split('/').pop() : 'Context sources'}
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-3 text-xs">
+                {citations.length > 0 ? (
+                    citations.map((c: string, idx: number) => {
+                        const lastColon = c.lastIndexOf(':');
+                        const hasColon = lastColon !== -1;
+                        const linePart = hasColon ? c.substring(lastColon + 1) : '';
+                        const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
+                        const filePath = hasLine ? c.substring(0, lastColon) : c;
+                        const lineRange = hasLine ? linePart : '';
+                        const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
+                        const fileName = filePath?.split('/').pop() || filePath;
+
+                        return (
+                            <button
+                                key={idx}
+                                onClick={() => {
+                                    if (selectFile) {
+                                        selectFile(filePath);
+                                    }
+                                    if (!isNaN(startLine)) {
+                                        setCodeHighlightLine(startLine);
+                                    }
+                                    setActiveTab('Code');
+                                }}
+                                className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1 block"
+                                title={`Open ${c} in Code viewer`}
+                            >
+                                <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
+                                    <span className="truncate">{fileName}</span>
+                                    {lineRange && <span>{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
+                                </div>
+                                <div className="text-[10px] text-[#8A918C] font-mono truncate">
+                                    {filePath}
+                                </div>
+                            </button>
+                        );
+                    })
+                ) : (
+                    <div className="p-6 text-center text-[#8A918C] space-y-1.5">
+                        <div className="text-xs">No active evidence citations</div>
+                        <div className="text-[11px] text-[#8A918C]/70">Evidence citations appear when AI answers reference specific files or lines.</div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function ConnectionsSummary({ className }: { className?: string }) {
+    const { graph, selectedFile, selectedSymbol } = useAppStore();
+
+    const connected = useMemo(() => {
+        return getConnectedFiles(graph, selectedFile);
+    }, [graph, selectedFile]);
+
+    if (!selectedFile) {
+        return renderEmptyState("Select a file to inspect its connections counts", className);
+    }
+
+    const nodeName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'Selected node');
+    const incomingCount = connected?.importedBy?.length || 0;
+    const outgoingCount = connected?.imports?.length || 0;
+
+    return (
+        <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
+            <div className="p-3.5 border-b border-white/10">
+                <div className="flex items-center justify-between">
+                    <h3 className="font-mono text-xs font-semibold truncate text-[#E8EAE6]" title={nodeName}>
+                        {nodeName}
+                    </h3>
+                    <Badge variant="default">file</Badge>
+                </div>
+                <div className="text-[11px] text-[#8A918C] truncate mt-1 font-mono">
+                    Connections summary
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
+                <div className="space-y-2">
+                    <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                        <span className="text-xs text-[#8A918C]">Incoming dependents</span>
+                        <b className="font-mono text-sm text-[#4FD1B5]">{incomingCount}</b>
+                    </div>
+                    <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                        <span className="text-xs text-[#8A918C]">Outgoing imports</span>
+                        <b className="font-mono text-sm text-[#E3A04A]">{outgoingCount}</b>
+                    </div>
+                    <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
+                        <span className="text-xs text-[#8A918C]">Total connections</span>
+                        <b className="font-mono text-sm text-[#E8EAE6]">{incomingCount + outgoingCount}</b>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function FileInspector({ className }: { className?: string }) {
+    const {
+        selectedSymbol,
+        selectedFile,
+        commits,
+        selectedSha,
+        graph,
+        selectFile,
+        repoUrl,
+        impactResult,
+        setImpactResult
+    } = useAppStore();
+
+    const [inspectorTab, setInspectorTab] = useState<'Overview' | 'Dependencies' | 'Source' | 'Impact'>('Overview');
+    const [ownersData, setOwnersData] = useState<FileOwnersResponse | null>(null);
+    const [ownersLoading, setOwnersLoading] = useState(false);
+    const [rateLimited, setRateLimited] = useState(false);
 
     useEffect(() => {
         let isMounted = true;
@@ -104,270 +349,26 @@ export function RightPanel({ className }: { className?: string }) {
         };
     }, [repoUrl, selectedFile, selectedSha]);
 
-    // Repo-level tabs must not show Node details
-    if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
-        return null;
-    }
-
-    // Designed empty state
-    const renderEmptyState = (message = "Select a node to see what depends on it") => (
-        <div className={cn("p-6 border-l border-white/10 bg-[#07090A] flex flex-col items-center justify-center text-center text-[#8A918C] h-full select-none", className)}>
-            <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
-                <Activity size={18} />
-            </div>
-            <div className="text-xs font-medium text-[#E8EAE6] mb-1">No node selected</div>
-            <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">{message}</div>
-        </div>
-    );
-
-    const nodeName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'Selected node');
-    const nodeType = selectedSymbol?.type || 'file';
-
-    // 1. History Tab: selected commit details
-    if (activeTab === 'History') {
-        const currentCommit = selectedHistoryCommit || commits.find(c => c.sha === selectedSha) || commits[0];
-        if (!currentCommit) {
-            return renderEmptyState("Select a commit to inspect its details");
-        }
-        const isHotspot = Boolean(
-            (currentCommit.files && currentCommit.files.some((f: any) => hotspotFiles.has(f.filename || f.path))) ||
-            (selectedFile && hotspotFiles.has(selectedFile))
-        );
-        return (
-            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                <div className="p-3.5 border-b border-white/10">
-                    <div className="flex items-center justify-between">
-                        <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
-                            <Clock size={13} className="text-[#4FD1B5]" />
-                            <span>Commit details</span>
-                            {isHotspot && (
-                                <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" title="Touched a hotspot file" />
-                            )}
-                        </h3>
-                        <span className="font-mono text-[11px] px-2 py-0.5 rounded-full border border-white/10 bg-white/[0.03] text-[#4FD1B5]">
-                            {currentCommit.sha ? currentCommit.sha.substring(0, 7) : 'HEAD'}
-                        </span>
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                    <div>
-                        <div className="text-[11px] text-[#8A918C] mb-1 font-normal">Message</div>
-                        <div className="glass-surface p-3 rounded-lg border-white/10 text-xs text-[#E8EAE6] leading-relaxed font-sans">
-                            {currentCommit.message}
-                        </div>
-                    </div>
-
-                    <div className="space-y-2 border-t border-white/[0.08] pt-3">
-                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                            <span>Author</span>
-                            <span className="text-[#E8EAE6] font-mono">{currentCommit.authorName || currentCommit.author?.name || 'Unknown'}</span>
-                        </div>
-                        <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                            <span>Hash</span>
-                            <span className="text-[#4FD1B5] font-mono">{currentCommit.sha ? currentCommit.sha.substring(0, 10) : '-'}</span>
-                        </div>
-                        {(currentCommit.authorDate || currentCommit.commit?.author?.date) && (
-                            <div className="flex justify-between py-1 text-[#8A918C]">
-                                <span>Committed</span>
-                                <span className="text-[#E8EAE6] font-mono">{new Date(currentCommit.authorDate || currentCommit.commit?.author?.date).toLocaleDateString()}</span>
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="border-t border-white/[0.08] pt-3">
-                        <div className="text-[11px] text-[#8A918C] mb-2 font-normal">
-                            Files changed ({currentCommit.files?.length || (selectedFile ? 1 : 0)})
-                        </div>
-                        <div className="space-y-1.5 max-h-48 overflow-y-auto scrollbar-custom">
-                            {currentCommit.files && currentCommit.files.length > 0 ? (
-                                currentCommit.files.map((f: any, idx: number) => {
-                                    const fname = f.filename || f.path || (typeof f === 'string' ? f : '');
-                                    const isHot = hotspotFiles.has(fname);
-                                    return (
-                                        <div key={idx} className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
-                                            <div className="flex items-center gap-1.5 truncate min-w-0">
-                                                {isHot && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
-                                                <span className="font-mono text-[#E8EAE6] truncate" title={fname}>{fname.split('/').pop()}</span>
-                                            </div>
-                                            {(f.additions !== undefined || f.deletions !== undefined) && (
-                                                <span className="text-[10px] font-mono text-[#8A918C] shrink-0 ml-2">
-                                                    <span className="text-[#4FD1B5]">+{f.additions || 0}</span> <span className="text-red-400">-{f.deletions || 0}</span>
-                                                </span>
-                                            )}
-                                        </div>
-                                    );
-                                })
-                            ) : selectedFile ? (
-                                <div className="flex items-center justify-between p-2 rounded-lg glass-surface border-white/[0.06] text-xs">
-                                    <div className="flex items-center gap-1.5 truncate min-w-0">
-                                        {hotspotFiles.has(selectedFile) && <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0" title="Hotspot file" />}
-                                        <span className="font-mono text-[#E8EAE6] truncate" title={selectedFile}>{selectedFile.split('/').pop()}</span>
-                                    </div>
-                                </div>
-                            ) : null}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
-
-    // 2. Ask AI Tab: evidence list
-    if (activeTab === 'AskAI') {
-        if (!selectedFile) {
-            return (
-                <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                    <div className="p-3.5 border-b border-white/10">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
-                                <MessageSquare size={13} className="text-[#4FD1B5]" />
-                                <span>Evidence list</span>
-                            </h3>
-                            <Badge variant="default">0 cited</Badge>
-                        </div>
-                        <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
-                            No file selected
-                        </div>
-                    </div>
-                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[#8A918C]">
-                        <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
-                            <MessageSquare size={18} />
-                        </div>
-                        <div className="text-xs font-medium text-[#E8EAE6] mb-1">No file selected</div>
-                        <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">
-                            Select a file to inspect its cited evidence and sources.
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        const citations = aiCitations || [];
-        return (
-            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                <div className="p-3.5 border-b border-white/10">
-                    <div className="flex items-center justify-between">
-                        <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
-                            <MessageSquare size={13} className="text-[#4FD1B5]" />
-                            <span>Evidence list</span>
-                        </h3>
-                        <Badge variant="default">{citations.length} cited</Badge>
-                    </div>
-                    <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
-                        {selectedFile ? selectedFile.split('/').pop() : 'Context sources'}
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-3 text-xs">
-                    {citations.length > 0 ? (
-                        citations.map((c: string, idx: number) => {
-                            const lastColon = c.lastIndexOf(':');
-                            const hasColon = lastColon !== -1;
-                            const linePart = hasColon ? c.substring(lastColon + 1) : '';
-                            const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
-                            const filePath = hasLine ? c.substring(0, lastColon) : c;
-                            const lineRange = hasLine ? linePart : '';
-                            const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
-                            const fileName = filePath.split('/').pop() || filePath;
-
-                            return (
-                                <button
-                                    key={idx}
-                                    onClick={() => {
-                                        if (selectFile) {
-                                            selectFile(filePath);
-                                        }
-                                        if (!isNaN(startLine)) {
-                                            setCodeHighlightLine(startLine);
-                                        }
-                                        setActiveTab('Code');
-                                    }}
-                                    className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1 block"
-                                    title={`Open ${c} in Code viewer`}
-                                >
-                                    <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
-                                        <span className="truncate">{fileName}</span>
-                                        {lineRange && <span>{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
-                                    </div>
-                                    <div className="text-[10px] text-[#8A918C] font-mono truncate">
-                                        {filePath}
-                                    </div>
-                                </button>
-                            );
-                        })
-                    ) : (
-                        <div className="p-6 text-center text-[#8A918C] space-y-1.5">
-                            <div className="text-xs">No active evidence citations</div>
-                            <div className="text-[11px] text-[#8A918C]/70">Evidence citations appear when AI answers reference specific files or lines.</div>
-                        </div>
-                    )}
-                </div>
-            </div>
-        );
-    }
-
-    // 3. Connections Tab: counts only
-    if (activeTab === 'Connections') {
-        if (!selectedFile) {
-            return renderEmptyState("Select a file to inspect its connections counts");
-        }
-        const connected = getConnectedFiles(graph, selectedFile);
-        const incomingCount = connected.importedBy.length;
-        const outgoingCount = connected.imports.length;
-        return (
-            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                <div className="p-3.5 border-b border-white/10">
-                    <div className="flex items-center justify-between">
-                        <h3 className="font-mono text-xs font-semibold truncate text-[#E8EAE6]" title={nodeName}>
-                            {nodeName}
-                        </h3>
-                        <Badge variant="default">file</Badge>
-                    </div>
-                    <div className="text-[11px] text-[#8A918C] truncate mt-1 font-mono">
-                        Connections summary
-                    </div>
-                </div>
-
-                <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
-                    <div className="space-y-2">
-                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
-                            <span className="text-xs text-[#8A918C]">Incoming dependents</span>
-                            <b className="font-mono text-sm text-[#4FD1B5]">{incomingCount}</b>
-                        </div>
-                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
-                            <span className="text-xs text-[#8A918C]">Outgoing imports</span>
-                            <b className="font-mono text-sm text-[#E3A04A]">{outgoingCount}</b>
-                        </div>
-                        <div className="glass-surface p-3 rounded-lg flex items-center justify-between border-white/10">
-                            <span className="text-xs text-[#8A918C]">Total connections</span>
-                            <b className="font-mono text-sm text-[#E8EAE6]">{incomingCount + outgoingCount}</b>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
-
     const connected = useMemo(() => {
         return getConnectedFiles(graph, selectedFile);
     }, [graph, selectedFile]);
 
     const indirectFiles = useMemo(() => {
-        if (!graph || !selectedFile) return [];
-        const visited = new Set<string>([selectedFile, ...connected.importedBy]);
+        if (!graph?.nodes || !selectedFile) return [];
+        const importedByList = connected?.importedBy || [];
+        const visited = new Set<string>([selectedFile, ...importedByList]);
         const indirectSet = new Set<string>();
-        const queue = [...connected.importedBy];
+        const queue = [...importedByList];
 
         const idToPath = new Map<string, string>();
         for (const n of graph.nodes) {
-            const p = (n as any).path || (n.type === 'file' ? n.id : undefined);
+            const p = (n as any)?.path || (n?.type === 'file' ? n?.id : undefined);
             if (p) idToPath.set(n.id, p);
         }
 
         while (queue.length > 0) {
             const curr = queue.shift()!;
-            for (const e of graph.edges) {
+            for (const e of (graph.edges || [])) {
                 const rawFrom = idToPath.get(e.from) || e.from;
                 const rawTo = idToPath.get(e.to) || e.to;
                 if ((rawTo === curr || e.to === curr) && (e.type === 'imports' || e.type === 'calls')) {
@@ -382,14 +383,14 @@ export function RightPanel({ className }: { className?: string }) {
         }
         if (impactResult?.transitiveConsumers) {
             for (const tc of impactResult.transitiveConsumers) {
-                const p = tc.symbol.path || tc.symbol.name;
+                const p = tc?.symbol?.path || tc?.symbol?.name;
                 if (p && p !== selectedFile && !visited.has(p)) {
                     indirectSet.add(p);
                 }
             }
         }
         return Array.from(indirectSet).sort();
-    }, [graph, selectedFile, connected.importedBy, impactResult]);
+    }, [graph, selectedFile, connected?.importedBy, impactResult]);
 
     const fileRisk = useMemo(() => {
         if (!selectedFile) return null;
@@ -398,8 +399,8 @@ export function RightPanel({ className }: { className?: string }) {
 
     const reasonSentence = useMemo(() => {
         if (!fileRisk) return '';
-        const deps = fileRisk.directDependents;
-        const reach = fileRisk.directDependents + fileRisk.transitiveDependents;
+        const deps = fileRisk.directDependents || 0;
+        const reach = (fileRisk.directDependents || 0) + (fileRisk.transitiveDependents || 0);
         const depStr = deps === 1 ? '1 file depends on it' : `${deps} files depend on it`;
         const reachStr = reach > 0 ? `, and a change can reach ${reach}` : '';
         const testStr = fileRisk.hasNoTests ? '. No test file found.' : '. Tests found.';
@@ -412,7 +413,7 @@ export function RightPanel({ className }: { className?: string }) {
         }
         if (!commits || !selectedFile) return 0;
         return commits.filter((c: any) =>
-            c.files && c.files.some((f: any) => (f.filename || f.path) === selectedFile)
+            c?.files && c.files.some((f: any) => (f?.filename || f?.path) === selectedFile)
         ).length;
     }, [commits, selectedFile, ownersData]);
 
@@ -421,7 +422,7 @@ export function RightPanel({ className }: { className?: string }) {
         const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
         if (impactResult?.directCallers) {
             for (const dc of impactResult.directCallers) {
-                const rawPath = dc.symbol.path || (dc.symbol.type === 'file' ? dc.symbol.name : '');
+                const rawPath = dc?.symbol?.path || (dc?.symbol?.type === 'file' ? dc?.symbol?.name : '');
                 if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
                     const fileName = rawPath.split('/').pop() || rawPath;
                     const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
@@ -442,7 +443,7 @@ export function RightPanel({ className }: { className?: string }) {
             }
         }
         return Array.from(map.values()).sort((a, b) => b.score - a.score);
-    }, [impactResult, connected, selectedFile, graph, commits]);
+    }, [impactResult, connected?.importedBy, selectedFile, graph, commits]);
 
     const indirectList = useMemo(() => {
         if (!selectedFile) return [];
@@ -450,14 +451,14 @@ export function RightPanel({ className }: { className?: string }) {
         const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
         if (impactResult?.transitiveConsumers) {
             for (const tc of impactResult.transitiveConsumers) {
-                let rawPath = tc.symbol.path;
+                let rawPath = tc?.symbol?.path;
                 if (!rawPath && graph?.nodes) {
-                    const found = graph.nodes.find(n => n.id === tc.symbol.name || (n as any).name === tc.symbol.name);
-                    if (found && (found as any).path) {
+                    const found = graph.nodes.find(n => n?.id === tc?.symbol?.name || (n as any)?.name === tc?.symbol?.name);
+                    if (found && (found as any)?.path) {
                         rawPath = (found as any).path;
                     }
                 }
-                if (!rawPath) rawPath = tc.symbol.name;
+                if (!rawPath) rawPath = tc?.symbol?.name;
                 if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
                     const fileName = rawPath.split('/').pop() || rawPath;
                     const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
@@ -480,7 +481,7 @@ export function RightPanel({ className }: { className?: string }) {
     const testsList = useMemo(() => {
         if (!selectedFile) return [];
         const tests = (impactResult?.tests || [])
-            .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
+            .map((t: any) => (typeof t === 'string' ? t : (t?.path || t?.symbol?.path)))
             .filter(Boolean) as string[];
         return tests;
     }, [impactResult, selectedFile]);
@@ -499,10 +500,12 @@ export function RightPanel({ className }: { className?: string }) {
         }
     }, [inspectorTab, graph, selectedFile, selectedSymbol, impactResult, setImpactResult]);
 
-    // 4. Default for Impact, Graph, and Overview tabs: Node Details
+    // Conditional return happens AFTER all hooks:
     if (!selectedSymbol && !selectedFile) {
-        return renderEmptyState();
+        return renderEmptyState("Select a node to see what depends on it", className);
     }
+
+    const nodeName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'Selected node');
 
     return (
         <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full overflow-hidden", className)}>
@@ -571,11 +574,11 @@ export function RightPanel({ className }: { className?: string }) {
                     <div className="divide-y divide-white/[0.08] border-y border-white/[0.08]">
                         <div className="flex items-center justify-between py-2 text-xs">
                             <span className="text-[#8A918C]">Imports</span>
-                            <span className="font-mono text-[#E8EAE6]">{connected.imports.length}</span>
+                            <span className="font-mono text-[#E8EAE6]">{connected?.imports?.length || 0}</span>
                         </div>
                         <div className="flex items-center justify-between py-2 text-xs">
                             <span className="text-[#8A918C]">Imported by</span>
-                            <span className="font-mono text-[#E8EAE6]">{connected.importedBy.length}</span>
+                            <span className="font-mono text-[#E8EAE6]">{connected?.importedBy?.length || 0}</span>
                         </div>
                         <div className="flex items-center justify-between py-2 text-xs">
                             <span className="text-[#8A918C]">Commits</span>
@@ -584,7 +587,7 @@ export function RightPanel({ className }: { className?: string }) {
                     </div>
 
                     {/* "Imported by" list showing 4 rows (file name mono + muted folder) with "View all 24" link */}
-                    {connected.importedBy.length > 0 && (
+                    {(connected?.importedBy?.length || 0) > 0 && (
                         <div className="space-y-2">
                             <div className="flex items-center justify-between text-xs">
                                 <span className="text-[#8A918C]">Imported by</span>
@@ -592,13 +595,13 @@ export function RightPanel({ className }: { className?: string }) {
                                     onClick={() => setInspectorTab('Dependencies')}
                                     className="text-[11px] text-[#4FD1B5] hover:underline cursor-pointer"
                                 >
-                                    View all {connected.importedBy.length}
+                                    View all {connected?.importedBy?.length || 0}
                                 </button>
                             </div>
                             <div className="space-y-1">
-                                {connected.importedBy.slice(0, 4).map(f => {
-                                    const fileName = f.split('/').pop() || f;
-                                    const folder = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+                                {(connected?.importedBy || []).slice(0, 4).map(f => {
+                                    const fileName = f?.split('/').pop() || f;
+                                    const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
                                     return (
                                         <div
                                             key={f}
@@ -628,17 +631,17 @@ export function RightPanel({ className }: { className?: string }) {
                                 {ownersData.owners.slice(0, 3).map((owner, idx) => (
                                     <div key={idx} className="space-y-1">
                                         <div className="flex items-center justify-between text-xs">
-                                            <span className="font-mono text-[#E8EAE6] truncate max-w-[140px]" title={owner.name}>
-                                                {owner.name}
+                                            <span className="font-mono text-[#E8EAE6] truncate max-w-[140px]" title={owner?.name}>
+                                                {owner?.name}
                                             </span>
                                             <span className="font-mono text-[11px] text-[#8A918C]">
-                                                {owner.share}%
+                                                {owner?.share}%
                                             </span>
                                         </div>
                                         <div className="w-full h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
                                             <div
                                                 className="h-full bg-[#4FD1B5] rounded-full transition-all duration-300"
-                                                style={{ width: `${Math.min(100, Math.max(0, owner.share))}%` }}
+                                                style={{ width: `${Math.min(100, Math.max(0, owner?.share || 0))}%` }}
                                             />
                                         </div>
                                     </div>
@@ -653,17 +656,17 @@ export function RightPanel({ className }: { className?: string }) {
             {inspectorTab === 'Dependencies' && (
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
                     {/* Imports (teal dot) */}
-                    {connected.imports.length > 0 && (
+                    {(connected?.imports?.length || 0) > 0 && (
                         <div className="space-y-1.5">
                             <div className="flex items-center gap-1.5 text-xs text-[#8A918C]">
                                 <span className="w-2 h-2 rounded-full bg-[#4FD1B5] shrink-0" />
                                 <span>Imports</span>
-                                <span className="font-mono text-[11px] text-[#8A918C]">({connected.imports.length})</span>
+                                <span className="font-mono text-[11px] text-[#8A918C]">({connected?.imports?.length || 0})</span>
                             </div>
                             <div className="space-y-1 max-h-48 overflow-y-auto scrollbar-custom pr-1">
-                                {connected.imports.map(f => {
-                                    const fileName = f.split('/').pop() || f;
-                                    const folder = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+                                {(connected?.imports || []).map(f => {
+                                    const fileName = f?.split('/').pop() || f;
+                                    const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
                                     return (
                                         <div
                                             key={f}
@@ -680,17 +683,17 @@ export function RightPanel({ className }: { className?: string }) {
                     )}
 
                     {/* Imported by (amber dot) */}
-                    {connected.importedBy.length > 0 && (
+                    {(connected?.importedBy?.length || 0) > 0 && (
                         <div className="space-y-1.5">
                             <div className="flex items-center gap-1.5 text-xs text-[#8A918C]">
                                 <span className="w-2 h-2 rounded-full bg-[#E3A04A] shrink-0" />
                                 <span>Imported by</span>
-                                <span className="font-mono text-[11px] text-[#8A918C]">({connected.importedBy.length})</span>
+                                <span className="font-mono text-[11px] text-[#8A918C]">({connected?.importedBy?.length || 0})</span>
                             </div>
                             <div className="space-y-1 max-h-48 overflow-y-auto scrollbar-custom pr-1">
-                                {connected.importedBy.map(f => {
-                                    const fileName = f.split('/').pop() || f;
-                                    const folder = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+                                {(connected?.importedBy || []).map(f => {
+                                    const fileName = f?.split('/').pop() || f;
+                                    const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
                                     return (
                                         <div
                                             key={f}
@@ -716,8 +719,8 @@ export function RightPanel({ className }: { className?: string }) {
                             </div>
                             <div className="space-y-1 max-h-48 overflow-y-auto scrollbar-custom pr-1">
                                 {indirectFiles.map(f => {
-                                    const fileName = f.split('/').pop() || f;
-                                    const folder = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+                                    const fileName = f?.split('/').pop() || f;
+                                    const folder = f?.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
                                     return (
                                         <div
                                             key={f}
@@ -840,7 +843,7 @@ export function RightPanel({ className }: { className?: string }) {
                                         className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
                                         title={testPath}
                                     >
-                                        {testPath.split('/').pop()}
+                                        {testPath?.split('/').pop()}
                                     </button>
                                 ))}
                             </div>
@@ -852,3 +855,25 @@ export function RightPanel({ className }: { className?: string }) {
     );
 }
 
+export function RightPanel({ className }: { className?: string }) {
+    const { activeTab } = useAppStore();
+
+    // Repo-level tabs must not show Node details
+    if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
+        return null;
+    }
+
+    if (activeTab === 'History') {
+        return <CommitDetails className={className} />;
+    }
+
+    if (activeTab === 'AskAI') {
+        return <EvidenceList className={className} />;
+    }
+
+    if (activeTab === 'Connections') {
+        return <ConnectionsSummary className={className} />;
+    }
+
+    return <FileInspector className={className} />;
+}

@@ -9,8 +9,10 @@ import { api } from './api';
 import { LandingPage } from './components/LandingPage';
 import { RouteSync } from './components/RouteSync';
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 export default function App() {
-    const { repoUrl, setMeta, setCommits } = useAppStore();
+    const { repoUrl, activeTab } = useAppStore();
 
     return (
         <>
@@ -23,8 +25,12 @@ export default function App() {
                     <TopBar />
                     <div className="flex flex-1 overflow-hidden">
                         <Sidebar className="w-[210px] flex-shrink-0" />
-                        <MainPanel className="flex-1 flex flex-col overflow-hidden" />
-                        <RightPanel className="w-80 flex-shrink-0" />
+                        <ErrorBoundary key={`main-${activeTab}`} name="main panel">
+                            <MainPanel className="flex-1 flex flex-col overflow-hidden" />
+                        </ErrorBoundary>
+                        <ErrorBoundary key={`right-${activeTab}`} name="right panel">
+                            <RightPanel className="w-80 flex-shrink-0" />
+                        </ErrorBoundary>
                     </div>
                 </div>
             )}
