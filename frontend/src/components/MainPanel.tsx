@@ -1463,7 +1463,7 @@ function fibonacciSpreadHalfSpace(
 function runDeterministicRelaxation(
     positions: Map<string, Hub3DNodePos>,
     fixedId: string | null,
-    minDistance = 36,
+    minDistance = 40,
     iterations = 35
 ) {
     const ids = Array.from(positions.keys());
@@ -1542,7 +1542,7 @@ function compute3DHubLayout(
                 role: 'default'
             });
         });
-        runDeterministicRelaxation(positions, null, 36, 30);
+        runDeterministicRelaxation(positions, null, 40, 30);
         return positions;
     }
 
@@ -1596,7 +1596,7 @@ function compute3DHubLayout(
     const uniqueCalls = Array.from(new Set(callNodes)).sort(riskComparator);
     const uniqueIndirect = Array.from(new Set(indirectNodes)).sort(riskComparator);
 
-    // 3 concentric shells: inner=150, middle=210, outer=270
+    // 3 concentric shells: inner=150, middle=210, outer=270 assigned by risk rank
     const SHELL_RADII = [150, 210, 270];
 
     // Place Imports in left half-space (x < 0) across 3 shells by risk rank
@@ -1621,7 +1621,7 @@ function compute3DHubLayout(
         positions.set(id, { ...p, role: 'calls' });
     });
 
-    // Indirect nodes further out (radius 310) on appropriate side
+    // Indirect nodes further out (radius 340) on appropriate side
     const indirectToNegativeX: string[] = [];
     const indirectToPositiveX: string[] = [];
     uniqueIndirect.forEach((id) => {
@@ -1652,17 +1652,17 @@ function compute3DHubLayout(
     });
 
     indirectToNegativeX.forEach((id, i) => {
-        const p = fibonacciSpreadHalfSpace(i, indirectToNegativeX.length, 310, -1);
+        const p = fibonacciSpreadHalfSpace(i, indirectToNegativeX.length, 340, -1);
         positions.set(id, { ...p, role: 'indirect' });
     });
 
     indirectToPositiveX.forEach((id, i) => {
-        const p = fibonacciSpreadHalfSpace(i, indirectToPositiveX.length, 310, 1);
+        const p = fibonacciSpreadHalfSpace(i, indirectToPositiveX.length, 340, 1);
         positions.set(id, { ...p, role: 'indirect' });
     });
 
-    // One-time deterministic relaxation so no two nodes are closer than 36 units
-    runDeterministicRelaxation(positions, selectedNodeId, 36, 40);
+    // One-time deterministic relaxation so no two nodes are closer than 40 units
+    runDeterministicRelaxation(positions, selectedNodeId, 40, 40);
 
     return positions;
 }
@@ -2169,8 +2169,74 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 const controls = fg.controls();
                 if (controls) {
                     controls.autoRotate = false;
+                    controls.enableDamping = true;
+                    controls.dampingFactor = 0.05;
                 }
             }
+
+            // Scene lighting & background starfield
+            if (typeof fg.scene === 'function') {
+                const scene = fg.scene();
+                if (scene && !(scene as any).__customSceneInitialized) {
+                    (scene as any).__customSceneInitialized = true;
+
+                    // Lights: Ambient 0.6 + Directional 0.8 from top-left + Point light at center
+                    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+                    scene.add(ambientLight);
+
+                    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                    dirLight.position.set(-150, 250, 200);
+                    scene.add(dirLight);
+
+                    const pointLight = new THREE.PointLight(0x4FD1B5, 1.2, 350);
+                    pointLight.position.set(0, 0, 0);
+                    scene.add(pointLight);
+
+                    // Starfield: ~80 faint grey dots at radius 600-900
+                    const starCount = 80;
+                    const starPositions = new Float32Array(starCount * 3);
+                    for (let i = 0; i < starCount; i++) {
+                        const r = 600 + Math.random() * 300;
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.acos(2 * Math.random() - 1);
+                        starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+                        starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+                        starPositions[i * 3 + 2] = r * Math.cos(phi);
+                    }
+                    const starGeo = new THREE.BufferGeometry();
+                    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+                    const starMat = new THREE.PointsMaterial({
+                        color: 0x8A918C,
+                        size: 2.2,
+                        transparent: true,
+                        opacity: 0.35,
+                        depthWrite: false
+                    });
+                    const starPoints = new THREE.Points(starGeo, starMat);
+                    scene.add(starPoints);
+
+                    // Idle cube rotation loop (0.002 rad/frame, disabled if prefers-reduced-motion)
+                    const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                    if (!prefersReducedMotion) {
+                        const animate = () => {
+                            if (fgInstanceRef.current && typeof fgInstanceRef.current.scene === 'function') {
+                                const currentScene = fgInstanceRef.current.scene();
+                                if (currentScene) {
+                                    currentScene.traverse((obj: any) => {
+                                        if (obj.userData?.isRotatableCube) {
+                                            obj.rotation.x += 0.0012;
+                                            obj.rotation.y += 0.002;
+                                        }
+                                    });
+                                }
+                            }
+                            requestAnimationFrame(animate);
+                        };
+                        requestAnimationFrame(animate);
+                    }
+                }
+            }
+
             setTimeout(() => {
                 fitCameraToVisibleNodes(graphData.nodes, 0.70);
             }, 300);
@@ -2624,7 +2690,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         return 1.2;
                     }}
                     linkOpacity={hovered3DNodeId ? 0.95 : 0.55}
-                    linkDirectionalParticles={0}
+                    linkDirectionalParticles={(typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : 2}
+                    linkDirectionalParticleSpeed={0.003}
+                    linkDirectionalParticleWidth={1.8}
+                    linkDirectionalParticleColor={(link: any) => link.color || '#4FD1B5'}
                     backgroundColor="#07090A"
                     onNodeHover={(node: any) => {
                         setHovered3DNodeId(node ? node.id : null);
@@ -2658,15 +2727,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const isIndirect = node.role === 'indirect';
                         const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
 
-                        // Selected largest (radius 16), direct (radius 9), indirect (radius 5)
-                        const radius = isSelected ? 16 : isDirect ? 9 : 5;
+                        // Sizes: selected 22, direct 12, indirect 7
+                        const cubeSize = isSelected ? 22 : isDirect ? 12 : 7;
 
-                        let baseColor = node.color || '#8A918C';
-                        if (node.role === 'imports') baseColor = '#4FD1B5';
-                        else if (node.role === 'importedBy') baseColor = '#E3A04A';
-                        else if (node.role === 'indirect') baseColor = '#8A918C';
-                        else if (node.role === 'calls') baseColor = '#6F8F9A';
-                        else if (node.role === 'center') baseColor = '#FAFAFA';
+                        // Colours: selected #E8EAE6, Imports #4FD1B5, Imported by #E3A04A, Indirect #8A918C, Calls #6F8F9A
+                        let hexColor = 0x8A918C;
+                        if (isSelected) hexColor = 0xE8EAE6;
+                        else if (node.role === 'imports') hexColor = 0x4FD1B5;
+                        else if (node.role === 'importedBy') hexColor = 0xE3A04A;
+                        else if (node.role === 'calls') hexColor = 0x6F8F9A;
+                        else if (node.role === 'indirect') hexColor = 0x8A918C;
 
                         let opacity = 0.95;
                         if (hovered3DNodeId) {
@@ -2678,38 +2748,62 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                         const group = new THREE.Group();
 
+                        // Soft sprite glow behind selected node
                         if (isSelected) {
-                            const sphereMat = new THREE.MeshLambertMaterial({
-                                color: 0xFAFAFA,
-                                emissive: 0x4FD1B5,
-                                emissiveIntensity: 0.7,
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 128;
+                            canvas.height = 128;
+                            const ctx = canvas.getContext('2d');
+                            if (ctx) {
+                                const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+                                grad.addColorStop(0, 'rgba(79, 209, 181, 0.65)');
+                                grad.addColorStop(0.4, 'rgba(79, 209, 181, 0.25)');
+                                grad.addColorStop(1, 'rgba(79, 209, 181, 0)');
+                                ctx.fillStyle = grad;
+                                ctx.fillRect(0, 0, 128, 128);
+                            }
+                            const glowTexture = new THREE.CanvasTexture(canvas);
+                            const glowMat = new THREE.SpriteMaterial({
+                                map: glowTexture,
                                 transparent: true,
-                                opacity
+                                opacity: Math.max(0.4, opacity),
+                                depthWrite: false
                             });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 28, 28), sphereMat));
-
-                            const torusGeo = new THREE.TorusGeometry(radius * 1.35, 1.4, 16, 40);
-                            const torusMat = new THREE.MeshBasicMaterial({
-                                color: 0x4FD1B5,
-                                transparent: true,
-                                opacity: Math.max(0.3, opacity)
-                            });
-                            const torusMesh = new THREE.Mesh(torusGeo, torusMat);
-                            torusMesh.rotation.x = Math.PI / 4;
-                            torusMesh.rotation.y = Math.PI / 4;
-                            group.add(torusMesh);
-                        } else {
-                            const mat = new THREE.MeshLambertMaterial({
-                                color: baseColor,
-                                emissive: isHovered ? baseColor : 0x000000,
-                                emissiveIntensity: isHovered ? 0.45 : 0.05,
-                                transparent: true,
-                                opacity
-                            });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 20), mat));
+                            const glowSprite = new THREE.Sprite(glowMat);
+                            glowSprite.scale.set(cubeSize * 3.4, cubeSize * 3.4, 1);
+                            group.add(glowSprite);
                         }
 
-                        // Labels: selected node + up to 10 direct nodes; indirect labels only on hover
+                        // MeshStandardMaterial (metalness 0.2, roughness 0.5, emissive = same colour at 25%)
+                        const threeColor = new THREE.Color(hexColor);
+                        const emissiveColor = isSelected ? new THREE.Color(0x4FD1B5) : threeColor.clone();
+                        const emissiveIntensity = isHovered ? 0.6 : (isSelected ? 0.45 : 0.25);
+
+                        const cubeGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+                        const cubeMat = new THREE.MeshStandardMaterial({
+                            color: threeColor,
+                            metalness: 0.2,
+                            roughness: 0.5,
+                            emissive: emissiveColor,
+                            emissiveIntensity,
+                            transparent: true,
+                            opacity
+                        });
+                        const cubeMesh = new THREE.Mesh(cubeGeo, cubeMat);
+                        (cubeMesh as any).userData = { isRotatableCube: true };
+                        group.add(cubeMesh);
+
+                        // EdgesGeometry outline for sharp facet definition
+                        const edgesGeo = new THREE.EdgesGeometry(cubeGeo);
+                        const edgesMat = new THREE.LineBasicMaterial({
+                            color: isSelected ? 0x4FD1B5 : (isHovered ? 0xFFFFFF : hexColor),
+                            transparent: true,
+                            opacity: Math.max(0.4, opacity)
+                        });
+                        const edgesLines = new THREE.LineSegments(edgesGeo, edgesMat);
+                        group.add(edgesLines);
+
+                        // Labels: dark pill sprite offset above-right of the cube
                         const isTop10Direct = top10DirectNodeIds.has(node.id);
                         const shouldShowLabel = isSelected || isHovered || (isDirect && isTop10Direct);
 
@@ -2726,9 +2820,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             sprite.padding = [4, 2];
                             sprite.borderColor = 'rgba(255, 255, 255, 0.15)';
                             sprite.borderWidth = 0.5;
-                            // Placed offset above-right of the node, never centered on it
-                            sprite.position.x = radius + 6;
-                            sprite.position.y = radius + 4;
+                            // Placed offset above-right of the cube
+                            sprite.position.x = cubeSize * 0.8 + 6;
+                            sprite.position.y = cubeSize * 0.8 + 5;
                             sprite.position.z = 0;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
