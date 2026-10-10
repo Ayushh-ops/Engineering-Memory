@@ -271,7 +271,7 @@ function FlowFitViewHandler({
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
             fitView({
-                padding: 0.12,
+                padding: { top: 80, bottom: 64, left: 32, right: 32 },
                 maxZoom: 2.5,
                 minZoom: 0.2,
                 duration: prefersReducedMotion ? 0 : 300
@@ -289,7 +289,7 @@ function FlowFitViewHandler({
                 const h = window.innerHeight;
                 if (Math.abs(w - prevSizeRef.current.width) >= 2 || Math.abs(h - prevSizeRef.current.height) >= 2) {
                     prevSizeRef.current = { width: w, height: h };
-                    fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
+                    fitView({ padding: { top: 80, bottom: 64, left: 32, right: 32 }, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
                 }
             });
         };
@@ -693,7 +693,7 @@ const CustomGraphNode = memo(function CustomGraphNode({ data, id }: { data: any;
             data-node-id={id}
             data-indirect={data.isIndirect ? "true" : "false"}
             style={data.style}
-            className="graph-2d-node relative min-h-[28px] h-[28px] flex items-center cursor-pointer select-none transition-[opacity,box-shadow,border-color] duration-150"
+            className="graph-2d-node relative min-h-[34px] h-[34px] flex items-center cursor-pointer select-none transition-[opacity,box-shadow,border-color] duration-150"
         >
             <Handle
                 id="target-left"
@@ -978,14 +978,14 @@ function OverviewGraph2D({
             const hops = nodeHops.get(n.id) || 1;
             const isIndirect = indirectIdSet.has(n.id) || hops >= 2;
 
-            let bg = 'rgba(16, 20, 21, 0.95)';
-            let border = '1px solid rgba(255, 255, 255, 0.08)';
-            let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
+            let bg = '#10161A';
+            let border = '1px solid rgba(255, 255, 255, 0.1)';
+            let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.45)';
             let textColor = '#E8EAE6';
             let dotColor = '#4FD1B5';
 
             if (isRepo) {
-                bg = 'transparent';
+                bg = '#10161A';
                 border = '1.5px solid #E8EAE6';
                 dotColor = '#E8EAE6';
             } else if (isSelected) {
@@ -995,15 +995,19 @@ function OverviewGraph2D({
                 textColor = '#07090A';
                 dotColor = '#4FD1B5';
             } else if (leftIdSet.has(n.id)) {
+                bg = '#10161A';
                 border = '1px solid rgba(79, 209, 181, 0.45)';
                 dotColor = '#4FD1B5';
             } else if (rightIdSet.has(n.id)) {
+                bg = '#10161A';
                 border = '1px solid rgba(227, 160, 74, 0.45)';
                 dotColor = '#E3A04A';
             } else if (isIndirect) {
+                bg = '#10161A';
                 border = '1px solid rgba(138, 145, 140, 0.35)';
                 dotColor = '#8A918C';
             } else if (isCallable) {
+                bg = '#10161A';
                 border = '1px solid rgba(111, 143, 154, 0.4)';
                 dotColor = '#6F8F9A';
             }
@@ -1017,18 +1021,19 @@ function OverviewGraph2D({
                 background: bg,
                 border,
                 borderRadius: '9999px',
-                height: '28px',
-                minHeight: '28px',
+                height: '34px',
+                minHeight: '34px',
                 boxSizing: 'border-box' as const,
                 display: 'flex',
                 alignItems: 'center',
-                padding: '0 10px',
+                padding: '0 12px',
                 boxShadow,
                 opacity: nodeOpacity,
                 color: textColor,
                 fontSize: '12px',
                 cursor: 'pointer',
-                position: 'relative' as const
+                position: 'relative' as const,
+                zIndex: isSelected ? 10 : 3
             };
 
             return {
@@ -1038,7 +1043,7 @@ function OverviewGraph2D({
                 data: {
                     label: (
                         <div
-                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none whitespace-nowrap"
+                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none whitespace-nowrap relative"
                             title={nodePath || labelText}
                         >
                             <span
@@ -1058,6 +1063,11 @@ function OverviewGraph2D({
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0 pointer-events-none">
                                     {hops} hops
                                 </span>
+                            )}
+                            {isSelected && leftIds.length === 0 && (
+                                <div className="absolute top-[38px] left-1/2 -translate-x-1/2 text-[11px] text-[#8A918C]/80 font-mono italic whitespace-nowrap pointer-events-none">
+                                    Imports nothing
+                                </div>
                             )}
                         </div>
                     ),
@@ -1242,24 +1252,28 @@ function OverviewGraph2D({
                 </div>
             )}
 
-            {/* Fixed-size HTML overlay column headers (13px, not scaled with graph zoom) */}
+            {/* Fixed-size HTML overlay column headers (13px, not scaled with graph zoom, safe area below toolbar) */}
             {columnHeaders.visible && (
-                <div className="absolute top-4 inset-x-0 pointer-events-none z-20 flex justify-center items-center gap-12 font-mono text-[13px] px-8">
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
-                        <span className="font-semibold text-[#4FD1B5]">Imports</span>
-                        <span className="text-[#8A918C]">({columnHeaders.imports})</span>
-                        {columnHeaders.imports === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
-                    </div>
+                <div className="absolute top-[76px] inset-x-0 pointer-events-none z-20 flex justify-center items-center gap-10 font-mono text-[13px] px-8">
+                    {columnHeaders.imports > 0 && (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
+                            <span className="font-semibold text-[#4FD1B5]">Imports</span>
+                            <span className="text-[#8A918C]">({columnHeaders.imports})</span>
+                        </div>
+                    )}
                     <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
                         <span className="font-semibold text-[#E3A04A]">Imported by</span>
                         <span className="text-[#8A918C]">({columnHeaders.importedBy})</span>
-                        {columnHeaders.importedBy === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
+                        {focusDepth !== 1 && columnHeaders.importedBy === 0 && (
+                            <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>
+                        )}
                     </div>
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
-                        <span className="font-semibold text-[#8A918C]">Indirect</span>
-                        <span className="text-[#8A918C]">({columnHeaders.indirect})</span>
-                        {columnHeaders.indirect === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
-                    </div>
+                    {focusDepth !== 1 && columnHeaders.indirect > 0 && (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
+                            <span className="font-semibold text-[#8A918C]">Indirect</span>
+                            <span className="text-[#8A918C]">({columnHeaders.indirect})</span>
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -1273,7 +1287,7 @@ function OverviewGraph2D({
                 onNodeMouseLeave={handleNodeMouseLeave}
                 onPaneClick={() => onSelectNode(null)}
                 fitView
-                fitViewOptions={{ padding: 0.12, maxZoom: 2.5, minZoom: 0.2 }}
+                fitViewOptions={{ padding: { top: 80, bottom: 64, left: 32, right: 32 }, maxZoom: 2.5, minZoom: 0.2 }}
                 maxZoom={2.5}
                 minZoom={0.2}
                 proOptions={{ hideAttribution: true }}
@@ -1281,7 +1295,7 @@ function OverviewGraph2D({
                 <Background color="#27272a" gap={16} size={1} />
                 <Controls
                     position="bottom-right"
-                    className="!bg-[rgba(16,20,21,0.8)] !backdrop-blur-md !border !border-white/10 !rounded-lg !shadow-xl !overflow-hidden [&>button]:!border-b [&>button]:!border-white/10 last:[&>button]:!border-b-0 [&>button]:!bg-transparent [&>button]:!text-[#8A918C] [&>button:hover]:!bg-white/[0.06] [&>button:hover]:!text-[#4FD1B5] [&>button>svg]:!fill-current [&>button]:!w-7 [&>button]:!h-7"
+                    className="!bg-[#10161A] !backdrop-blur-md !border !border-white/10 !rounded-lg !shadow-xl !overflow-hidden [&>button]:!bg-[#10161A] [&>button]:!border-b [&>button]:!border-white/10 last:[&>button]:!border-b-0 [&>button]:!text-[#8A918C] [&>button:hover]:!bg-white/[0.06] [&>button:hover]:!text-[#4FD1B5] [&>button>svg]:!fill-current [&>button]:!w-7 [&>button]:!h-7"
                 />
                 <FlowFitViewHandler
                     isExpanded={isExpanded}
@@ -1566,8 +1580,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [showCalls, setShowCalls] = useState(false);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
     const [showAllNodes, setShowAllNodes] = useState(false);
-    const [showLegend, setShowLegend] = useState(true);
-    const [legendCollapsed, setLegendCollapsed] = useState(false);
     const [resetTrigger, setResetTrigger] = useState(0);
     const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -1797,48 +1809,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         });
         return ids;
     }, [displayGraph, hoveredGraphNode]);
-
-    const legendData = useMemo(() => {
-        const edges = displayGraph?.edges || [];
-        let hasImports = false;
-        let hasImportedBy = false;
-        let hasIndirect = false;
-        let hasCalls = false;
-
-        if (selectedFile) {
-            let centerId: string | null = null;
-            for (const n of displayGraph.nodes) {
-                const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
-                if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && (n as any).name === selectedFile)) {
-                    centerId = n.id;
-                    break;
-                }
-            }
-            if (centerId) {
-                for (const e of edges) {
-                    if (e.type === 'calls') {
-                        hasCalls = true;
-                    } else if (e.from === centerId) {
-                        hasImports = true;
-                    } else if (e.to === centerId) {
-                        hasImportedBy = true;
-                    } else {
-                        hasIndirect = true;
-                    }
-                }
-            }
-        } else {
-            hasImports = edges.some(e => e.type === 'imports' || !e.type);
-            hasCalls = edges.some(e => e.type === 'calls');
-        }
-
-        return {
-            hasImports,
-            hasImportedBy,
-            hasIndirect,
-            hasCalls
-        };
-    }, [displayGraph, selectedFile]);
 
     const handleViewModeChange = (mode: '2D' | '3D') => {
         setViewMode(mode);
@@ -2426,6 +2396,36 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 >
                     {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
                 </button>
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
+                {/* Status pill merged into toolbar row (right side) */}
+                <div className="flex items-center gap-1.5 text-xs text-[#8A918C] px-1 font-mono">
+                    {selectedFile && !showAllNodes && totalImportersCount > 12 ? (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">12</span> of <span className="text-[#E8EAE6] font-medium">{totalImportersCount}</span> importers
+                        </span>
+                    ) : displayNodes.length < totalCandidateCount ? (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> of <span className="text-[#E8EAE6] font-medium">{totalCandidateCount}</span> files
+                        </span>
+                    ) : (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> files
+                        </span>
+                    )}
+                    {displayNodes.length < totalCandidateCount && (
+                        <>
+                            <span className="text-white/20">|</span>
+                            <button
+                                onClick={() => setShowAllNodes(true)}
+                                className="text-[#4FD1B5] hover:underline font-medium cursor-pointer"
+                            >
+                                Show all
+                            </button>
+                        </>
+                    )}
+                </div>
             </div>
 
             {/* In expanded mode, collapsible details button and drawer */}
@@ -2630,103 +2630,42 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 />
             )}
 
-            {/* Bottom-left: Status pill and Legend */}
-            <div className="absolute bottom-3.5 left-3.5 z-20 flex flex-col items-start gap-2 pointer-events-auto select-none">
-                {/* Status pill: "Showing 12 of 24 importers" or "Showing 12 of 32 files" plus a "Show all" action */}
-                <div className="glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-md px-2.5 py-1 flex items-center gap-2 border border-white/10 text-xs font-mono shadow-md text-[#8A918C]">
-                    {selectedFile && !showAllNodes && totalImportersCount > 12 ? (
-                        <span>
-                            Showing <span className="text-[#E8EAE6] font-medium">12</span> of <span className="text-[#E8EAE6] font-medium">{totalImportersCount}</span> importers
-                        </span>
-                    ) : displayNodes.length < totalCandidateCount ? (
-                        <span>
-                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> of <span className="text-[#E8EAE6] font-medium">{totalCandidateCount}</span> files
-                        </span>
-                    ) : (
-                        <span>
-                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> files
-                        </span>
-                    )}
-                    {displayNodes.length < totalCandidateCount && (
-                        <>
-                            <span className="text-white/20">|</span>
-                            <button
-                                onClick={() => setShowAllNodes(true)}
-                                className="text-[#4FD1B5] hover:underline font-medium cursor-pointer"
-                            >
-                                Show all
-                            </button>
-                        </>
-                    )}
+            {/* Bottom-left: Compact horizontal legend strip inside reserved 56px bottom band */}
+            <div className="absolute bottom-2.5 left-3.5 z-20 h-9 px-3 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3.5 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto">
+                <div className="flex items-center gap-1.5">
+                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                        <line x1="1" y1="4" x2="13" y2="4" stroke="#4FD1B5" strokeWidth="1.5" />
+                        <polygon points="12,1.5 17,4 12,6.5" fill="#4FD1B5" />
+                    </svg>
+                    <span className="text-[#E8EAE6]">Imports</span>
                 </div>
-
-                {/* Legend always visible by default (compact, bottom-left, small collapse chevron), filtered to present types */}
-                <div className="glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2.5 text-xs font-mono shadow-xl max-w-xs select-none">
-                    <div
-                        className="flex items-center justify-between gap-3 border-b border-white/[0.08] pb-1 cursor-pointer"
-                        onClick={() => setLegendCollapsed(prev => !prev)}
-                    >
-                        <span className="font-semibold text-[11px] text-[#E8EAE6]">Legend</span>
-                        <button
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                setLegendCollapsed(prev => !prev);
-                            }}
-                            className="text-[#8A918C] hover:text-[#E8EAE6] text-[10px] cursor-pointer p-0.5"
-                            title={legendCollapsed ? "Expand legend" : "Collapse legend"}
-                        >
-                            {legendCollapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                        </button>
+                <div className="flex items-center gap-1.5">
+                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                        <line x1="1" y1="4" x2="13" y2="4" stroke="#E3A04A" strokeWidth="1.5" />
+                        <polygon points="12,1.5 17,4 12,6.5" fill="#E3A04A" />
+                    </svg>
+                    <span className="text-[#E8EAE6]">Imported by</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                        <line x1="1" y1="4" x2="13" y2="4" stroke="#8A918C" strokeWidth="1.5" strokeDasharray="3 3" />
+                        <polygon points="12,1.5 17,4 12,6.5" fill="#8A918C" />
+                    </svg>
+                    <span className="text-[#E8EAE6]">Indirect</span>
+                </div>
+                {showCalls && (
+                    <div className="flex items-center gap-1.5">
+                        <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                            <line x1="1" y1="4" x2="13" y2="4" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
+                            <polygon points="12,1.5 17,4 12,6.5" fill="#6F8F9A" />
+                        </svg>
+                        <span className="text-[#E8EAE6]">Calls</span>
                     </div>
-                    {!legendCollapsed && (
-                        <div className="pt-2 space-y-2 text-[11px]">
-                            {/* Arrow samples: teal Imports, amber Imported by, grey dashed Indirect */}
-                            <div className="space-y-1.5">
-                                {legendData.hasImports && (
-                                    <div className="flex items-center gap-2 text-[#8A918C]">
-                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
-                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#4FD1B5" strokeWidth="1.5" />
-                                            <polygon points="15,2 21,5 15,8" fill="#4FD1B5" />
-                                        </svg>
-                                        <span className="text-[#E8EAE6]">Imports</span>
-                                    </div>
-                                )}
-                                {legendData.hasImportedBy && (
-                                    <div className="flex items-center gap-2 text-[#8A918C]">
-                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
-                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#E3A04A" strokeWidth="1.5" />
-                                            <polygon points="15,2 21,5 15,8" fill="#E3A04A" />
-                                        </svg>
-                                        <span className="text-[#E8EAE6]">Imported by</span>
-                                    </div>
-                                )}
-                                {legendData.hasIndirect && (
-                                    <div className="flex items-center gap-2 text-[#8A918C]">
-                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
-                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#8A918C" strokeWidth="1.5" strokeDasharray="3 3" />
-                                            <polygon points="15,2 21,5 15,8" fill="#8A918C" />
-                                        </svg>
-                                        <span className="text-[#E8EAE6]">Indirect</span>
-                                    </div>
-                                )}
-                                {showCalls && legendData.hasCalls && (
-                                    <div className="flex items-center gap-2 text-[#8A918C]">
-                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
-                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
-                                            <polygon points="15,2 21,5 15,8" fill="#6F8F9A" />
-                                        </svg>
-                                        <span className="text-[#E8EAE6]">Calls</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* One line explanatory note */}
-                            <div className="text-[10px] text-[#8A918C] pt-1.5 border-t border-white/[0.06] italic">
-                                Arrow points to the file being imported.
-                            </div>
-                        </div>
-                    )}
-                </div>
+                )}
+                <div className="h-3.5 w-[1px] bg-white/10" />
+                <span className="text-[10px] text-[#8A918C]/80 italic">
+                    Arrow points to the file being imported.
+                </span>
             </div>
         </div>
     );

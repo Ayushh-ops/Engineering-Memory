@@ -535,9 +535,9 @@ export function compute2DLayout(
     };
     if (nodes.length === 0) return defaultRes;
 
-    const nodeHeight = 28;
-    const verticalGap = 40;
-    const rowStep = nodeHeight + verticalGap; // 68px between row centers
+    const nodeHeight = 34;
+    const verticalGap = 12;
+    const rowStep = 46; // 34px pill height + 12px gap
 
     const centerId = options?.centerId;
     const centerNode = centerId ? nodes.find(n => n.id === centerId) : null;
@@ -614,7 +614,7 @@ export function compute2DLayout(
         // Left column (Imports) at x = -colSpacing
         const leftCount = leftIds.length;
         if (leftCount > 0) {
-            const leftColCount = Math.max(1, Math.ceil(leftCount / 10));
+            const leftColCount = options?.focusDepth === 1 ? 1 : Math.max(1, Math.ceil(leftCount / 12));
             const leftChunkSize = Math.ceil(leftCount / leftColCount);
             for (let c = 0; c < leftColCount; c++) {
                 const chunk = leftIds.slice(c * leftChunkSize, (c + 1) * leftChunkSize);
@@ -628,10 +628,12 @@ export function compute2DLayout(
         }
 
         // Right column (Imported by) at x = colSpacing
+        // Direct mode: show ONE column of importers (max 12 rows, row height 34px) so no edge passes behind another pill
         const rightCount = rightIds.length;
-        const rightColCount = Math.max(1, Math.ceil(rightCount / 10));
+        const isDirectMode = options?.focusDepth === 1;
+        const rightColCount = isDirectMode ? 1 : Math.max(1, Math.ceil(rightCount / 12));
         if (rightCount > 0) {
-            const rightChunkSize = Math.ceil(rightCount / rightColCount);
+            const rightChunkSize = isDirectMode ? 12 : Math.ceil(rightCount / rightColCount);
             for (let c = 0; c < rightColCount; c++) {
                 const chunk = rightIds.slice(c * rightChunkSize, (c + 1) * rightChunkSize);
                 const x = colSpacing * (c + 1);
@@ -643,11 +645,11 @@ export function compute2DLayout(
             }
         }
 
-        // Far right column (Indirect) at x = colSpacing * (baseColOffset + 1)
+        // Indirect mode: add the second column further right
         const indirectCount = indirectIds.length;
-        const baseColOffset = Math.max(1, Math.ceil(rightCount / 10));
-        if (indirectCount > 0) {
-            const indColCount = Math.max(1, Math.ceil(indirectCount / 10));
+        const baseColOffset = rightColCount;
+        if (indirectCount > 0 && !isDirectMode) {
+            const indColCount = Math.max(1, Math.ceil(indirectCount / 12));
             const indChunkSize = Math.ceil(indirectCount / indColCount);
             for (let c = 0; c < indColCount; c++) {
                 const chunk = indirectIds.slice(c * indChunkSize, (c + 1) * indChunkSize);
