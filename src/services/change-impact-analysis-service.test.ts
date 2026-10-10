@@ -46,7 +46,7 @@ assert.equal(result.reviewCandidates[1]?.reason, "validation-candidate");
 assert.equal(result.reviewCandidates[1]?.evidence, "path-convention");
 assert.ok(Array.isArray(result.reasons));
 assert.ok(result.reasons.some((r) => r.label === "Dependents" && r.value.includes("files depend on it")));
-assert.ok(result.reasons.some((r) => r.label === "Test coverage" && r.value.includes("test file")));
+assert.ok(result.reasons.some((r) => r.label === "Test coverage" && r.value === "Covered by 1 test"));
 
 const bounded = service.analyze(graph, target, { maxDepth: 2, maxResults: 10 });
 assert.deepEqual(bounded.transitiveConsumers.map((item) => item.symbol.name), ["middle"]);
@@ -132,6 +132,56 @@ assert.deepEqual(testMappingResult.tests.map((t) => t.path).sort(), [
     "tests/integration.spec.ts",
     "tests/service.test.ts"
 ]);
+
+// Unit test: A imported by B, B imported by A.test -> testsToRun = [A.test (2 hops)]
+const indirectTestGraph: RepositoryGraph = {
+    nodes: [
+        { id: "file:A", type: "file", name: "A", path: "A" },
+        { id: "file:B", type: "file", name: "B", path: "B" },
+        { id: "file:A.test", type: "file", name: "A.test", path: "A.test" }
+    ],
+    edges: [
+        { from: "file:B", to: "file:A", type: "imports" },
+        { from: "file:A.test", to: "file:B", type: "imports" }
+    ]
+};
+const indirectTestResult = service.analyze(indirectTestGraph, { type: "file", path: "A" });
+const testsToRun = indirectTestResult.tests.map((t) => `${t.path} (${t.depth === 1 ? "Direct" : `${t.depth} hops`})`);
+assert.deepEqual(testsToRun, ["A.test (2 hops)"]);
+assert.equal(indirectTestResult.tests[0].depth, 2);
+assert.ok(indirectTestResult.reasons?.some((r) => r.label === "Test coverage" && r.value === "Only indirect tests cover it (1)"));
+
+// Unit test with .ts extension: A imported by B, B imported by A.test -> testsToRun = [A.test (2 hops)]
+const indirectTestGraphTs: RepositoryGraph = {
+    nodes: [
+        { id: "file:src%2FA.ts", type: "file", name: "src/A.ts", path: "src/A.ts" },
+        { id: "file:src%2FB.ts", type: "file", name: "src/B.ts", path: "src/B.ts" },
+        { id: "file:src%2FA.test.ts", type: "file", name: "src/A.test.ts", path: "src/A.test.ts" }
+    ],
+    edges: [
+        { from: "file:src%2FB.ts", to: "file:src%2FA.ts", type: "imports" },
+        { from: "file:src%2FA.test.ts", to: "file:src%2FB.ts", type: "imports" }
+    ]
+};
+const indirectTestResultTs = service.analyze(indirectTestGraphTs, { type: "file", path: "src/A.ts" });
+const testsToRunTs = indirectTestResultTs.tests.map((t) => `${t.path?.split("/").pop()} (${t.depth === 1 ? "Direct" : `${t.depth} hops`})`);
+assert.deepEqual(testsToRunTs, ["A.test.ts (2 hops)"]);
+assert.equal(indirectTestResultTs.tests[0].depth, 2);
+assert.ok(indirectTestResultTs.reasons?.some((r) => r.label === "Test coverage" && r.value === "Only indirect tests cover it (1)"));
+
+// Unit test for no tests found:
+const noTestGraph: RepositoryGraph = {
+    nodes: [
+        { id: "file:src%2FX.ts", type: "file", name: "src/X.ts", path: "src/X.ts" },
+        { id: "file:src%2FY.ts", type: "file", name: "src/Y.ts", path: "src/Y.ts" }
+    ],
+    edges: [
+        { from: "file:src%2FY.ts", to: "file:src%2FX.ts", type: "imports" }
+    ]
+};
+const noTestResult = service.analyze(noTestGraph, { type: "file", path: "src/X.ts" });
+assert.equal(noTestResult.tests.length, 0);
+assert.ok(noTestResult.reasons?.some((r) => r.label === "Test coverage" && r.value === "No test covers this file"));
 
 const evidenceResult = service.analyze(graph, target, undefined, [
     { path: "src/target.ts", content: "export function target() { return 1; }" },

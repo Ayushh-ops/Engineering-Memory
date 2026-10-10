@@ -3,7 +3,7 @@ import { useAppStore } from '../store';
 import { Badge, cn } from '../ui';
 import { Activity, Clock, MessageSquare } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
-import { computeRisk, getConnectedFiles, getFileDependents } from '../graph-helpers';
+import { computeRisk, getConnectedFiles, getFileDependents, isTestFile } from '../graph-helpers';
 import { CodeViewer } from './CodeViewer';
 
 function getFileLanguage(filePath: string): string {
@@ -373,7 +373,8 @@ function FileInspector({ className }: { className?: string }) {
         const reach = (fileRisk.directDependents || 0) + (fileRisk.transitiveDependents || 0);
         const depStr = deps === 1 ? '1 file depends on it' : `${deps} files depend on it`;
         const reachStr = reach > 0 ? `, and a change can reach ${reach}` : '';
-        const testStr = fileRisk.hasNoTests ? '. No test file found.' : '. Tests found.';
+        const testCoverageReason = fileRisk?.reasons?.find(r => r.label === 'Test coverage')?.value;
+        const testStr = testCoverageReason ? `. ${testCoverageReason}.` : (fileRisk.hasNoTests ? '. No test covers this file.' : '. Covered by tests.');
         return `${depStr}${reachStr}${testStr}`;
     }, [fileRisk]);
 
@@ -419,11 +420,54 @@ function FileInspector({ className }: { className?: string }) {
 
     const testsList = useMemo(() => {
         if (!selectedFile) return [];
-        const tests = (impactResult?.tests || [])
-            .map((t: any) => (typeof t === 'string' ? t : (t?.path || t?.symbol?.path)))
-            .filter(Boolean) as string[];
-        return tests;
-    }, [impactResult, selectedFile]);
+        const testMap = new Map<string, { path: string; depth: number }>();
+
+        // 1. Tests from impactResult if present
+        if (impactResult?.tests && Array.isArray(impactResult.tests)) {
+            for (const t of impactResult.tests as any[]) {
+                const p = typeof t === 'string' ? t : (t.path || t.symbol?.path || '');
+                if (!p) continue;
+                const depth = typeof t === 'object' && typeof t.depth === 'number'
+                    ? t.depth
+                    : (indirectFiles.includes(p) ? 2 : 1);
+                testMap.set(p, { path: p, depth });
+            }
+        }
+
+        // 2. Direct dependents that are test files
+        for (const d of dependentsData.direct) {
+            if (isTestFile(d) && !testMap.has(d)) {
+                testMap.set(d, { path: d, depth: 1 });
+            }
+        }
+
+        // 3. Indirect dependents that are test files
+        for (const ind of dependentsData.indirect) {
+            if (isTestFile(ind.path)) {
+                const existing = testMap.get(ind.path);
+                const depth = existing ? Math.min(existing.depth, ind.hops || 2) : (ind.hops || 2);
+                testMap.set(ind.path, { path: ind.path, depth });
+            }
+        }
+
+        // 4. Test files in graph sharing base name
+        if (graph && selectedFile) {
+            const baseName = selectedFile.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+            for (const n of graph.nodes) {
+                if (n.type !== 'file') continue;
+                const p = n.path || n.id;
+                if (!p || !isTestFile(p)) continue;
+                const testBase = p.split('/').pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, '').replace(/\.[^.]+$/, '') || '';
+                if (testBase === baseName || p.includes(baseName)) {
+                    if (!testMap.has(p)) {
+                        testMap.set(p, { path: p, depth: 1 });
+                    }
+                }
+            }
+        }
+
+        return Array.from(testMap.values()).sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path));
+    }, [impactResult, selectedFile, dependentsData, indirectFiles, graph]);
 
     useEffect(() => {
         if (inspectorTab === 'Impact' && graph && selectedFile) {
@@ -771,24 +815,38 @@ function FileInspector({ className }: { className?: string }) {
 
                     {/* Tests to run */}
                     <div className="pt-2 border-t border-white/[0.08] space-y-2">
-                        <div className="text-xs text-[#8A918C] font-medium">Tests to run</div>
+                        <div className="text-xs text-[#8A918C] font-medium">Tests to run ({testsList.length})</div>
                         {testsList.length === 0 ? (
                             <div className="flex items-center gap-2 text-xs text-[#8A918C] py-1">
                                 <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0 inline-block" />
-                                <span>No test found for this file</span>
+                                <span>No test covers this file</span>
                             </div>
                         ) : (
-                            <div className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-custom">
-                                {testsList.map((testPath, i) => (
-                                    <button
-                                        key={i}
-                                        onClick={() => selectFile(testPath)}
-                                        className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
-                                        title={testPath}
-                                    >
-                                        {testPath?.split('/').pop()}
-                                    </button>
-                                ))}
+                            <div className="space-y-1 max-h-36 overflow-y-auto scrollbar-custom pr-0.5">
+                                {testsList.map((testItem, i) => {
+                                    const testPath = testItem.path;
+                                    const testTag = testItem.depth > 1 ? `${testItem.depth} hops` : 'Direct';
+                                    return (
+                                        <button
+                                            key={i}
+                                            onClick={() => selectFile(testPath)}
+                                            className="w-full flex items-center justify-between p-1.5 rounded glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 hover:bg-white/[0.04] transition-colors cursor-pointer group text-left"
+                                            title={testPath}
+                                        >
+                                            <span className="font-mono text-xs text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate flex-1 mr-2">
+                                                {testPath?.split('/').pop()}
+                                            </span>
+                                            <span className={cn(
+                                                "font-sans text-[10px] px-1.5 py-0.2 rounded border shrink-0",
+                                                testTag === 'Direct'
+                                                    ? "border-[#E3A04A]/30 text-[#E3A04A] bg-[#E3A04A]/10"
+                                                    : "border-white/15 text-[#8A918C] bg-white/[0.03]"
+                                            )}>
+                                                {testTag}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
                             </div>
                         )}
                     </div>

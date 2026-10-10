@@ -395,6 +395,15 @@ export function getFileDependents(
     };
 }
 
+export function isTestFile(path: string): boolean {
+    const normalized = path.replace(/\\/g, '/');
+    const parts = normalized.split('/');
+    const fileName = parts[parts.length - 1];
+    const hasTestDir = parts.slice(0, -1).some(p => p === 'test' || p === 'tests' || p === '__tests__');
+    const matchesPattern = /\.(test|spec)(\.[^.]*|$)/.test(fileName);
+    return hasTestDir || matchesPattern;
+}
+
 export function computeRisk(
     filePath: string,
     graph: RepositoryGraph | null,
@@ -424,18 +433,47 @@ export function computeRisk(
         churnPercent = Math.min(100, Math.round((touchingCommitsCount / Math.max(1, commits.length)) * 100));
     }
 
-    // 4. Test presence
+    // 4. Test presence (direct, indirect, or name convention)
     const baseName = filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
-    const hasTests = graph.nodes.some((n: any) => {
-        if (n.type !== 'file') return false;
+    const testMap = new Map<string, number>();
+
+    // Direct dependents
+    for (const d of deps.direct) {
+        if (isTestFile(d)) {
+            testMap.set(d, 1);
+        }
+    }
+
+    // Indirect dependents
+    for (const ind of deps.indirect) {
+        if (isTestFile(ind.path)) {
+            const existing = testMap.get(ind.path);
+            const depth = existing ? Math.min(existing, ind.hops || 2) : (ind.hops || 2);
+            testMap.set(ind.path, depth);
+        }
+    }
+
+    // Test files in graph sharing baseName
+    for (const n of graph.nodes) {
+        if (n.type !== 'file') continue;
         const p = n.path || n.id;
-        if (!p) return false;
-        const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
-        if (!isTest) return false;
-        const testBase = p.split('/').pop()?.replace(/\.(test|spec)\.[^.]+$/, '').replace(/\.[^.]+$/, '') || '';
-        return testBase === baseName || p.includes(baseName);
-    });
-    const hasNoTests = !hasTests;
+        if (!p || !isTestFile(p)) continue;
+        const testBase = p.split('/').pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, '').replace(/\.[^.]+$/, '') || '';
+        if (testBase === baseName || p.includes(baseName)) {
+            if (!testMap.has(p)) {
+                testMap.set(p, 1);
+            }
+        }
+    }
+
+    let directTestCount = 0;
+    let indirectTestCount = 0;
+    for (const depth of testMap.values()) {
+        if (depth === 1) directTestCount++;
+        else indirectTestCount++;
+    }
+    const totalTestCount = testMap.size;
+    const hasNoTests = totalTestCount === 0;
 
     let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
     if (directDependents === 0 && transitiveDependents === 0) {
@@ -443,11 +481,17 @@ export function computeRisk(
     }
     const score = Math.min(100, Math.max(0, Math.round(rawScore)));
 
+    const testCoverageText = hasNoTests
+        ? "No test covers this file"
+        : directTestCount === 0
+            ? `Only indirect tests cover it (${indirectTestCount})`
+            : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
+
     const reasons: Array<{ label: string; value: string }> = [
         { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
         { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
         { label: "Commit churn", value: `${churnPercent}%` },
-        { label: "Test coverage", value: hasNoTests ? "No test found (+10)" : "Tests found (+0)" }
+        { label: "Test coverage", value: testCoverageText }
     ];
 
     return {
@@ -512,24 +556,39 @@ export function computeChangeSetRisk(
         churnPercent = Math.min(100, Math.round((touchingCommitsCount / Math.max(1, commits.length)) * 100));
     }
 
-    let anyTestsFound = false;
+    const testMap = new Map<string, number>();
     for (const file of changeSetFiles) {
+        const deps = getFileDependents(graph, file);
+        for (const d of deps.direct) {
+            if (isTestFile(d)) testMap.set(d, 1);
+        }
+        for (const ind of deps.indirect) {
+            if (isTestFile(ind.path)) {
+                const existing = testMap.get(ind.path);
+                const depth = existing ? Math.min(existing, ind.hops || 2) : (ind.hops || 2);
+                testMap.set(ind.path, depth);
+            }
+        }
         const baseName = file.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
-        const found = graph.nodes.some((n: any) => {
-            if (n.type !== 'file') return false;
+        for (const n of graph.nodes) {
+            if (n.type !== 'file') continue;
             const p = n.path || n.id;
-            if (!p) return false;
-            const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
-            if (!isTest) return false;
-            const testBase = p.split('/').pop()?.replace(/\.(test|spec)\.[^.]+$/, '').replace(/\.[^.]+$/, '') || '';
-            return testBase === baseName || p.includes(baseName);
-        });
-        if (found) {
-            anyTestsFound = true;
-            break;
+            if (!p || !isTestFile(p)) continue;
+            const testBase = p.split('/').pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, '').replace(/\.[^.]+$/, '') || '';
+            if (testBase === baseName || p.includes(baseName)) {
+                if (!testMap.has(p)) testMap.set(p, 1);
+            }
         }
     }
-    const hasNoTests = !anyTestsFound;
+
+    let directTestCount = 0;
+    let indirectTestCount = 0;
+    for (const depth of testMap.values()) {
+        if (depth === 1) directTestCount++;
+        else indirectTestCount++;
+    }
+    const totalTestCount = testMap.size;
+    const hasNoTests = totalTestCount === 0;
 
     let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
     if (directDependents === 0 && transitiveDependents === 0) {
@@ -537,11 +596,17 @@ export function computeChangeSetRisk(
     }
     const score = Math.min(100, Math.max(0, Math.round(rawScore)));
 
+    const testCoverageText = hasNoTests
+        ? "No test covers this file"
+        : directTestCount === 0
+            ? `Only indirect tests cover it (${indirectTestCount})`
+            : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
+
     const reasons: Array<{ label: string; value: string }> = [
         { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
         { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
         { label: "Commit churn", value: `${churnPercent}%` },
-        { label: "Test coverage", value: hasNoTests ? "No test found (+10)" : "Tests found (+0)" }
+        { label: "Test coverage", value: testCoverageText }
     ];
 
     return {

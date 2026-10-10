@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
-import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles, getFileDependents } from '../graph-helpers';
+import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles, getFileDependents, isTestFile } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 import { RightPanel } from './RightPanel';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -3625,7 +3625,7 @@ export function MainPanel({ className }: { className?: string }) {
                 lines.push(`- \`${t}\``);
             }
         } else {
-            lines.push(`No test found for this file.`);
+            lines.push(`No test covers this file.`);
         }
         lines.push('');
 
@@ -4792,11 +4792,67 @@ ${lastAssistant?.content || 'No response recorded.'}
                             ) : (() => {
                                 const directCount = directList.length;
                                 const indirectCount = indirectList.length;
-                                const tests = (impactResult?.tests || [])
-                                    .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
-                                    .filter(Boolean) as string[];
-                                const testCount = tests.length;
+
+                                const testsToRunList: Array<{ path: string; depth: number }> = (() => {
+                                    const testMap = new Map<string, { path: string; depth: number }>();
+
+                                    // 1. Tests from impactResult if present
+                                    if (impactResult?.tests && Array.isArray(impactResult.tests)) {
+                                        for (const t of impactResult.tests as any[]) {
+                                            const p = typeof t === 'string' ? t : (t.path || t.symbol?.path || '');
+                                            if (!p) continue;
+                                            const depth = typeof t === 'object' && typeof t.depth === 'number'
+                                                ? t.depth
+                                                : (indirectList.some(ind => ind.path === p) ? 2 : 1);
+                                            testMap.set(p, { path: p, depth });
+                                        }
+                                    }
+
+                                    // 2. Direct dependents that are test files
+                                    for (const d of dependentsData.direct) {
+                                        if (isTestFile(d) && !testMap.has(d)) {
+                                            testMap.set(d, { path: d, depth: 1 });
+                                        }
+                                    }
+
+                                    // 3. Indirect dependents that are test files
+                                    for (const ind of dependentsData.indirect) {
+                                        if (isTestFile(ind.path)) {
+                                            const existing = testMap.get(ind.path);
+                                            const depth = existing ? Math.min(existing.depth, ind.hops || 2) : (ind.hops || 2);
+                                            testMap.set(ind.path, { path: ind.path, depth });
+                                        }
+                                    }
+
+                                    // 4. Test files in graph sharing base name
+                                    if (graph && selectedFile) {
+                                        const baseName = selectedFile.split('/').pop()?.replace(/\.[^.]+$/, '') || '';
+                                        for (const n of graph.nodes) {
+                                            if (n.type !== 'file') continue;
+                                            const p = n.path || n.id;
+                                            if (!p || !isTestFile(p)) continue;
+                                            const testBase = p.split('/').pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, '').replace(/\.[^.]+$/, '') || '';
+                                            if (testBase === baseName || p.includes(baseName)) {
+                                                if (!testMap.has(p)) {
+                                                    testMap.set(p, { path: p, depth: 1 });
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    return Array.from(testMap.values()).sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path));
+                                })();
+
+                                const testCount = testsToRunList.length;
+                                const directTestCount = testsToRunList.filter(t => t.depth === 1).length;
+                                const indirectTestCount = testsToRunList.filter(t => t.depth > 1).length;
                                 const targetDisplayName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'file') || 'file';
+
+                                const verdictTestText = (() => {
+                                    if (testCount === 0) return "No test covers this file.";
+                                    if (directTestCount === 0) return `Only indirect tests cover it (${indirectTestCount}).`;
+                                    return `Covered by ${testCount} test${testCount === 1 ? '' : 's'}.`;
+                                })();
 
                                 // Combine and rank all affected files by score
                                 const rankedAll = [
@@ -4839,7 +4895,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 <span className="font-mono font-semibold text-[#E8EAE6]">{directCount}</span> file{directCount === 1 ? '' : 's'} directly and{' '}
                                                 <span className="font-mono font-semibold text-[#E8EAE6]">{indirectCount}</span> more indirectly.{' '}
                                                 <span className={testCount === 0 ? "text-[#E3A04A]" : "text-[#8A918C]"}>
-                                                    {testCount === 0 ? "No tests cover it." : `${testCount} test${testCount === 1 ? '' : 's'} cover it.`}
+                                                    {verdictTestText}
                                                 </span>
                                             </h2>
                                         </div>
@@ -5293,9 +5349,9 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             </div>
                                                         ) : (
                                                             <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-custom pr-0.5">
-                                                                {tests.map((testPath, i) => {
-                                                                    const isIndirect = indirectList.some(item => item.path === testPath);
-                                                                    const testTag = isIndirect ? '2 hops' : 'Direct';
+                                                                {testsToRunList.map((testItem, i) => {
+                                                                    const testPath = testItem.path;
+                                                                    const testTag = testItem.depth > 1 ? `${testItem.depth} hops` : 'Direct';
                                                                     return (
                                                                         <button
                                                                             key={i}
@@ -5324,7 +5380,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     {/* Why this score stays collapsed */}
                                                     <details className="group/why text-xs rounded-lg border border-white/[0.06] bg-white/[0.02]">
                                                         <summary className="p-2 cursor-pointer font-medium text-[#8A918C] flex items-center justify-between select-none hover:text-[#E8EAE6]">
-                                                            <span>Why this score</span>
+                                                             <span>Why this score</span>
                                                             <span className="text-[10px] font-mono opacity-60 group-open/why:rotate-180 transition-transform">▼</span>
                                                         </summary>
                                                         <div className="p-2.5 pt-0 space-y-1 text-[11px] text-[#8A918C]">
@@ -5339,7 +5395,11 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             <div className="flex items-center justify-between">
                                                                 <span>Test coverage</span>
                                                                 <span className="font-mono text-[#E8EAE6]">
-                                                                    {testCount === 0 ? "No test found" : `${testCount} tests found`}
+                                                                    {testCount === 0
+                                                                        ? "No test covers this file"
+                                                                        : directTestCount === 0
+                                                                            ? `Only indirect tests cover it (${indirectTestCount})`
+                                                                            : `Covered by ${testCount} test${testCount === 1 ? '' : 's'}`}
                                                                 </span>
                                                             </div>
                                                             <div className="flex items-center justify-between">

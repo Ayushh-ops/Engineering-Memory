@@ -96,6 +96,7 @@ export interface ChangeImpactAnalysisResult {
     directCallers: ChangeImpactSymbolResult[];
     transitiveConsumers: ChangeImpactSymbolResult[];
     tests: ChangeImpactTestResult[];
+    testsToRun?: ChangeImpactTestResult[];
     relatedDependencies: ChangeImpactDependencyResult[];
     reviewCandidates: ChangeImpactReviewCandidate[];
     sourceEvidence: RepositorySourceEvidence[];
@@ -138,7 +139,7 @@ function isTestFile(path: string): boolean {
     const parts = normalized.split("/");
     const fileName = parts[parts.length - 1];
     const hasTestDir = parts.slice(0, -1).some((p) => p === "test" || p === "tests" || p === "__tests__");
-    const matchesPattern = /\.(test|spec)\.[^.]+$/.test(fileName);
+    const matchesPattern = /\.(test|spec)(\.[^.]*|$)/.test(fileName);
     return hasTestDir || matchesPattern;
 }
 
@@ -150,7 +151,8 @@ function buildImpactReasons(
     targetPath: string,
     directCount: number,
     transitiveCount: number,
-    graph: RepositoryGraph
+    graph: RepositoryGraph,
+    tests: ChangeImpactTestResult[] = []
 ): Array<{ label: string; value: string }> {
     const totalDeps = directCount + transitiveCount;
     const reasons: Array<{ label: string; value: string }> = [];
@@ -187,18 +189,31 @@ function buildImpactReasons(
         });
     }
 
-    // 4. Has related test file yes/no
-    const baseName = targetPath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
-    const hasTestFile = graph.nodes.some((n) => {
-        if (n.type !== "file") return false;
-        if (!isTestPath(n.path)) return false;
-        const testBase = n.path.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
-        return testBase === baseName || n.path.includes(baseName);
-    });
+    // 4. Test coverage:
+    // Wording: no test at all = "No test covers this file". Only indirect tests = "Only indirect tests cover it (N)". Direct tests = "Covered by N tests".
+    let directTests = 0;
+    let indirectTests = 0;
+    for (const t of tests) {
+        if ((t.depth ?? 1) === 1) {
+            directTests++;
+        } else {
+            indirectTests++;
+        }
+    }
+    const totalTests = directTests + indirectTests;
+
+    let testCoverageValue: string;
+    if (totalTests === 0) {
+        testCoverageValue = "No test covers this file";
+    } else if (directTests === 0) {
+        testCoverageValue = `Only indirect tests cover it (${indirectTests})`;
+    } else {
+        testCoverageValue = `Covered by ${totalTests} test${totalTests === 1 ? "" : "s"}`;
+    }
 
     reasons.push({
         label: "Test coverage",
-        value: hasTestFile ? "Related test file found" : "No test file found"
+        value: testCoverageValue
     });
 
     return reasons;
@@ -263,6 +278,7 @@ export class ChangeImpactAnalysisService {
             bounds: { ...limits, truncated: false },
             ...emptyResults(),
             tests: [] as ChangeImpactTestResult[],
+            testsToRun: undefined as ChangeImpactTestResult[] | undefined,
             relatedDependencies: [] as ChangeImpactDependencyResult[],
             reviewCandidates: [] as ChangeImpactReviewCandidate[],
             sourceEvidence: [] as RepositorySourceEvidence[],
@@ -375,38 +391,56 @@ export class ChangeImpactAnalysisService {
                 ? this.sourceEvidenceService.select(target, graph, files)
                 : [];
             if (files.length === 0) base.limitations.push("Source evidence was not requested because no fetched files were supplied.");
-            // Populate tests: test files that import it (direct) or share its base name
+            // Populate tests: test files found among direct OR indirect dependents, or sharing base name
             const targetBase = target.path.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
-            const testFilePaths = new Set<string>();
+            const testMap = new Map<string, { depth: number }>();
 
-            // 1. Direct imports by test files
+            // 1. Direct dependents / reverse imports
+            for (const dPath of depResult.direct) {
+                if (isTestFile(dPath)) {
+                    testMap.set(dPath, { depth: 1 });
+                }
+            }
             for (const dep of reverseImports) {
                 if (isTestFile(dep.path)) {
-                    testFilePaths.add(dep.path);
+                    testMap.set(dep.path, { depth: 1 });
                 }
             }
 
-            // 2. Test files sharing its base name
+            // 2. Indirect dependents
+            for (const ind of depResult.indirect) {
+                if (isTestFile(ind.path)) {
+                    const existing = testMap.get(ind.path);
+                    const depth = existing ? Math.min(existing.depth, ind.hops) : ind.hops;
+                    testMap.set(ind.path, { depth });
+                }
+            }
+
+            // 3. Test files sharing its base name
             for (const node of graph.nodes) {
                 if (node.type === "file" && isTestFile(node.path)) {
-                    const testBase = node.path.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
-                    if (testBase === targetBase) {
-                        testFilePaths.add(node.path);
+                    const testBase = node.path.split("/").pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, "").replace(/\.[^.]+$/, "") || "";
+                    if (testBase === targetBase && !testMap.has(node.path)) {
+                        testMap.set(node.path, { depth: 1 });
                     }
                 }
             }
 
-            base.tests = [...testFilePaths].sort().map((testPath) => ({
-                path: testPath,
-                relationship: "test-consumer" as const,
-                classification: "path-convention" as const
-            }));
+            base.tests = [...testMap.entries()]
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([testPath, { depth }]) => ({
+                    path: testPath,
+                    depth,
+                    relationship: "test-consumer" as const,
+                    classification: "path-convention" as const
+                }));
+            base.testsToRun = base.tests;
 
             if (base.tests.length > 0) {
                 base.limitations.push("Test consumers are classified heuristically from their paths and may not exercise the target.");
             }
 
-            base.reasons = buildImpactReasons(target.path, base.directCallers.length, base.transitiveConsumers.length, graph);
+            base.reasons = buildImpactReasons(target.path, base.directCallers.length, base.transitiveConsumers.length, graph, base.tests);
             return { ...base, status: "ok" };
         }
 
@@ -536,10 +570,11 @@ export class ChangeImpactAnalysisService {
             .map((caller) => ({
                 symbol: caller.symbol,
                 path: caller.symbol.path,
-                ...(caller.depth === undefined ? {} : { depth: caller.depth }),
+                depth: caller.depth ?? 1,
                 relationship: "test-consumer" as const,
                 classification: "path-convention" as const
             }));
+        result.testsToRun = result.tests;
         result.reviewCandidates = allCallers.map((caller) => ({
             path: caller.symbol.path,
             symbol: caller.symbol,
@@ -562,7 +597,7 @@ export class ChangeImpactAnalysisService {
         if (files.length === 0) {
             result.limitations.push("Source evidence was not requested because no fetched files were supplied.");
         }
-        result.reasons = buildImpactReasons(target.symbol.path, result.directCallers.length, result.transitiveConsumers.length, graph);
+        result.reasons = buildImpactReasons(target.symbol.path, result.directCallers.length, result.transitiveConsumers.length, graph, result.tests);
         return result;
     }
 }

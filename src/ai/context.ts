@@ -145,16 +145,29 @@ export function computeFileRisk(
     const transitiveDependents = transitiveSet.size;
 
     // 3. Test presence
+    const isTestPathHelper = (p: string) => /\.(test|spec)(\.[^.]*|$)/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
     const baseName = filePath.split("/").pop()?.replace(/\.[^.]+$/, "") || "";
-    const hasTests = allNodes.some((n: any) => {
+    let directTests = 0;
+    let indirectTests = 0;
+    for (const d of directSet) {
+        if (isTestPathHelper(d)) directTests++;
+    }
+    for (const t of transitiveSet) {
+        if (isTestPathHelper(t)) indirectTests++;
+    }
+    const hasConventionTest = allNodes.some((n: any) => {
         if (n.type !== "file") return false;
         const p = n.path || (typeof n.id === "string" ? decodeGraphFileId(n.id) : undefined);
         if (!p) return false;
-        const isTest = /\.(test|spec)\.[^.]+$/.test(p) || /(^|\/)(test|tests|__tests__)\//.test(p);
-        if (!isTest) return false;
-        const testBase = p.split("/").pop()?.replace(/\.(test|spec)\.[^.]+$/, "").replace(/\.[^.]+$/, "") || "";
+        if (!isTestPathHelper(p)) return false;
+        const testBase = p.split("/").pop()?.replace(/\.(test|spec)(\.[^.]*|$)/, "").replace(/\.[^.]+$/, "") || "";
         return testBase === baseName || p.includes(baseName);
     });
+    if (hasConventionTest && directTests === 0 && indirectTests === 0) {
+        directTests = 1;
+    }
+    const totalTests = directTests + indirectTests;
+    const hasTests = totalTests > 0;
     const hasNoTests = !hasTests;
 
     // 4. Commits and owners
@@ -175,12 +188,18 @@ export function computeFileRisk(
     }
     const score = Math.min(100, Math.max(0, Math.round(rawScore)));
 
+    const testCoverageText = hasNoTests
+        ? "No test covers this file"
+        : directTests === 0
+            ? `Only indirect tests cover it (${indirectTests})`
+            : `Covered by ${totalTests} test${totalTests === 1 ? "" : "s"}`;
+
     const reasons: Array<{ label: string; value: string }> = [
         { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
         { label: "Transitive dependents", value: `${transitiveDependents} file${transitiveDependents === 1 ? "" : "s"}` },
         { label: "Commit churn", value: `${commitCount} commit${commitCount === 1 ? "" : "s"} (${churnPercent}%)` },
         { label: "Owners count", value: `${ownersCount} owner${ownersCount === 1 ? "" : "s"}` },
-        { label: "Test coverage", value: hasTests ? "Tests found (+0 risk)" : "No test found (+10 risk)" }
+        { label: "Test coverage", value: testCoverageText }
     ];
 
     return {
