@@ -3297,6 +3297,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [openHealthSections, setOpenHealthSections] = useState({ circular: true, unused: true, god: true });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
+    const [hoveredImpactNode, setHoveredImpactNode] = useState<{ path: string; name: string; folder: string; score: number; type: 'direct' | 'indirect'; hops?: number; x: number; y: number } | null>(null);
     const [copiedReport, setCopiedReport] = useState(false);
     const [isStreaming, setIsStreaming] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
@@ -4082,74 +4083,39 @@ ${lastAssistant?.content || 'No response recorded.'}
         if (activeTab === 'History') fetchHistory();
     }, [activeTab, fetchHistory]);
 
+    const dependentsData = useMemo(() => {
+        return getFileDependents(graph, selectedFile || '');
+    }, [graph, selectedFile]);
+
     const directList = useMemo(() => {
         if (!selectedFile) return [];
         const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
-        if (impactResult?.directCallers) {
-            for (const dc of impactResult.directCallers) {
-                const rawPath = dc.symbol.path || (dc.symbol.type === 'file' ? dc.symbol.name : '');
-                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
-            }
-        }
-        if (connectionsData?.importedBy) {
-            for (const imp of connectionsData.importedBy) {
-                const rawPath = typeof imp === 'string' ? imp : ((imp as any)?.path || (imp as any)?.name || (imp as any)?.id || '');
-                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
+        for (const rawPath of dependentsData.direct) {
+            if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
+                const fileName = rawPath.split('/').pop() || rawPath;
+                const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                const score = computeRisk(rawPath, graph, commits).score;
+                map.set(rawPath, { path: rawPath, name: fileName, folder, score });
             }
         }
         return Array.from(map.values()).sort((a, b) => b.score - a.score);
-    }, [impactResult, connectionsData, selectedFile, graph, commits]);
+    }, [dependentsData.direct, selectedFile, graph, commits]);
 
     const indirectList = useMemo(() => {
         if (!selectedFile) return [];
         const directPaths = new Set(directList.map(d => d.path));
-        const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
-        if (impactResult?.transitiveConsumers) {
-            for (const tc of impactResult.transitiveConsumers) {
-                let rawPath = tc.symbol.path;
-                if (!rawPath && graph?.nodes) {
-                    const found = graph.nodes.find(n => n.id === tc.symbol.name || (n as any).name === tc.symbol.name);
-                    if (found && (found as any).path) {
-                        rawPath = (found as any).path;
-                    }
-                }
-                if (!rawPath) rawPath = tc.symbol.name;
-                if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
-            }
-        }
-        if (impactResult?.paths) {
-            for (const p of impactResult.paths) {
-                if (p.nodes) {
-                    for (const nodeId of p.nodes) {
-                        const node = graph?.nodes.find(n => n.id === nodeId);
-                        const rawPath = (node as any)?.path || (node?.type === 'file' ? node.id : null);
-                        if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
-                            const fileName = rawPath.split('/').pop() || rawPath;
-                            const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                            const score = computeRisk(rawPath, graph, commits).score;
-                            map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                        }
-                    }
-                }
+        const map = new Map<string, { path: string; name: string; folder: string; score: number; hops: number }>();
+        for (const ind of dependentsData.indirect) {
+            const rawPath = ind.path;
+            if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
+                const fileName = rawPath.split('/').pop() || rawPath;
+                const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                const score = computeRisk(rawPath, graph, commits).score;
+                map.set(rawPath, { path: rawPath, name: fileName, folder, score, hops: ind.hops || 2 });
             }
         }
         return Array.from(map.values()).sort((a, b) => b.score - a.score);
-    }, [impactResult, directList, selectedFile, graph, commits]);
+    }, [dependentsData.indirect, directList, selectedFile, graph, commits]);
 
     const fetchConnections = useCallback(() => {
         // Automatically computed from graph and selectedFile
@@ -4651,310 +4617,538 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Calculating impact paths...</span>
                                 </div>
-                            ) : (
-                                <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-4 min-h-[460px]">
-                                    {/* Concentric blast-radius rings SVG */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full min-h-0">
-                                        <svg viewBox="0 0 440 440" preserveAspectRatio="xMidYMid meet" className="w-full max-w-[420px] h-auto max-h-[380px]" role="img">
-                                            <title>Blast radius rings</title>
-                                            {/* Ring 1 guide */}
-                                            <circle
-                                                cx="220"
-                                                cy="220"
-                                                r="80"
-                                                fill="none"
-                                                stroke="rgba(255, 255, 255, 0.08)"
-                                                strokeDasharray="3 5"
-                                            />
-                                            <text x="220" y={220 - 80 - 4} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                Ring 1 · Direct
-                                            </text>
+                            ) : (() => {
+                                const directCount = directList.length;
+                                const indirectCount = indirectList.length;
+                                const tests = (impactResult?.tests || [])
+                                    .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
+                                    .filter(Boolean) as string[];
+                                const testCount = tests.length;
+                                const targetDisplayName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'file');
 
-                                            {/* Ring 2 guide */}
-                                            <circle
-                                                cx="220"
-                                                cy="220"
-                                                r="160"
-                                                fill="none"
-                                                stroke="rgba(255, 255, 255, 0.08)"
-                                                strokeDasharray="3 5"
-                                            />
-                                            <text x="220" y={220 - 160 - 4} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                Ring 2 · Indirect
-                                            </text>
+                                // Combine and rank all affected files by score
+                                const rankedAll = [
+                                    ...directList.map(item => ({ ...item, type: 'direct' as const, hops: 1 })),
+                                    ...indirectList.map(item => ({ ...item, type: 'indirect' as const, hops: item.hops || 2 }))
+                                ].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
-                                            {/* Center Target Node */}
-                                            <circle cx="220" cy="220" r="10" fill="#E8EAE6" />
-                                            <text
-                                                x="220"
-                                                y="246"
-                                                fontSize="11"
-                                                fill="#E8EAE6"
-                                                textAnchor="middle"
-                                                fontFamily="'IBM Plex Mono', monospace"
-                                            >
-                                                {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'target')}
-                                            </text>
+                                const getRiskColor = (score: number) => {
+                                    if (score > 60) return '#E3A04A'; // high amber
+                                    if (score > 30) return '#4FD1B5'; // medium teal
+                                    return '#8A918C'; // low grey
+                                };
 
-                                            {/* Ring 1 nodes: max 12 nodes per ring plus "+N more" */}
-                                            {(() => {
-                                                const maxNodes = 12;
-                                                const visible = directList.slice(0, maxNodes);
-                                                const remaining = directList.length - maxNodes;
-                                                const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
-                                                return (
-                                                    <>
-                                                        {visible.map((node, i) => {
-                                                            const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2;
-                                                            const px = 220 + Math.cos(angle) * 80;
-                                                            const py = 220 + Math.sin(angle) * 80;
-                                                            const shortName = node.name.length > 10 ? node.name.slice(0, 8) + '…' : node.name;
-                                                            return (
-                                                                <g key={`direct-${node.path}-${i}`} onClick={() => selectFile(node.path)} className="cursor-pointer group">
-                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.25" strokeWidth="1" />
-                                                                    <circle cx={px} cy={py} r="5" fill="#E3A04A" />
-                                                                    <text x={px} y={py + 13} fontSize="9" fill="#E8EAE6" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                                        {shortName}
-                                                                    </text>
-                                                                </g>
-                                                            );
-                                                        })}
-                                                        {remaining > 0 && (() => {
-                                                            const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2;
-                                                            const px = 220 + Math.cos(angle) * 80;
-                                                            const py = 220 + Math.sin(angle) * 80;
-                                                            return (
-                                                                <g key="direct-more">
-                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#E3A04A" strokeOpacity="0.25" strokeWidth="1" strokeDasharray="2 2" />
-                                                                    <rect x={px - 20} y={py - 7} width="40" height="14" rx="7" fill="#1C2122" stroke="#E3A04A" strokeWidth="0.8" />
-                                                                    <text x={px} y={py + 3.5} fontSize="8" fill="#E3A04A" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                                        +{remaining} more
-                                                                    </text>
-                                                                </g>
-                                                            );
-                                                        })()}
-                                                    </>
-                                                );
-                                            })()}
+                                const getRiskRadius = (score: number, isDirect: boolean) => {
+                                    const base = isDirect ? 6 : 5;
+                                    return base + Math.min(6, Math.max(0, (score / 100) * 6));
+                                };
 
-                                            {/* Ring 2 nodes: max 12 nodes per ring plus "+N more" */}
-                                            {(() => {
-                                                const maxNodes = 12;
-                                                const visible = indirectList.slice(0, maxNodes);
-                                                const remaining = indirectList.length - maxNodes;
-                                                const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
-                                                return (
-                                                    <>
-                                                        {visible.map((node, i) => {
-                                                            const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2 + 0.25;
-                                                            const px = 220 + Math.cos(angle) * 160;
-                                                            const py = 220 + Math.sin(angle) * 160;
-                                                            const shortName = node.name.length > 10 ? node.name.slice(0, 8) + '…' : node.name;
-                                                            return (
-                                                                <g key={`indirect-${node.path}-${i}`} onClick={() => selectFile(node.path)} className="cursor-pointer group">
-                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.2" strokeWidth="1" />
-                                                                    <circle cx={px} cy={py} r="4" fill="#4FD1B5" />
-                                                                    <text x={px} y={py + 12} fontSize="8.5" fill="#8A918C" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                                        {shortName}
-                                                                    </text>
-                                                                </g>
-                                                            );
-                                                        })}
-                                                        {remaining > 0 && (() => {
-                                                            const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2 + 0.25;
-                                                            const px = 220 + Math.cos(angle) * 160;
-                                                            const py = 220 + Math.sin(angle) * 160;
-                                                            return (
-                                                                <g key="indirect-more">
-                                                                    <line x1="220" y1="220" x2={px} y2={py} stroke="#4FD1B5" strokeOpacity="0.2" strokeWidth="1" strokeDasharray="2 2" />
-                                                                    <rect x={px - 20} y={py - 7} width="40" height="14" rx="7" fill="#15302A" stroke="#4FD1B5" strokeWidth="0.8" />
-                                                                    <text x={px} y={py + 3.5} fontSize="8" fill="#4FD1B5" textAnchor="middle" fontFamily="'IBM Plex Mono', monospace">
-                                                                        +{remaining} more
-                                                                    </text>
-                                                                </g>
-                                                            );
-                                                        })()}
-                                                    </>
-                                                );
-                                            })()}
-                                        </svg>
-                                    </div>
-
-                                    {/* Direct (N) and Indirect (M) Lists */}
-                                    <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
-                                        <div className="flex-1 flex flex-col min-h-0">
-                                            <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] shrink-0">
-                                                <div>
-                                                    <span className="text-[11px] font-semibold text-[#8A918C]">Risk score</span>
-                                                    <div className="flex items-baseline gap-1.5 mt-0.5">
-                                                        <span className="text-2xl font-bold font-mono text-[#E8EAE6]">
-                                                            {fileRisk ? fileRisk.score : (impactResult?.score ?? 0)}
-                                                        </span>
-                                                        <span className="text-xs font-mono text-[#8A918C]">/ 100</span>
-                                                    </div>
-                                                </div>
-                                                <div className="w-24 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                    <div
-                                                        className={cn("h-full rounded-full", (fileRisk?.score ?? 0) > 60 ? "bg-red-400" : (fileRisk?.score ?? 0) > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
-                                                        style={{ width: `${Math.min(100, Math.max(5, fileRisk ? fileRisk.score : 0))}%` }}
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 space-y-4">
-                                                {/* Direct List */}
-                                                <div>
-                                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-2 sticky top-0 bg-[#07090A]/90 backdrop-blur-sm py-1 z-10 flex items-center justify-between">
-                                                        <span>Direct ({directList.length})</span>
-                                                    </h4>
-                                                    <div className="space-y-1.5">
-                                                        {directList.length === 0 ? (
-                                                            <div className="text-xs text-[#8A918C] py-2">No direct dependents found.</div>
-                                                        ) : (
-                                                            directList.map((item, i) => (
-                                                                <div
-                                                                    key={`direct-item-${item.path}-${i}`}
-                                                                    onClick={() => selectFile(item.path)}
-                                                                    className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
-                                                                >
-                                                                    <div className="min-w-0 flex-1 mr-2">
-                                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate block">
-                                                                            {item.name}
-                                                                        </span>
-                                                                        {item.folder && (
-                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
-                                                                                {item.folder}
-                                                                            </span>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="flex items-center gap-2 shrink-0">
-                                                                        <div className="w-12 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                                            <div
-                                                                                className={cn("h-full rounded-full", item.score > 60 ? "bg-red-400" : item.score > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
-                                                                                style={{ width: `${item.score}%` }}
-                                                                            />
-                                                                        </div>
-                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-5 text-right">{item.score}</span>
-                                                                    </div>
-                                                                </div>
-                                                            ))
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                {/* Indirect List */}
-                                                <div>
-                                                    <h4 className="text-xs font-semibold text-[#8A918C] mb-2 sticky top-0 bg-[#07090A]/90 backdrop-blur-sm py-1 z-10 flex items-center justify-between">
-                                                        <span>Indirect ({indirectList.length})</span>
-                                                    </h4>
-                                                    <div className="space-y-1.5">
-                                                        {indirectList.length === 0 ? (
-                                                            <div className="text-xs text-[#8A918C] py-2">No indirect dependents found.</div>
-                                                        ) : (
-                                                            indirectList.map((item, i) => (
-                                                                <div
-                                                                    key={`indirect-item-${item.path}-${i}`}
-                                                                    onClick={() => selectFile(item.path)}
-                                                                    className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.05] hover:border-white/15 transition-colors cursor-pointer group text-xs"
-                                                                >
-                                                                    <div className="min-w-0 flex-1 mr-2">
-                                                                        <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate block">
-                                                                            {item.name}
-                                                                        </span>
-                                                                        {item.folder && (
-                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
-                                                                                {item.folder}
-                                                                            </span>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="flex items-center gap-2 shrink-0">
-                                                                        <div className="w-12 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
-                                                                            <div
-                                                                                className={cn("h-full rounded-full", item.score > 60 ? "bg-red-400" : item.score > 30 ? "bg-[#E3A04A]" : "bg-[#4FD1B5]")}
-                                                                                style={{ width: `${item.score}%` }}
-                                                                            />
-                                                                        </div>
-                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-5 text-right">{item.score}</span>
-                                                                    </div>
-                                                                </div>
-                                                            ))
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div className="pt-3 border-t border-white/[0.08] mt-3">
-                                            <button
-                                                onClick={() => setShowImpactReasons(!showImpactReasons)}
-                                                className="flex items-center justify-between w-full py-1 text-[11px] text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer"
-                                                title="Formula: min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
-                                            >
-                                                <span className="font-medium flex items-center gap-1.5">
-                                                    Why this score
-                                                    <span
-                                                        className="text-[10px] text-[#8A918C] px-1 rounded border border-white/10 cursor-help"
-                                                        title="Formula: min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
-                                                    >
-                                                        ?
-                                                    </span>
+                                return (
+                                    <div className="flex-1 flex flex-col min-h-0 space-y-3.5">
+                                        {/* 1. Verdict line at top (22px, editorial, file name highlighted in amber) */}
+                                        <div className="glass-surface px-5 py-4 rounded-xl border-white/10 shrink-0">
+                                            <h2 className="text-[22px] font-normal tracking-tight text-[#E8EAE6] leading-snug">
+                                                Changing <span className="font-mono text-[#E3A04A] font-semibold">{targetDisplayName}</span> can break{' '}
+                                                <span className="font-mono font-semibold text-[#E8EAE6]">{directCount}</span> file{directCount === 1 ? '' : 's'} directly and{' '}
+                                                <span className="font-mono font-semibold text-[#E8EAE6]">{indirectCount}</span> more indirectly.{' '}
+                                                <span className={testCount === 0 ? "text-[#E3A04A]" : "text-[#8A918C]"}>
+                                                    {testCount === 0 ? "No tests cover it." : `${testCount} test${testCount === 1 ? '' : 's'} cover it.`}
                                                 </span>
-                                                {showImpactReasons ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                            </button>
-                                            {showImpactReasons && (
-                                                <div className="space-y-1.5 mt-2">
-                                                    <div
-                                                        className="text-[10px] font-mono text-[#8A918C] px-2 py-1 bg-white/[0.02] border border-white/[0.06] rounded truncate"
-                                                        title="score = min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))"
-                                                    >
-                                                        score = min(100, 4×direct + 2×transitive + 0.25×churn% + tests)
-                                                    </div>
-                                                    {(fileRisk ? fileRisk.reasons : (impactResult?.reasons || [])).map((r, i) => (
-                                                        <div key={i} className="glass-surface p-2 rounded-lg border-white/[0.06] text-xs flex items-center justify-between">
-                                                            <span className="text-[#8A918C] text-[11px]">{r.label}</span>
-                                                            <span className="text-[#E8EAE6] font-mono text-[11px]">{r.value}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                        {/* Tests to run */}
-                                        <div className="pt-3 border-t border-white/[0.08] mt-3">
-                                            <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
-                                            {(() => {
-                                                const tests = (impactResult?.tests || [])
-                                                    .map((t: any) => (typeof t === 'string' ? t : (t.path || t.symbol?.path)))
-                                                    .filter(Boolean) as string[];
-                                                if (tests.length === 0) {
-                                                    return (
-                                                        <div className="flex items-center gap-2 text-xs text-[#8A918C] py-1">
-                                                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0 inline-block" />
-                                                            <span>No test found for this file</span>
-                                                        </div>
-                                                    );
-                                                }
-                                                return (
-                                                    <div className="space-y-1.5 max-h-36 overflow-y-auto scrollbar-custom">
-                                                        {tests.map((testPath, i) => (
-                                                            <button
-                                                                key={i}
-                                                                onClick={() => selectFile(testPath)}
-                                                                className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block"
-                                                                title={testPath}
-                                                            >
-                                                                {testPath.split('/').pop()}
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                );
-                                            })()}
+                                            </h2>
                                         </div>
 
-                                        <div className="text-[11px] text-[#8A918C] pt-3 border-t border-white/[0.08] mt-3" title="score = min(100, 4*directDependents + 2*transitiveDependents + 0.25*churnPercent + (hasNoTests ? 10 : 0))">
-                                            Formula: min(100, 4×direct + 2×transitive + 0.25×churn% + tests)
+                                        {/* Two columns: Left ~60% (Blast radius rings), Right ~40% (Ranked list + tests + why score) */}
+                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-[500px]">
+                                            {/* Left (about 60%): blast radius rings filling whole card */}
+                                            <div
+                                                className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-center relative overflow-hidden h-full min-h-0 select-none"
+                                                onMouseLeave={() => setHoveredImpactNode(null)}
+                                            >
+                                                <svg
+                                                    viewBox="0 0 540 540"
+                                                    preserveAspectRatio="xMidYMid meet"
+                                                    className="w-full h-full max-h-[540px] max-w-[540px]"
+                                                    role="img"
+                                                >
+                                                    <title>Blast radius rings</title>
+
+                                                    {/* Animated ripple wave on rings (off for reduced motion via CSS .blast-ripple) */}
+                                                    <circle
+                                                        cx="270"
+                                                        cy="270"
+                                                        r="110"
+                                                        fill="none"
+                                                        stroke="rgba(79, 209, 181, 0.25)"
+                                                        strokeWidth="1.5"
+                                                        className="rpl blast-ripple"
+                                                    />
+                                                    <circle
+                                                        cx="270"
+                                                        cy="270"
+                                                        r="215"
+                                                        fill="none"
+                                                        stroke="rgba(227, 160, 74, 0.2)"
+                                                        strokeWidth="1.5"
+                                                        className="rpl blast-ripple"
+                                                        style={{ animationDelay: '2.25s' }}
+                                                    />
+
+                                                    {/* Static Ring 1 guide (Direct) */}
+                                                    <circle
+                                                        cx="270"
+                                                        cy="270"
+                                                        r="110"
+                                                        fill="none"
+                                                        stroke="rgba(255, 255, 255, 0.08)"
+                                                        strokeDasharray="4 6"
+                                                    />
+                                                    <text
+                                                        x="270"
+                                                        y={270 - 110 - 6}
+                                                        fontSize="9"
+                                                        fill="#8A918C"
+                                                        textAnchor="middle"
+                                                        fontFamily="'IBM Plex Mono', monospace"
+                                                    >
+                                                        Ring 1 · Direct ({directCount})
+                                                    </text>
+
+                                                    {/* Static Ring 2 guide (Indirect) */}
+                                                    <circle
+                                                        cx="270"
+                                                        cy="270"
+                                                        r="215"
+                                                        fill="none"
+                                                        stroke="rgba(255, 255, 255, 0.08)"
+                                                        strokeDasharray="4 6"
+                                                    />
+                                                    <text
+                                                        x="270"
+                                                        y={270 - 215 - 6}
+                                                        fontSize="9"
+                                                        fill="#8A918C"
+                                                        textAnchor="middle"
+                                                        fontFamily="'IBM Plex Mono', monospace"
+                                                    >
+                                                        Ring 2 · Indirect ({indirectCount})
+                                                    </text>
+
+                                                    {/* Highlighted path connecting to hovered node */}
+                                                    {hoveredImpactNode && (
+                                                        <line
+                                                            x1="270"
+                                                            y1="270"
+                                                            x2={hoveredImpactNode.x}
+                                                            y2={hoveredImpactNode.y}
+                                                            stroke={getRiskColor(hoveredImpactNode.score)}
+                                                            strokeWidth="2.5"
+                                                            strokeDasharray={hoveredImpactNode.type === 'indirect' ? "5 4" : undefined}
+                                                            opacity="0.9"
+                                                        />
+                                                    )}
+
+                                                    {/* Center Target Node */}
+                                                    <g className="cursor-default">
+                                                        <circle cx="270" cy="270" r="14" fill="#07090A" stroke="#E8EAE6" strokeWidth="2" />
+                                                        <circle cx="270" cy="270" r="8" fill="#4FD1B5" />
+                                                        <text
+                                                            x="270"
+                                                            y="302"
+                                                            fontSize="12"
+                                                            fontWeight="600"
+                                                            fill="#E8EAE6"
+                                                            textAnchor="middle"
+                                                            fontFamily="'IBM Plex Mono', monospace"
+                                                        >
+                                                            {targetDisplayName}
+                                                        </text>
+                                                    </g>
+
+                                                    {/* Ring 1 (Direct) nodes */}
+                                                    {(() => {
+                                                        const maxNodes = 10;
+                                                        const visible = directList.slice(0, maxNodes);
+                                                        const remaining = directList.length - maxNodes;
+                                                        const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
+                                                        const r = 110;
+
+                                                        return (
+                                                            <>
+                                                                {visible.map((node, i) => {
+                                                                    const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2;
+                                                                    const px = 270 + Math.cos(angle) * r;
+                                                                    const py = 270 + Math.sin(angle) * r;
+                                                                    const riskColor = getRiskColor(node.score);
+                                                                    const nodeRadius = getRiskRadius(node.score, true);
+                                                                    const isHovered = hoveredImpactNode?.path === node.path;
+
+                                                                    // Offset label outside the node radially to avoid overlap
+                                                                    const labelOffset = nodeRadius + 14;
+                                                                    const lx = px + Math.cos(angle) * labelOffset;
+                                                                    const ly = py + Math.sin(angle) * labelOffset + 4;
+                                                                    const anchor = Math.cos(angle) > 0.25 ? 'start' : Math.cos(angle) < -0.25 ? 'end' : 'middle';
+
+                                                                    return (
+                                                                        <g
+                                                                            key={`ring1-${node.path}-${i}`}
+                                                                            onClick={() => selectFile(node.path)}
+                                                                            onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'direct', x: px, y: py })}
+                                                                            className="cursor-pointer group"
+                                                                        >
+                                                                            {/* Base connector line */}
+                                                                            <line
+                                                                                x1="270"
+                                                                                y1="270"
+                                                                                x2={px}
+                                                                                y2={py}
+                                                                                stroke={riskColor}
+                                                                                strokeOpacity={isHovered ? "0.8" : "0.2"}
+                                                                                strokeWidth={isHovered ? "2" : "1"}
+                                                                            />
+                                                                            <circle
+                                                                                cx={px}
+                                                                                cy={py}
+                                                                                r={nodeRadius}
+                                                                                fill={riskColor}
+                                                                                stroke="#07090A"
+                                                                                strokeWidth={isHovered ? "2.5" : "1.5"}
+                                                                            />
+                                                                            <text
+                                                                                x={lx}
+                                                                                y={ly}
+                                                                                fontSize="12"
+                                                                                fill={isHovered ? "#FFFFFF" : "#E8EAE6"}
+                                                                                textAnchor={anchor}
+                                                                                fontFamily="'IBM Plex Mono', monospace"
+                                                                                className="pointer-events-none transition-colors"
+                                                                            >
+                                                                                {node.name}
+                                                                            </text>
+                                                                        </g>
+                                                                    );
+                                                                })}
+
+                                                                {/* "+N more" pill placed outside the ring */}
+                                                                {remaining > 0 && (() => {
+                                                                    const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2;
+                                                                    const px = 270 + Math.cos(angle) * (r + 18);
+                                                                    const py = 270 + Math.sin(angle) * (r + 18);
+                                                                    return (
+                                                                        <g key="ring1-more">
+                                                                            <rect
+                                                                                x={px - 26}
+                                                                                y={py - 10}
+                                                                                width="52"
+                                                                                height="20"
+                                                                                rx="10"
+                                                                                fill="#10161A"
+                                                                                stroke="#E3A04A"
+                                                                                strokeWidth="1"
+                                                                            />
+                                                                            <text
+                                                                                x={px}
+                                                                                y={py + 4}
+                                                                                fontSize="10"
+                                                                                fill="#E3A04A"
+                                                                                textAnchor="middle"
+                                                                                fontFamily="'IBM Plex Mono', monospace"
+                                                                            >
+                                                                                +{remaining} more
+                                                                            </text>
+                                                                        </g>
+                                                                    );
+                                                                })()}
+                                                            </>
+                                                        );
+                                                    })()}
+
+                                                    {/* Ring 2 (Indirect) nodes */}
+                                                    {(() => {
+                                                        const maxNodes = 12;
+                                                        const visible = indirectList.slice(0, maxNodes);
+                                                        const remaining = indirectList.length - maxNodes;
+                                                        const totalSlots = visible.length + (remaining > 0 ? 1 : 0);
+                                                        const r = 215;
+
+                                                        return (
+                                                            <>
+                                                                {visible.map((node, i) => {
+                                                                    const angle = (i / Math.max(1, totalSlots)) * 2 * Math.PI - Math.PI / 2 + 0.22;
+                                                                    const px = 270 + Math.cos(angle) * r;
+                                                                    const py = 270 + Math.sin(angle) * r;
+                                                                    const riskColor = getRiskColor(node.score);
+                                                                    const nodeRadius = getRiskRadius(node.score, false);
+                                                                    const isHovered = hoveredImpactNode?.path === node.path;
+
+                                                                    // Offset label outside the node radially to avoid overlap
+                                                                    const labelOffset = nodeRadius + 14;
+                                                                    const lx = px + Math.cos(angle) * labelOffset;
+                                                                    const ly = py + Math.sin(angle) * labelOffset + 4;
+                                                                    const anchor = Math.cos(angle) > 0.25 ? 'start' : Math.cos(angle) < -0.25 ? 'end' : 'middle';
+
+                                                                    return (
+                                                                        <g
+                                                                            key={`ring2-${node.path}-${i}`}
+                                                                            onClick={() => selectFile(node.path)}
+                                                                            onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'indirect', x: px, y: py })}
+                                                                            className="cursor-pointer group"
+                                                                        >
+                                                                            {/* Base connector line */}
+                                                                            <line
+                                                                                x1="270"
+                                                                                y1="270"
+                                                                                x2={px}
+                                                                                y2={py}
+                                                                                stroke={riskColor}
+                                                                                strokeOpacity={isHovered ? "0.8" : "0.15"}
+                                                                                strokeWidth={isHovered ? "2" : "1"}
+                                                                                strokeDasharray="4 4"
+                                                                            />
+                                                                            <circle
+                                                                                cx={px}
+                                                                                cy={py}
+                                                                                r={nodeRadius}
+                                                                                fill={riskColor}
+                                                                                stroke="#07090A"
+                                                                                strokeWidth={isHovered ? "2.5" : "1.5"}
+                                                                            />
+                                                                            <text
+                                                                                x={lx}
+                                                                                y={ly}
+                                                                                fontSize="12"
+                                                                                fill={isHovered ? "#FFFFFF" : "#8A918C"}
+                                                                                textAnchor={anchor}
+                                                                                fontFamily="'IBM Plex Mono', monospace"
+                                                                                className="pointer-events-none transition-colors"
+                                                                            >
+                                                                                {node.name}
+                                                                            </text>
+                                                                        </g>
+                                                                    );
+                                                                })}
+
+                                                                {/* "+N more" pill placed outside the ring */}
+                                                                {remaining > 0 && (() => {
+                                                                    const angle = (visible.length / totalSlots) * 2 * Math.PI - Math.PI / 2 + 0.22;
+                                                                    const px = 270 + Math.cos(angle) * (r + 18);
+                                                                    const py = 270 + Math.sin(angle) * (r + 18);
+                                                                    return (
+                                                                        <g key="ring2-more">
+                                                                            <rect
+                                                                                x={px - 26}
+                                                                                y={py - 10}
+                                                                                width="52"
+                                                                                height="20"
+                                                                                rx="10"
+                                                                                fill="#10161A"
+                                                                                stroke="#4FD1B5"
+                                                                                strokeWidth="1"
+                                                                            />
+                                                                            <text
+                                                                                x={px}
+                                                                                y={py + 4}
+                                                                                fontSize="10"
+                                                                                fill="#4FD1B5"
+                                                                                textAnchor="middle"
+                                                                                fontFamily="'IBM Plex Mono', monospace"
+                                                                            >
+                                                                                +{remaining} more
+                                                                            </text>
+                                                                        </g>
+                                                                    );
+                                                                })()}
+                                                            </>
+                                                        );
+                                                    })()}
+                                                </svg>
+
+                                                {/* Tooltip on node hover */}
+                                                {hoveredImpactNode && (
+                                                    <div className="absolute bottom-4 left-4 z-20 pointer-events-none bg-[#10161A] border border-white/15 px-3.5 py-2.5 rounded-lg shadow-xl max-w-[320px]">
+                                                        <div className="flex items-center gap-2 mb-1">
+                                                            <span
+                                                                className="w-2.5 h-2.5 rounded-full shrink-0"
+                                                                style={{ backgroundColor: getRiskColor(hoveredImpactNode.score) }}
+                                                            />
+                                                            <span className="font-mono text-xs font-semibold text-[#E8EAE6] truncate">
+                                                                {hoveredImpactNode.name}
+                                                            </span>
+                                                            <span className="font-mono text-[10px] text-[#8A918C] ml-auto shrink-0">
+                                                                {hoveredImpactNode.score} / 100 risk
+                                                            </span>
+                                                        </div>
+                                                        <div className="font-mono text-[11px] text-[#8A918C] truncate mb-1">
+                                                            {hoveredImpactNode.path}
+                                                        </div>
+                                                        <div className="text-[11px] text-[#E8EAE6]">
+                                                            {hoveredImpactNode.type === 'direct'
+                                                                ? 'Direct dependent: directly imports selected file'
+                                                                : `Indirect dependent (${hoveredImpactNode.hops || 2} hops from selected file)`}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Right (about 40%): ranked list "Files that could break" + "Tests to run" + "Why this score" */}
+                                            <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
+                                                <div className="flex-1 flex flex-col min-h-0">
+                                                    {/* Header: Files that could break */}
+                                                    <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] shrink-0">
+                                                        <div>
+                                                            <h3 className="text-xs font-semibold text-[#8A918C]">Files that could break</h3>
+                                                            <div className="text-[11px] text-[#8A918C] mt-0.5">
+                                                                Ranked by risk score ({rankedAll.length} total)
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-baseline gap-1.5 shrink-0">
+                                                            <span className="text-xl font-bold font-mono text-[#E3A04A]">
+                                                                {fileRisk ? fileRisk.score : (impactResult?.score ?? 0)}
+                                                            </span>
+                                                            <span className="text-xs font-mono text-[#8A918C]">/ 100 risk</span>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Scrollable Ranked list */}
+                                                    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
+                                                        {rankedAll.length === 0 ? (
+                                                            <div className="text-xs text-[#8A918C] py-4 text-center">
+                                                                No dependents found.
+                                                            </div>
+                                                        ) : (
+                                                            rankedAll.map((item, idx) => (
+                                                                <div
+                                                                    key={`ranked-${item.path}-${idx}`}
+                                                                    onClick={() => selectFile(item.path)}
+                                                                    onMouseEnter={() => setHoveredImpactNode({
+                                                                        path: item.path,
+                                                                        name: item.name,
+                                                                        folder: item.folder,
+                                                                        score: item.score,
+                                                                        type: item.type,
+                                                                        hops: item.hops,
+                                                                        x: 270,
+                                                                        y: 270
+                                                                    })}
+                                                                    onMouseLeave={() => setHoveredImpactNode(null)}
+                                                                    className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                                >
+                                                                    {/* Rank index */}
+                                                                    <span className="font-mono text-[11px] text-[#8A918C] w-5 shrink-0">
+                                                                        {idx + 1}
+                                                                    </span>
+
+                                                                    {/* File name & folder */}
+                                                                    <div className="min-w-0 flex-1 mr-2">
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate">
+                                                                                {item.name}
+                                                                            </span>
+                                                                            {/* Direct or 2 hops tag */}
+                                                                            <span className={cn(
+                                                                                "font-sans text-[10px] px-1.5 py-0.2 rounded border shrink-0",
+                                                                                item.type === 'direct'
+                                                                                    ? "border-[#E3A04A]/30 text-[#E3A04A] bg-[#E3A04A]/10"
+                                                                                    : "border-white/15 text-[#8A918C] bg-white/[0.03]"
+                                                                            )}>
+                                                                                {item.type === 'direct' ? 'Direct' : `${item.hops || 2} hops`}
+                                                                            </span>
+                                                                        </div>
+                                                                        {item.folder && (
+                                                                            <span className="text-[11px] text-[#8A918C] truncate block">
+                                                                                {item.folder}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+
+                                                                    {/* Risk bar and score */}
+                                                                    <div className="flex items-center gap-2 shrink-0">
+                                                                        <div className="w-12 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                                            <div
+                                                                                className="h-full rounded-full"
+                                                                                style={{
+                                                                                    width: `${item.score}%`,
+                                                                                    backgroundColor: getRiskColor(item.score)
+                                                                                }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-5 text-right">
+                                                                            {item.score}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Tests to run block */}
+                                                <div className="pt-3 border-t border-white/[0.08] mt-3 shrink-0">
+                                                    <div className="text-[11px] text-[#8A918C] mb-2 font-medium">Tests to run</div>
+                                                    {tests.length === 0 ? (
+                                                        <div className="p-2.5 rounded-lg border border-[#E3A04A]/25 bg-[#E3A04A]/5 text-xs text-[#E3A04A] flex flex-col gap-1">
+                                                            <div className="flex items-center gap-1.5 font-medium">
+                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#E3A04A] shrink-0 inline-block" />
+                                                                <span>No test covers this file</span>
+                                                            </div>
+                                                            <div className="text-[11px] text-[#8A918C]">
+                                                                Add a unit test covering this module before modifying to prevent regressions.
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="space-y-1.5 max-h-32 overflow-y-auto scrollbar-custom">
+                                                            {tests.map((testPath, i) => (
+                                                                <button
+                                                                    key={i}
+                                                                    onClick={() => selectFile(testPath)}
+                                                                    className="w-full text-left font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] p-1.5 rounded-md glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
+                                                                    title={testPath}
+                                                                >
+                                                                    {testPath.split('/').pop()}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Why this score (3-4 plain lines with formula behind info tooltip) */}
+                                                <div className="pt-3 border-t border-white/[0.08] mt-3 shrink-0">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <span className="text-[11px] font-medium text-[#8A918C]">Why this score</span>
+                                                        <span
+                                                            className="text-[10px] text-[#8A918C] px-1.5 py-0.5 rounded border border-white/10 hover:border-[#4FD1B5]/40 hover:text-[#4FD1B5] cursor-help transition-colors"
+                                                            title="Formula: min(100, 4 × direct + 2 × transitive + 0.25 × churn% + tests)"
+                                                        >
+                                                            Formula ?
+                                                        </span>
+                                                    </div>
+                                                    <div className="space-y-1 text-xs text-[#8A918C]">
+                                                        <div className="flex items-center justify-between">
+                                                            <span>Direct importers</span>
+                                                            <span className="font-mono text-[#E8EAE6]">{directCount} file{directCount === 1 ? '' : 's'}</span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between">
+                                                            <span>Indirect reach</span>
+                                                            <span className="font-mono text-[#E8EAE6]">{indirectCount} file{indirectCount === 1 ? '' : 's'}</span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between">
+                                                            <span>Test coverage</span>
+                                                            <span className="font-mono text-[#E8EAE6]">
+                                                                {testCount === 0 ? "No test found" : `${testCount} tests found`}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex items-center justify-between">
+                                                            <span>Commit churn</span>
+                                                            <span className="font-mono text-[#E8EAE6]">
+                                                                {fileRisk?.churnPercent ?? 0}%
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            )}
+                                );
+                            })()}
                             </div>
                         )
                     )}

@@ -308,5 +308,8 @@
         .overview-drawer {
             transition: none !important;
         }
+        .blast-ripple {
+            animation: none !important;
+        }
     }
 }

@@ -305,7 +305,8 @@ function FileInspector({ className }: { className?: string }) {
         selectFile,
         repoUrl,
         impactResult,
-        setImpactResult
+        setImpactResult,
+        activeTab
     } = useAppStore();
 
     const [inspectorTab, setInspectorTab] = useState<'Overview' | 'Dependencies' | 'Source' | 'Impact'>('Overview');
@@ -468,12 +469,12 @@ function FileInspector({ className }: { className?: string }) {
 
             {/* Tabs: Overview, Dependencies, Source, Impact (underline style, accent for active) */}
             <div className="flex items-center border-b border-white/10 px-3.5 gap-4 shrink-0 bg-[#07090A]">
-                {(['Overview', 'Dependencies', 'Source', 'Impact'] as const).map(tab => {
-                    const isActive = inspectorTab === tab;
+                {(activeTab === 'Impact' ? (['Overview', 'Dependencies', 'Source'] as const) : (['Overview', 'Dependencies', 'Source', 'Impact'] as const)).map(tab => {
+                    const isActive = (activeTab === 'Impact' && inspectorTab === 'Impact' ? 'Overview' : inspectorTab) === tab;
                     return (
                         <button
                             key={tab}
-                            onClick={() => setInspectorTab(tab)}
+                            onClick={() => setInspectorTab(tab as any)}
                             className={cn(
                                 "relative py-2 text-xs font-medium transition-colors cursor-pointer",
                                 isActive ? "text-[#4FD1B5]" : "text-[#8A918C] hover:text-[#E8EAE6]"
@@ -489,7 +490,7 @@ function FileInspector({ className }: { className?: string }) {
             </div>
 
             {/* Tab 1: Overview */}
-            {inspectorTab === 'Overview' && (
+            {(inspectorTab === 'Overview' || (activeTab === 'Impact' && inspectorTab === 'Impact')) && (
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
                     {/* Big risk number in amber with "/ 100 risk" */}
                     <div>
@@ -684,7 +685,7 @@ function FileInspector({ className }: { className?: string }) {
             )}
 
             {/* Tab 4: Impact */}
-            {inspectorTab === 'Impact' && (
+            {inspectorTab === 'Impact' && activeTab !== 'Impact' && (
                 <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-4 text-xs">
                     {/* Direct List */}
                     {directList.length > 0 && (
