@@ -3,7 +3,7 @@ import { useAppStore } from '../store';
 import { Badge, cn } from '../ui';
 import { Activity, Clock, MessageSquare } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
-import { computeRisk, getConnectedFiles } from '../graph-helpers';
+import { computeRisk, getConnectedFiles, getFileDependents } from '../graph-helpers';
 import { CodeViewer } from './CodeViewer';
 
 function getFileLanguage(filePath: string): string {
@@ -353,44 +353,13 @@ function FileInspector({ className }: { className?: string }) {
         return getConnectedFiles(graph, selectedFile);
     }, [graph, selectedFile]);
 
+    const dependentsData = useMemo(() => {
+        return getFileDependents(graph, selectedFile || '');
+    }, [graph, selectedFile]);
+
     const indirectFiles = useMemo(() => {
-        if (!graph?.nodes || !selectedFile) return [];
-        const importedByList = connected?.importedBy || [];
-        const visited = new Set<string>([selectedFile, ...importedByList]);
-        const indirectSet = new Set<string>();
-        const queue = [...importedByList];
-
-        const idToPath = new Map<string, string>();
-        for (const n of graph.nodes) {
-            const p = (n as any)?.path || (n?.type === 'file' ? n?.id : undefined);
-            if (p) idToPath.set(n.id, p);
-        }
-
-        while (queue.length > 0) {
-            const curr = queue.shift()!;
-            for (const e of (graph.edges || [])) {
-                const rawFrom = idToPath.get(e.from) || e.from;
-                const rawTo = idToPath.get(e.to) || e.to;
-                if ((rawTo === curr || e.to === curr) && (e.type === 'imports' || e.type === 'calls')) {
-                    const fromFile = rawFrom || e.from;
-                    if (fromFile && !visited.has(fromFile) && fromFile !== selectedFile) {
-                        visited.add(fromFile);
-                        indirectSet.add(fromFile);
-                        queue.push(fromFile);
-                    }
-                }
-            }
-        }
-        if (impactResult?.transitiveConsumers) {
-            for (const tc of impactResult.transitiveConsumers) {
-                const p = tc?.symbol?.path || tc?.symbol?.name;
-                if (p && p !== selectedFile && !visited.has(p)) {
-                    indirectSet.add(p);
-                }
-            }
-        }
-        return Array.from(indirectSet).sort();
-    }, [graph, selectedFile, connected?.importedBy, impactResult]);
+        return dependentsData.indirect.map(i => i.path);
+    }, [dependentsData]);
 
     const fileRisk = useMemo(() => {
         if (!selectedFile) return null;
@@ -420,63 +389,32 @@ function FileInspector({ className }: { className?: string }) {
     const directList = useMemo(() => {
         if (!selectedFile) return [];
         const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
-        if (impactResult?.directCallers) {
-            for (const dc of impactResult.directCallers) {
-                const rawPath = dc?.symbol?.path || (dc?.symbol?.type === 'file' ? dc?.symbol?.name : '');
-                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
-            }
-        }
-        if (connected?.importedBy) {
-            for (const imp of connected.importedBy) {
-                const rawPath = typeof imp === 'string' ? imp : ((imp as any)?.path || (imp as any)?.name || (imp as any)?.id || '');
-                if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
+        for (const rawPath of dependentsData.direct) {
+            if (rawPath && rawPath !== selectedFile && !map.has(rawPath)) {
+                const fileName = rawPath.split('/').pop() || rawPath;
+                const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                const score = computeRisk(rawPath, graph, commits).score;
+                map.set(rawPath, { path: rawPath, name: fileName, folder, score });
             }
         }
         return Array.from(map.values()).sort((a, b) => b.score - a.score);
-    }, [impactResult, connected?.importedBy, selectedFile, graph, commits]);
+    }, [dependentsData.direct, selectedFile, graph, commits]);
 
     const indirectList = useMemo(() => {
         if (!selectedFile) return [];
         const directPaths = new Set(directList.map(d => d.path));
-        const map = new Map<string, { path: string; name: string; folder: string; score: number }>();
-        if (impactResult?.transitiveConsumers) {
-            for (const tc of impactResult.transitiveConsumers) {
-                let rawPath = tc?.symbol?.path;
-                if (!rawPath && graph?.nodes) {
-                    const found = graph.nodes.find(n => n?.id === tc?.symbol?.name || (n as any)?.name === tc?.symbol?.name);
-                    if (found && (found as any)?.path) {
-                        rawPath = (found as any).path;
-                    }
-                }
-                if (!rawPath) rawPath = tc?.symbol?.name;
-                if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
-                    const fileName = rawPath.split('/').pop() || rawPath;
-                    const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
-                    const score = computeRisk(rawPath, graph, commits).score;
-                    map.set(rawPath, { path: rawPath, name: fileName, folder, score });
-                }
-            }
-        }
-        for (const indPath of indirectFiles) {
-            if (indPath !== selectedFile && !directPaths.has(indPath) && !map.has(indPath)) {
-                const fileName = indPath.split('/').pop() || indPath;
-                const folder = indPath.includes('/') ? indPath.substring(0, indPath.lastIndexOf('/')) : '';
-                const score = computeRisk(indPath, graph, commits).score;
-                map.set(indPath, { path: indPath, name: fileName, folder, score });
+        const map = new Map<string, { path: string; name: string; folder: string; score: number; hops?: number }>();
+        for (const ind of dependentsData.indirect) {
+            const rawPath = ind.path;
+            if (rawPath && rawPath !== selectedFile && !directPaths.has(rawPath) && !map.has(rawPath)) {
+                const fileName = rawPath.split('/').pop() || rawPath;
+                const folder = rawPath.includes('/') ? rawPath.substring(0, rawPath.lastIndexOf('/')) : '';
+                const score = computeRisk(rawPath, graph, commits).score;
+                map.set(rawPath, { path: rawPath, name: fileName, folder, score, hops: ind.hops });
             }
         }
         return Array.from(map.values()).sort((a, b) => b.score - a.score);
-    }, [impactResult, directList, indirectFiles, selectedFile, graph, commits]);
+    }, [dependentsData.indirect, directList, selectedFile, graph, commits]);
 
     const testsList = useMemo(() => {
         if (!selectedFile) return [];

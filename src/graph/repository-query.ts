@@ -122,6 +122,96 @@ function queryFileDependents(graph: RepositoryGraph, path: string): RepositoryGr
     ) };
 }
 
+export interface DependentsResult {
+    direct: string[];
+    indirect: Array<{ path: string; hops: number }>;
+    directCount: number;
+    indirectCount: number;
+    totalReach: number;
+}
+
+export function getFileDependents(
+    graph: RepositoryGraph,
+    targetPath: string,
+    maxDepth = 10
+): DependentsResult {
+    const norm = (p: string) => p.replace(/\\/g, '/');
+    const targetNorm = norm(targetPath);
+
+    const targetNode = graph.nodes.find(
+        (n) => n.type === "file" && (norm(n.path) === targetNorm || norm(n.id) === targetNorm || norm(n.id) === norm(`file:${encodeURIComponent(targetPath)}`))
+    );
+    const targetId = targetNode ? targetNode.id : targetPath;
+
+    const fileNodesList = graph.nodes.filter((n): n is FileGraphNode => n.type === "file");
+    const idToPath = new Map<string, string>();
+    for (const f of fileNodesList) {
+        idToPath.set(f.id, f.path);
+        idToPath.set(norm(f.path), f.path);
+    }
+
+    // Direct incoming imports: edge.to is target, edge.from imports it
+    const directSet = new Set<string>();
+    const directPaths = new Set<string>();
+    for (const e of graph.edges) {
+        if (e.type === "imports") {
+            const toPath = idToPath.get(e.to) || (e.to.startsWith("file:") ? decodeURIComponent(e.to.slice(5)) : e.to);
+            if (e.to === targetId || norm(toPath) === targetNorm) {
+                const fromPath = idToPath.get(e.from) || (e.from.startsWith("file:") ? decodeURIComponent(e.from.slice(5)) : e.from);
+                if (norm(fromPath) !== targetNorm && e.from !== targetId) {
+                    directSet.add(e.from);
+                    directPaths.add(fromPath);
+                }
+            }
+        }
+    }
+
+    const visited = new Set<string>([targetId, ...directSet]);
+    const visitedPaths = new Set<string>([targetNorm, ...Array.from(directPaths).map(norm)]);
+    const queue: Array<{ id: string; path: string; hops: number }> = [];
+    for (const dId of directSet) {
+        const dPath = idToPath.get(dId) || (dId.startsWith("file:") ? decodeURIComponent(dId.slice(5)) : dId);
+        queue.push({ id: dId, path: dPath, hops: 1 });
+    }
+
+    const indirectMap = new Map<string, number>();
+
+    while (queue.length > 0) {
+        const curr = queue.shift()!;
+        if (curr.hops >= maxDepth) continue;
+
+        for (const e of graph.edges) {
+            if (e.type === "imports") {
+                const toPath = idToPath.get(e.to) || (e.to.startsWith("file:") ? decodeURIComponent(e.to.slice(5)) : e.to);
+                if (e.to === curr.id || norm(toPath) === norm(curr.path)) {
+                    const fromPath = idToPath.get(e.from) || (e.from.startsWith("file:") ? decodeURIComponent(e.from.slice(5)) : e.from);
+                    const fromNorm = norm(fromPath);
+                    if (!visited.has(e.from) && !visitedPaths.has(fromNorm)) {
+                        visited.add(e.from);
+                        visitedPaths.add(fromNorm);
+                        const hops = curr.hops + 1;
+                        indirectMap.set(fromPath, hops);
+                        queue.push({ id: e.from, path: fromPath, hops });
+                    }
+                }
+            }
+        }
+    }
+
+    const direct = Array.from(directPaths).sort();
+    const indirect = Array.from(indirectMap.entries())
+        .map(([path, hops]) => ({ path, hops }))
+        .sort((a, b) => a.hops - b.hops || a.path.localeCompare(b.path));
+
+    return {
+        direct,
+        indirect,
+        directCount: direct.length,
+        indirectCount: indirect.length,
+        totalReach: direct.length + indirect.length
+    };
+}
+
 function querySymbolCallers(
     graph: RepositoryGraph,
     symbol: Extract<RepositoryGraphQuery, { type: "symbol-callers" }>['symbol']

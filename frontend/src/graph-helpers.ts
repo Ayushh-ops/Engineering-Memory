@@ -277,6 +277,124 @@ export interface RiskDetails {
     reasons: Array<{ label: string; value: string }>;
 }
 
+export interface FileDependentsResult {
+    direct: string[];
+    indirect: Array<{ path: string; hops: number }>;
+    directCount: number;
+    indirectCount: number;
+    totalReach: number;
+}
+
+export function getFileDependents(
+    graph: RepositoryGraph | null,
+    targetPath: string,
+    maxDepth = 10
+): FileDependentsResult {
+    if (!graph || !targetPath) {
+        return { direct: [], indirect: [], directCount: 0, indirectCount: 0, totalReach: 0 };
+    }
+
+    const norm = (p: string) => p ? p.replace(/\\/g, '/') : '';
+    const targetNorm = norm(targetPath);
+    const decodedTarget = decodeGraphFileId(targetPath);
+    const decodedTargetNorm = norm(decodedTarget);
+
+    const fileNode = graph.nodes.find((n: any) =>
+        n.type === 'file' && (
+            norm(n.path) === targetNorm ||
+            norm(n.id) === targetNorm ||
+            norm(n.path) === decodedTargetNorm ||
+            norm(n.id) === decodedTargetNorm ||
+            norm(decodeGraphFileId(n.id)) === targetNorm
+        )
+    );
+    const targetId = fileNode ? fileNode.id : targetPath;
+
+    const idToPath = new Map<string, string>();
+    for (const rawNode of graph.nodes) {
+        const n = rawNode as any;
+        const decodedId = decodeGraphFileId(n.id);
+        const p = n.path || (n.type === 'file' ? decodedId : undefined);
+        if (p) idToPath.set(n.id, p);
+    }
+
+    // Direct incoming imports (upstream dependents: edge.from imports edge.to where to is target)
+    const directSet = new Set<string>();
+    const directPaths = new Set<string>();
+
+    for (const edge of graph.edges) {
+        if (edge.type === 'imports') {
+            const rawTo = idToPath.get(edge.to) || edge.to;
+            const toPath = decodeGraphFileId(rawTo);
+            const toNorm = norm(toPath);
+
+            const isToTarget = edge.to === targetId || toNorm === targetNorm || toNorm === decodedTargetNorm;
+
+            if (isToTarget) {
+                const rawFrom = idToPath.get(edge.from) || edge.from;
+                const fromPath = decodeGraphFileId(rawFrom);
+                const fromNorm = norm(fromPath);
+
+                if (fromNorm !== targetNorm && fromNorm !== decodedTargetNorm && edge.from !== targetId) {
+                    directSet.add(edge.from);
+                    directPaths.add(fromPath);
+                }
+            }
+        }
+    }
+
+    const visited = new Set<string>([targetId, ...directSet]);
+    const visitedPaths = new Set<string>([targetNorm, decodedTargetNorm, ...Array.from(directPaths).map(norm)]);
+    const queue: Array<{ id: string; path: string; hops: number }> = [];
+
+    for (const dId of directSet) {
+        const dPath = idToPath.get(dId) || decodeGraphFileId(dId);
+        queue.push({ id: dId, path: dPath, hops: 1 });
+    }
+
+    const indirectMap = new Map<string, number>();
+
+    while (queue.length > 0) {
+        const curr = queue.shift()!;
+        if (curr.hops >= maxDepth) continue;
+
+        for (const edge of graph.edges) {
+            if (edge.type === 'imports') {
+                const rawTo = idToPath.get(edge.to) || edge.to;
+                const toPath = decodeGraphFileId(rawTo);
+                const toNorm = norm(toPath);
+
+                if (edge.to === curr.id || toNorm === norm(curr.path)) {
+                    const rawFrom = idToPath.get(edge.from) || edge.from;
+                    const fromPath = decodeGraphFileId(rawFrom);
+                    const fromNorm = norm(fromPath);
+
+                    if (!visited.has(edge.from) && !visitedPaths.has(fromNorm)) {
+                        visited.add(edge.from);
+                        visitedPaths.add(fromNorm);
+                        const hops = curr.hops + 1;
+                        indirectMap.set(fromPath, hops);
+                        queue.push({ id: edge.from, path: fromPath, hops });
+                    }
+                }
+            }
+        }
+    }
+
+    const direct = Array.from(directPaths).sort();
+    const indirect = Array.from(indirectMap.entries())
+        .map(([path, hops]) => ({ path, hops }))
+        .sort((a, b) => a.hops - b.hops || a.path.localeCompare(b.path));
+
+    return {
+        direct,
+        indirect,
+        directCount: direct.length,
+        indirectCount: indirect.length,
+        totalReach: direct.length + indirect.length
+    };
+}
+
 export function computeRisk(
     filePath: string,
     graph: RepositoryGraph | null,
@@ -293,37 +411,9 @@ export function computeRisk(
         };
     }
 
-    const fileNode = graph.nodes.find((n: any) => n.type === 'file' && (n.path === filePath || n.id === filePath));
-    const fileId = fileNode ? fileNode.id : filePath;
-
-    // 1. Direct dependents (incoming imports or calls)
-    const directSet = new Set<string>();
-    for (const edge of graph.edges) {
-        if (edge.to === fileId && (edge.type === 'imports' || edge.type === 'calls')) {
-            directSet.add(edge.from);
-        }
-    }
-
-    // 2. Transitive dependents (reverse BFS excluding direct and target file)
-    const visited = new Set<string>([fileId, ...directSet]);
-    const queue = Array.from(directSet);
-    const transitiveSet = new Set<string>();
-
-    while (queue.length > 0) {
-        const curr = queue.shift()!;
-        for (const edge of graph.edges) {
-            if (edge.to === curr && (edge.type === 'imports' || edge.type === 'calls')) {
-                if (!visited.has(edge.from)) {
-                    visited.add(edge.from);
-                    transitiveSet.add(edge.from);
-                    queue.push(edge.from);
-                }
-            }
-        }
-    }
-
-    const directDependents = directSet.size;
-    const transitiveDependents = transitiveSet.size;
+    const deps = getFileDependents(graph, filePath);
+    const directDependents = deps.directCount;
+    const transitiveDependents = deps.indirectCount;
 
     // 3. Churn percent from commits
     let churnPercent = 0;
@@ -386,41 +476,33 @@ export function computeChangeSetRisk(
         };
     }
 
-    const inputNodeIds = new Set(
-        changeSetFiles.map(path => {
-            const n = graph.nodes.find((node: any) => node.type === 'file' && (node.path === path || node.id === path));
-            return n ? n.id : path;
-        })
-    );
+    const directCombined = new Set<string>();
+    const indirectCombined = new Set<string>();
+    const changeSetNorms = new Set(changeSetFiles.map(f => f.replace(/\\/g, '/')));
 
-    const directSet = new Set<string>();
-    for (const edge of graph.edges) {
-        if (inputNodeIds.has(edge.to) && (edge.type === 'imports' || edge.type === 'calls')) {
-            if (!inputNodeIds.has(edge.from)) {
-                directSet.add(edge.from);
+    for (const f of changeSetFiles) {
+        const deps = getFileDependents(graph, f);
+        for (const d of deps.direct) {
+            const dNorm = d.replace(/\\/g, '/');
+            if (!changeSetNorms.has(dNorm)) {
+                directCombined.add(d);
+            }
+        }
+        for (const ind of deps.indirect) {
+            const indNorm = ind.path.replace(/\\/g, '/');
+            if (!changeSetNorms.has(indNorm)) {
+                indirectCombined.add(ind.path);
             }
         }
     }
 
-    const visited = new Set<string>([...inputNodeIds, ...directSet]);
-    const queue = Array.from(directSet);
-    const transitiveSet = new Set<string>();
-
-    while (queue.length > 0) {
-        const curr = queue.shift()!;
-        for (const edge of graph.edges) {
-            if (edge.to === curr && (edge.type === 'imports' || edge.type === 'calls')) {
-                if (!visited.has(edge.from)) {
-                    visited.add(edge.from);
-                    transitiveSet.add(edge.from);
-                    queue.push(edge.from);
-                }
-            }
-        }
+    // Direct dependents take priority over transitive
+    for (const d of directCombined) {
+        indirectCombined.delete(d);
     }
 
-    const directDependents = directSet.size;
-    const transitiveDependents = transitiveSet.size;
+    const directDependents = directCombined.size;
+    const transitiveDependents = indirectCombined.size;
 
     let churnPercent = 0;
     if (commits && commits.length > 0) {
@@ -559,35 +641,37 @@ export function compute2DLayout(
             }
         }
 
-        // Indirect (2+ hops): compute shortest path hops from center
-        const hopsMap = new Map<string, number>();
-        hopsMap.set(cId, 0);
-        const queue: Array<{ id: string; hops: number }> = [{ id: cId, hops: 0 }];
-        const adj = new Map<string, string[]>();
-        for (const e of edges) {
-            if (!adj.has(e.from)) adj.set(e.from, []);
-            if (!adj.has(e.to)) adj.set(e.to, []);
-            adj.get(e.from)!.push(e.to);
-            adj.get(e.to)!.push(e.from);
+        // Indirect (2+ hops): upstream dependents that reach center by importing a file that imports it
+        const upstreamHopsMap = new Map<string, number>();
+        const upstreamVisited = new Set<string>([cId, ...directImportedBySet]);
+        const upstreamQueue: Array<{ id: string; hops: number }> = [];
+
+        for (const impId of directImportedBySet) {
+            upstreamHopsMap.set(impId, 1);
+            upstreamQueue.push({ id: impId, hops: 1 });
         }
-        while (queue.length > 0) {
-            const curr = queue.shift()!;
-            const neighbors = adj.get(curr.id) || [];
-            for (const nbr of neighbors) {
-                if (!hopsMap.has(nbr)) {
-                    hopsMap.set(nbr, curr.hops + 1);
-                    queue.push({ id: nbr, hops: curr.hops + 1 });
+
+        while (upstreamQueue.length > 0) {
+            const curr = upstreamQueue.shift()!;
+            for (const e of edges) {
+                if (e.type === 'imports' && e.to === curr.id && e.from !== cId) {
+                    if (!upstreamVisited.has(e.from)) {
+                        upstreamVisited.add(e.from);
+                        const hops = curr.hops + 1;
+                        upstreamHopsMap.set(e.from, hops);
+                        upstreamQueue.push({ id: e.from, hops });
+                    }
                 }
             }
         }
 
         const leftIds: string[] = [];      // Imports
         const rightIds: string[] = [];     // Imported by
-        const indirectIds: string[] = [];  // Indirect (2+ hops)
+        const indirectIds: string[] = [];  // Indirect (2+ hops upstream dependents)
 
         for (const n of nodes) {
             if (n.id === cId) continue;
-            const hops = hopsMap.get(n.id) || 1;
+            const hops = upstreamHopsMap.get(n.id) || 1;
             nodeHops.set(n.id, hops);
 
             if (hops >= 2) {
@@ -598,8 +682,7 @@ export function compute2DLayout(
                 rightIds.push(n.id);
             } else if (directImportsSet.has(n.id) && directImportedBySet.has(n.id)) {
                 leftIds.push(n.id);
-            } else {
-                // If connected indirectly or unclassified
+            } else if (upstreamVisited.has(n.id)) {
                 indirectIds.push(n.id);
             }
         }

@@ -202,4 +202,30 @@ assert.equal(health.godFiles.length, 1);
 assert.equal(health.godFiles[0].path, "src/god.ts");
 assert.equal(health.godFiles[0].importCount, 16);
 
+// Unit test fixture: A imported by B, B imported by C, D unrelated, C imports E.
+// Indirect of A must be exactly {C}.
+const fixtureGraph: RepositoryGraph = {
+    nodes: [
+        { id: "file:src%2FA.ts", type: "file", name: "src/A.ts", path: "src/A.ts" },
+        { id: "file:src%2FB.ts", type: "file", name: "src/B.ts", path: "src/B.ts" },
+        { id: "file:src%2FC.ts", type: "file", name: "src/C.ts", path: "src/C.ts" },
+        { id: "file:src%2FD.ts", type: "file", name: "src/D.ts", path: "src/D.ts" },
+        { id: "file:src%2FE.ts", type: "file", name: "src/E.ts", path: "src/E.ts" }
+    ],
+    edges: [
+        // B imports A (A imported by B)
+        { from: "file:src%2FB.ts", to: "file:src%2FA.ts", type: "imports" },
+        // C imports B (B imported by C)
+        { from: "file:src%2FC.ts", to: "file:src%2FB.ts", type: "imports" },
+        // C imports E
+        { from: "file:src%2FC.ts", to: "file:src%2FE.ts", type: "imports" }
+        // D is unrelated (no edges)
+    ]
+};
+
+const fixtureDeps = service.analyze(fixtureGraph, { type: "file", path: "src/A.ts" });
+assert.deepEqual(fixtureDeps.directCallers.map(d => d.symbol.path), ["src/B.ts"]);
+assert.deepEqual(fixtureDeps.transitiveConsumers.map(t => t.symbol.path), ["src/C.ts"]);
+assert.equal(fixtureDeps.transitiveConsumers[0]?.depth, 2);
+
 console.log("change impact analysis fixtures passed");

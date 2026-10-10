@@ -10,7 +10,7 @@ import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
-import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles } from '../graph-helpers';
+import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles, getFileDependents } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
 import { RightPanel } from './RightPanel';
 import { ErrorBoundary } from './ErrorBoundary';
@@ -1827,31 +1827,29 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         // Direct neighbors (depth 1)
         const directImportsSet = new Set<string>();
         const directImportedBySet = new Set<string>();
-        const depth1Set = new Set<string>();
 
         for (const e of graph.edges) {
             if (e.from === centerNode.id && baseNodeMap.has(e.to)) {
-                depth1Set.add(e.to);
                 directImportsSet.add(e.to);
             }
             if (e.to === centerNode.id && baseNodeMap.has(e.from)) {
-                depth1Set.add(e.from);
                 directImportedBySet.add(e.from);
             }
         }
-        depth1Set.delete(centerNode.id);
         directImportsSet.delete(centerNode.id);
         directImportedBySet.delete(centerNode.id);
 
-        // Depth 2 neighbors if requested (focusDepth === 2 for Indirect)
-        const depth2Set = new Set<string>();
+        // Indirect upstream dependents (2+ hops) via getFileDependents
+        const centerPath = (centerNode as any).path || (centerNode.type === 'file' ? centerNode.id : undefined) || (centerNode as any).name || '';
+        const depResult = getFileDependents(graph, centerPath);
+        const indirectNodeIds = new Set<string>();
+
         if (focusDepth === 2) {
-            for (const e of graph.edges) {
-                if (depth1Set.has(e.from) && baseNodeMap.has(e.to) && !depth1Set.has(e.to) && e.to !== centerNode.id) {
-                    depth2Set.add(e.to);
-                }
-                if (depth1Set.has(e.to) && baseNodeMap.has(e.from) && !depth1Set.has(e.from) && e.from !== centerNode.id) {
-                    depth2Set.add(e.from);
+            for (const ind of depResult.indirect) {
+                // Find node by path or id in baseNodeMap
+                const found = baseNodes.find((n: any) => (n.path && n.path === ind.path) || n.id === ind.path || (n.type === 'file' && n.name === ind.path));
+                if (found && found.id !== centerNode.id && !directImportsSet.has(found.id) && !directImportedBySet.has(found.id)) {
+                    indirectNodeIds.add(found.id);
                 }
             }
         }
@@ -1866,7 +1864,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             .filter(Boolean)
             .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
 
-        const indirectNodes = Array.from(depth2Set)
+        const indirectNodes = Array.from(indirectNodeIds)
             .map(id => baseNodeMap.get(id))
             .filter(Boolean)
             .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));

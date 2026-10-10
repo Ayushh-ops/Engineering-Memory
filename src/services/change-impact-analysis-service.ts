@@ -1,7 +1,7 @@
 import type { RepositoryContextTarget } from "../graph/repository-context";
 import type { RepositoryGraph } from "../graph/repository-graph";
 import type { GraphSymbolNode } from "../graph/repository-query";
-import { queryRepositoryGraph } from "../graph/repository-query";
+import { queryRepositoryGraph, getFileDependents } from "../graph/repository-query";
 import {
     RepositorySourceEvidenceService,
     type RepositorySourceEvidence
@@ -314,44 +314,55 @@ export class ChangeImpactAnalysisService {
             base.relatedDependencies.push(...dependencies.slice(0, limits.maxResults));
 
             // Traverse reverse imports (dependents) to populate directCallers, transitiveConsumers, and paths
-            const visited = new Set<string>([targetNode.id]);
-            const queue: Array<{ id: string; path: string; depth: number }> = [{ id: targetNode.id, path: target.path, depth: 0 }];
+            const depResult = getFileDependents(graph, target.path, limits.maxDepth);
             const filesByPath = new Map(graph.nodes.filter((n) => n.type === "file").map((n) => [n.path, n]));
 
-            while (queue.length > 0) {
-                const current = queue.shift()!;
-                if (current.depth >= limits.maxDepth) continue;
-                const dependents = queryRepositoryGraph(graph, { type: "file-dependents", path: current.path }).files;
-                for (const dep of dependents) {
-                    if (visited.has(dep.id)) continue;
-                    visited.add(dep.id);
-                    const depth = current.depth + 1;
-                    const callerResult: ChangeImpactSymbolResult = {
-                        symbol: {
-                            id: dep.id,
-                            type: "file" as any,
-                            name: dep.path.split("/").pop() || dep.path,
-                            path: dep.path
-                        },
-                        depth,
-                        relationship: depth === 1 ? ("direct-caller" as const) : ("transitive-consumer" as const),
-                        evidence: "calls-edge" as const
-                    };
-                    if (depth === 1) {
-                        base.directCallers.push(callerResult);
-                    } else {
-                        base.transitiveConsumers.push(callerResult);
-                    }
-                    base.paths.push({
-                        id: pathId(targetNode.id, dep.id),
-                        target: targetNode.id,
-                        nodes: [dep.id, targetNode.id],
-                        relationships: [],
-                        depth,
-                        classification: depth === 1 ? "direct-caller" : "transitive-consumer"
-                    });
-                    queue.push({ id: dep.id, path: dep.path, depth });
-                }
+            for (const dPath of depResult.direct) {
+                const depNode = filesByPath.get(dPath);
+                const depId = depNode ? depNode.id : dPath;
+                base.directCallers.push({
+                    symbol: {
+                        id: depId,
+                        type: "file" as any,
+                        name: dPath.split("/").pop() || dPath,
+                        path: dPath
+                    },
+                    depth: 1,
+                    relationship: "direct-caller" as const,
+                    evidence: "calls-edge" as const
+                });
+                base.paths.push({
+                    id: pathId(targetNode.id, depId),
+                    target: targetNode.id,
+                    nodes: [depId, targetNode.id],
+                    relationships: [],
+                    depth: 1,
+                    classification: "direct-caller"
+                });
+            }
+
+            for (const ind of depResult.indirect) {
+                const depNode = filesByPath.get(ind.path);
+                const depId = depNode ? depNode.id : ind.path;
+                base.transitiveConsumers.push({
+                    symbol: {
+                        id: depId,
+                        type: "file" as any,
+                        name: ind.path.split("/").pop() || ind.path,
+                        path: ind.path
+                    },
+                    depth: ind.hops,
+                    relationship: "transitive-consumer" as const,
+                    evidence: "calls-edge" as const
+                });
+                base.paths.push({
+                    id: pathId(targetNode.id, depId),
+                    target: targetNode.id,
+                    nodes: [depId, targetNode.id],
+                    relationships: [],
+                    depth: ind.hops,
+                    classification: "transitive-consumer"
+                });
             }
 
             base.reviewCandidates.push(...base.relatedDependencies.map((dependency) => ({
