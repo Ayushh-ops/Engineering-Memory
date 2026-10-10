@@ -262,12 +262,12 @@ function FlowFitViewHandler({
 }) {
     const { fitView } = useReactFlow();
 
-    // Call fitView with padding 0.1 (fills ~80% of container), maxZoom 2.5 after layout, and on entering/leaving fullscreen
+    // Call fitView with 40px padding (~0.12), maxZoom 2.5 after layout, and on entering/leaving fullscreen
     useEffect(() => {
         if (nodes.length === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.1, maxZoom: 2.5, minZoom: 0.2, duration: prefersReducedMotion ? 0 : 300 });
+            fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: prefersReducedMotion ? 0 : 300 });
         }, 80);
         return () => clearTimeout(timer);
     }, [nodes, edges, simplify, focusDepth, resetTrigger, isExpanded, fitView]);
@@ -275,7 +275,7 @@ function FlowFitViewHandler({
     // Fit-to-view on window resize
     useEffect(() => {
         const handleResize = () => {
-            fitView({ padding: 0.1, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
+            fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -704,8 +704,25 @@ function CustomGraphNode({ data }: { data: any }) {
     );
 }
 
+function ColumnHeaderNode({ data }: { data: any }) {
+    return (
+        <div className="select-none pointer-events-none text-center">
+            <div className="text-[12px] font-mono font-medium text-[#E8EAE6] flex items-center justify-center gap-1.5">
+                <span>{data.title}</span>
+                <span className="text-[11px] text-[#8A918C]">({data.count})</span>
+            </div>
+            {data.isEmpty && (
+                <div className="text-[11px] text-[#8A918C]/60 mt-1 italic">
+                    None
+                </div>
+            )}
+        </div>
+    );
+}
+
 const customNodeTypes = {
-    custom: CustomGraphNode
+    custom: CustomGraphNode,
+    columnHeader: ColumnHeaderNode
 };
 
 function OverviewGraph2D({
@@ -718,7 +735,8 @@ function OverviewGraph2D({
     isExpanded,
     hoveredGraphNode,
     focusDepth,
-    resetTrigger
+    resetTrigger,
+    showCalls
 }: {
     graph: import('../api').RepositoryGraph;
     simplify: boolean;
@@ -730,20 +748,23 @@ function OverviewGraph2D({
     hoveredGraphNode: string | null;
     focusDepth: 1 | 2;
     resetTrigger: number;
+    showCalls?: boolean;
 }) {
     const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
+    const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
     useEffect(() => {
         // Use the same visible-node set for edges and nodes
-        const visibleNodes = (graph?.nodes || []).filter((n: any) => Boolean(n && n.id));
+        const visibleNodes: any[] = (graph?.nodes || []).filter((n: any) => Boolean(n && n.id));
         const visibleNodeIds = new Set(visibleNodes.map((n: any) => n.id));
         const validEdges = (graph?.edges || []).filter((e: any) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to));
 
         const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
 
-        // Find center node ID if focused
+        // Find center node ID and name if focused
         let centerId: string | null = null;
+        let centerName = '';
         if (selectedFile) {
             for (const n of visibleNodes) {
                 const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
@@ -751,24 +772,117 @@ function OverviewGraph2D({
                     if (selectedSymbol) {
                         if ((n as any).name === selectedSymbol.name && n.type === selectedSymbol.type) {
                             centerId = n.id;
+                            centerName = n.name || (nPath ? nPath.split('/').pop() : n.id);
                             break;
                         }
                     } else if (n.type === 'file') {
                         centerId = n.id;
+                        centerName = n.name || (nPath ? nPath.split('/').pop() : n.id);
                         break;
                     }
                 }
             }
             if (!centerId && neighborInfo.selectedNodeIds.size > 0) {
                 centerId = Array.from(neighborInfo.selectedNodeIds)[0];
+                const cNode = visibleNodes.find(n => n.id === centerId);
+                centerName = cNode?.name || (cNode?.path ? cNode.path.split('/').pop() : centerId);
             }
         }
 
-        const positions = compute2DLayout(visibleNodes, validEdges, {
+        const layoutResult = compute2DLayout(visibleNodes, validEdges, {
             centerId,
             isFocused: Boolean(selectedFile),
             focusDepth
         });
+
+        const { positions, columnCounts, nodeHops, leftIds, rightIds, indirectIds, colSpacing, baseColOffset } = layoutResult;
+        const leftIdSet = new Set(leftIds);
+        const rightIdSet = new Set(rightIds);
+        const indirectIdSet = new Set(indirectIds);
+
+        // Compute top 3 highest-risk edges
+        const nodeRiskMap = new Map<string, number>();
+        visibleNodes.forEach(n => {
+            const p = n.path || n.id;
+            const r = computeRisk(p, graph).score;
+            nodeRiskMap.set(n.id, r);
+        });
+        const scoredEdges = validEdges.map((e: any, idx: number) => {
+            const risk = Math.max(nodeRiskMap.get(e.from) || 0, nodeRiskMap.get(e.to) || 0);
+            const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+            return { edgeId, risk, idx };
+        });
+        scoredEdges.sort((a, b) => b.risk - a.risk || a.idx - b.idx);
+        const top3RiskEdgeIds = new Set(scoredEdges.slice(0, 3).map(x => x.edgeId));
+
+        // Active hover path calculation
+        const activeHoverId = hoveredNodeId || hoveredGraphNode;
+        let hoverPathNodeIds = new Set<string>();
+        let hoverPathEdgeIds = new Set<string>();
+        let activeHoverSentence = '';
+
+        if (activeHoverId && centerId) {
+            const hNode = visibleNodes.find(n => n.id === activeHoverId || n.path === activeHoverId);
+            const hId = hNode ? hNode.id : activeHoverId;
+            const hName = hNode ? (hNode.name || (hNode.path ? hNode.path.split('/').pop() : hId)) : hId;
+
+            if (hId === centerId) {
+                hoverPathNodeIds.add(centerId);
+                activeHoverSentence = `${centerName}`;
+            } else {
+                // Check direct edge
+                const dirOutgoing = validEdges.find(e => e.from === centerId && e.to === hId);
+                const dirIncoming = validEdges.find(e => e.from === hId && e.to === centerId);
+
+                if (dirOutgoing) {
+                    hoverPathNodeIds.add(centerId);
+                    hoverPathNodeIds.add(hId);
+                    hoverPathEdgeIds.add(dirOutgoing.id || `${dirOutgoing.from}->${dirOutgoing.to}:${dirOutgoing.type}`);
+                    activeHoverSentence = `${centerName} imports ${hName}`;
+                } else if (dirIncoming) {
+                    hoverPathNodeIds.add(centerId);
+                    hoverPathNodeIds.add(hId);
+                    hoverPathEdgeIds.add(dirIncoming.id || `${dirIncoming.from}->${dirIncoming.to}:${dirIncoming.type}`);
+                    activeHoverSentence = `${hName} imports ${centerName}`;
+                } else {
+                    // BFS shortest path between hId and centerId
+                    const adj = new Map<string, Array<{ neighbor: string; edgeId: string }>>();
+                    for (const e of validEdges) {
+                        const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
+                        if (!adj.has(e.from)) adj.set(e.from, []);
+                        if (!adj.has(e.to)) adj.set(e.to, []);
+                        adj.get(e.from)!.push({ neighbor: e.to, edgeId });
+                        adj.get(e.to)!.push({ neighbor: e.from, edgeId });
+                    }
+                    const visited = new Set<string>([hId]);
+                    const queue: Array<{ id: string; pNodes: string[]; pEdges: string[] }> = [{ id: hId, pNodes: [hId], pEdges: [] }];
+                    while (queue.length > 0) {
+                        const curr = queue.shift()!;
+                        if (curr.id === centerId) {
+                            hoverPathNodeIds = new Set(curr.pNodes);
+                            hoverPathEdgeIds = new Set(curr.pEdges);
+                            const hops = curr.pEdges.length;
+                            activeHoverSentence = `${hName} reaches ${centerName} (${hops} hops)`;
+                            break;
+                        }
+                        for (const item of (adj.get(curr.id) || [])) {
+                            if (!visited.has(item.neighbor)) {
+                                visited.add(item.neighbor);
+                                queue.push({
+                                    id: item.neighbor,
+                                    pNodes: [...curr.pNodes, item.neighbor],
+                                    pEdges: [...curr.pEdges, item.edgeId]
+                                });
+                            }
+                        }
+                    }
+                    if (hoverPathNodeIds.size === 0) {
+                        hoverPathNodeIds.add(hId);
+                        activeHoverSentence = `${hName}`;
+                    }
+                }
+            }
+        }
 
         // Compute connected nodes for fading unconnected ones when there is a selection
         const connectedToSelectedIds = new Set<string>();
@@ -792,74 +906,84 @@ function OverviewGraph2D({
             }
         }
 
-        const layoutNodes = visibleNodes.map((n: any) => {
+        const layoutNodes: any[] = visibleNodes.map((n: any) => {
             const pos = positions.get(n.id) || { x: 0, y: 0 };
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
-            const isSelected = neighborInfo.selectedNodeIds.has(n.id);
-            const isCallee = neighborInfo.calleeNeighborIds.has(n.id);
-            const isDependent = neighborInfo.dependentNeighborIds.has(n.id);
-            const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || n.id === hoveredGraphNode) : false;
+            const isSelected = neighborInfo.selectedNodeIds.has(n.id) || (centerId === n.id);
             const isRepo = n.type === 'repository';
-            const isConnectedToSelected = !neighborInfo.hasSelection || connectedToSelectedIds.has(n.id);
+            const isCallable = n.type === 'function' || n.type === 'method';
 
             // Base name only (client.js, not src/client.js)
             const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const displayName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
-            const isCallable = n.type === 'function' || n.type === 'method';
             const labelText = isCallable ? `${displayName}()` : displayName;
 
+            const hops = nodeHops.get(n.id) || 1;
+
+            // Pill colors:
+            // Selected file: brightest node (white fill, teal ring)
+            // Left (Imports): teal
+            // Right (Imported by): amber
+            // Indirect: grey
             let bg = 'rgba(16, 20, 21, 0.95)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
+            let textColor = '#E8EAE6';
+            let dotColor = '#4FD1B5';
 
             if (isRepo) {
                 bg = 'transparent';
                 border = '1.5px solid #E8EAE6';
-            } else if (n.type === 'file') {
-                border = '1px solid rgba(79, 209, 181, 0.4)';
-            } else if (n.type === 'class') {
-                border = '1px solid rgba(227, 160, 74, 0.4)';
+                dotColor = '#E8EAE6';
+            } else if (isSelected) {
+                bg = '#FFFFFF';
+                border = '2.5px solid #4FD1B5';
+                boxShadow = '0 0 16px rgba(79, 209, 181, 0.55)';
+                textColor = '#07090A';
+                dotColor = '#4FD1B5';
+            } else if (leftIdSet.has(n.id)) {
+                border = '1px solid rgba(79, 209, 181, 0.45)';
+                dotColor = '#4FD1B5';
+            } else if (rightIdSet.has(n.id)) {
+                border = '1px solid rgba(227, 160, 74, 0.45)';
+                dotColor = '#E3A04A';
+            } else if (indirectIdSet.has(n.id)) {
+                border = '1px solid rgba(138, 145, 140, 0.35)';
+                dotColor = '#8A918C';
             } else if (isCallable) {
-                border = '1px solid rgba(138, 145, 140, 0.3)';
+                border = '1px solid rgba(111, 143, 154, 0.4)';
+                dotColor = '#6F8F9A';
             }
 
-            if (!isRepo && neighborInfo.hasSelection) {
-                if (isSelected) {
-                    border = '2px solid #4FD1B5';
-                    boxShadow = '0 0 12px rgba(79, 209, 181, 0.45)';
-                } else if (isCallee) {
-                    border = '1.5px solid #4FD1B5';
-                    boxShadow = '0 0 8px rgba(79, 209, 181, 0.25)';
-                } else if (isDependent) {
-                    border = '1.5px solid #E3A04A';
-                    boxShadow = '0 0 8px rgba(227, 160, 74, 0.25)';
-                } else if (isHovered) {
-                    border = '2px solid #4FD1B5';
-                    boxShadow = '0 0 10px rgba(79, 209, 181, 0.4)';
-                }
-            } else if (isHovered) {
-                border = isRepo ? '2px solid #E8EAE6' : '2px solid #4FD1B5';
-                boxShadow = isRepo ? '0 0 12px rgba(232, 234, 230, 0.4)' : '0 0 12px rgba(79, 209, 181, 0.45)';
+            // Opacity: if active hover, dim everything not on hover path to 20%
+            let nodeOpacity = 1;
+            if (activeHoverId) {
+                nodeOpacity = hoverPathNodeIds.has(n.id) ? 1 : 0.2;
+            } else if (neighborInfo.hasSelection) {
+                nodeOpacity = connectedToSelectedIds.has(n.id) ? 1 : 0.25;
             }
 
             const nodeStyle = {
                 background: bg,
                 border,
-                borderRadius: isRepo ? '9999px' : '6px',
+                borderRadius: '9999px',
                 height: '28px',
                 minHeight: '28px',
                 boxSizing: 'border-box' as const,
                 display: 'flex',
                 alignItems: 'center',
-                padding: '0 8px',
+                padding: '0 10px',
                 boxShadow,
-                opacity: isConnectedToSelected ? 1 : 0.25,
-                color: '#E8EAE6',
+                opacity: nodeOpacity,
+                color: textColor,
                 fontSize: '12px',
                 cursor: 'pointer',
                 transition: 'border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease',
                 position: 'relative' as const
             };
+
+            const isHovered = activeHoverId ? (nodePath === activeHoverId || n.id === activeHoverId) : false;
+            const nodeTooltip = activeHoverSentence && isHovered ? activeHoverSentence : (nodePath || displayName);
 
             return {
                 id: n.id,
@@ -868,24 +992,27 @@ function OverviewGraph2D({
                 data: {
                     label: (
                         <div
-                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none truncate max-w-[170px]"
-                            title={nodePath || displayName}
+                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none truncate max-w-[220px]"
+                            title={nodeTooltip}
                         >
                             <span
                                 className={cn(
                                     "w-2 h-2 rounded-full inline-block shrink-0",
-                                    isRepo
-                                        ? "border border-[#E8EAE6] bg-transparent"
-                                        : n.type === 'file'
-                                        ? "bg-[#4FD1B5]"
-                                        : n.type === 'class'
-                                        ? "bg-[#E3A04A]"
-                                        : "bg-[#8A918C]"
+                                    isRepo && "border border-[#E8EAE6] bg-transparent"
                                 )}
+                                style={isRepo ? undefined : { backgroundColor: dotColor }}
                             />
-                            <span style={{ fontSize: 'inherit' }} className="truncate text-[#E8EAE6] text-[12px] leading-none font-mono">
+                            <span
+                                style={{ fontSize: 'inherit', color: textColor, fontWeight: isSelected ? '600' : '400' }}
+                                className="truncate text-[12px] leading-none font-mono"
+                            >
                                 {labelText}
                             </span>
+                            {hops >= 2 && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0">
+                                    {hops} hops
+                                </span>
+                            )}
                         </div>
                     ),
                     style: nodeStyle,
@@ -894,26 +1021,84 @@ function OverviewGraph2D({
             };
         });
 
+        // Insert Hub Column Headers when a file is selected
+        if (selectedFile && centerId) {
+            const importsMinY = leftIds.length > 0
+                ? Math.min(...leftIds.map(id => positions.get(id)?.y ?? 0)) - 55
+                : -40;
+            layoutNodes.push({
+                id: 'col-imports-header',
+                type: 'columnHeader',
+                position: { x: -colSpacing, y: importsMinY },
+                selectable: false,
+                draggable: false,
+                data: {
+                    title: 'Imports',
+                    count: columnCounts.imports,
+                    isEmpty: columnCounts.imports === 0
+                }
+            });
+
+            const importedByMinY = rightIds.length > 0
+                ? Math.min(...rightIds.map(id => positions.get(id)?.y ?? 0)) - 55
+                : -40;
+            layoutNodes.push({
+                id: 'col-imported-by-header',
+                type: 'columnHeader',
+                position: { x: colSpacing, y: importedByMinY },
+                selectable: false,
+                draggable: false,
+                data: {
+                    title: 'Imported by',
+                    count: columnCounts.importedBy,
+                    isEmpty: columnCounts.importedBy === 0
+                }
+            });
+
+            const indirectMinY = indirectIds.length > 0
+                ? Math.min(...indirectIds.map(id => positions.get(id)?.y ?? 0)) - 55
+                : -40;
+            layoutNodes.push({
+                id: 'col-indirect-header',
+                type: 'columnHeader',
+                position: { x: colSpacing * (baseColOffset + 1), y: indirectMinY },
+                selectable: false,
+                draggable: false,
+                data: {
+                    title: 'Indirect',
+                    count: columnCounts.indirect,
+                    isEmpty: columnCounts.indirect === 0
+                }
+            });
+        }
+
         const layoutEdges = validEdges.map((e: any, idx: number) => {
             const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-            const isIncoming = neighborInfo.incomingEdgeIds.has(edgeId);
-            const isOutgoing = neighborInfo.outgoingEdgeIds.has(edgeId);
 
-            // Imports teal #4FD1B5, imported by amber #E3A04A, contains grey #8A918C
+            // Arrow direction: an arrow points to the file being imported (e.to)
+            // Imports (selected uses): teal #4FD1B5, solid
+            // Imported by (files using selected): amber #E3A04A, solid
+            // Indirect (2+ hops): grey #8A918C, dashed
+            // Calls: #6F8F9A, dotted
             let stroke = '#4FD1B5';
-            if (neighborInfo.hasSelection) {
-                if (isIncoming) {
-                    stroke = '#E3A04A'; // imported by amber
-                } else if (isOutgoing) {
-                    stroke = '#4FD1B5'; // imports teal
-                } else if (e.type === 'contains') {
-                    stroke = '#8A918C';
+            let strokeDasharray: string | undefined = undefined;
+
+            if (e.type === 'calls') {
+                stroke = '#6F8F9A';
+                strokeDasharray = '2 2';
+            } else if (neighborInfo.hasSelection && centerId) {
+                if (e.from === centerId) {
+                    stroke = '#4FD1B5'; // Imports
+                } else if (e.to === centerId) {
+                    stroke = '#E3A04A'; // Imported by
                 } else {
-                    stroke = '#4FD1B5';
+                    stroke = '#8A918C'; // Indirect
+                    strokeDasharray = '4 4';
                 }
             } else {
                 if (e.type === 'contains') {
                     stroke = '#8A918C';
+                    strokeDasharray = '4 4';
                 } else if (e.type === 'imported_by') {
                     stroke = '#E3A04A';
                 } else {
@@ -921,18 +1106,22 @@ function OverviewGraph2D({
                 }
             }
 
-            const isSelectedEdge = neighborInfo.hasSelection && (neighborInfo.selectedNodeIds.has(e.from) || neighborInfo.selectedNodeIds.has(e.to));
-            const isHoveredEdge = hoveredGraphNode ? (
-                e.from === hoveredGraphNode || e.to === hoveredGraphNode ||
-                hoveredGraphNode.includes(e.from) || hoveredGraphNode.includes(e.to)
-            ) : false;
-            const isHighlighted = isSelectedEdge || isHoveredEdge;
+            const isTop3 = top3RiskEdgeIds.has(edgeId);
 
-            // In graph.edges, e.from imports e.to (e.from depends on e.to).
-            // Arrowhead points toward the dependent (e.from).
-            // Source = e.to (dependency), target = e.from (dependent).
-            const posSource = positions.get(e.to) || { x: 0, y: 0 };
-            const posTarget = positions.get(e.from) || { x: 0, y: 0 };
+            let edgeOpacity = isTop3 ? 0.95 : 0.55;
+            let strokeWidth = isTop3 ? 2 : 1.2;
+
+            if (activeHoverId) {
+                if (hoverPathEdgeIds.has(edgeId)) {
+                    edgeOpacity = 0.95;
+                    strokeWidth = 2;
+                } else {
+                    edgeOpacity = 0.2;
+                }
+            }
+
+            const posSource = positions.get(e.from) || { x: 0, y: 0 };
+            const posTarget = positions.get(e.to) || { x: 0, y: 0 };
 
             let sourceHandle = 'source-right';
             let targetHandle = 'target-left';
@@ -949,29 +1138,30 @@ function OverviewGraph2D({
 
             return {
                 id: edgeId || `edge-${idx}`,
-                source: e.to,
-                target: e.from,
+                source: e.from,
+                target: e.to,
                 sourceHandle,
                 targetHandle,
                 type: 'bezier',
                 markerEnd: {
                     type: MarkerType.ArrowClosed,
                     color: stroke,
-                    width: 10,
-                    height: 10
+                    width: 6,
+                    height: 6
                 },
-                zIndex: isHighlighted ? 10 : 1,
+                zIndex: activeHoverId && hoverPathEdgeIds.has(edgeId) ? 10 : (isTop3 ? 5 : 1),
                 style: {
                     stroke,
-                    strokeWidth: isHighlighted ? 1.5 : 1,
-                    opacity: isHighlighted ? 0.95 : 0.35
+                    strokeWidth,
+                    strokeDasharray,
+                    opacity: edgeOpacity
                 }
             };
         });
 
         setNodes(layoutNodes);
         setEdges(layoutEdges);
-    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, focusDepth, setNodes, setEdges]);
+    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, hoveredNodeId, focusDepth, showCalls, setNodes, setEdges]);
 
     return (
         <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2]">
@@ -983,9 +1173,11 @@ function OverviewGraph2D({
                 onEdgesChange={onEdgesChange}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
+                onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
+                onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onPaneClick={() => onSelectNode(null)}
                 fitView
-                fitViewOptions={{ padding: 0.1, maxZoom: 2.5, minZoom: 0.2 }}
+                fitViewOptions={{ padding: 0.12, maxZoom: 2.5, minZoom: 0.2 }}
                 maxZoom={2.5}
                 minZoom={0.2}
                 proOptions={{ hideAttribution: true }}
@@ -1037,13 +1229,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
 
     const [simplify, setSimplify] = useState(false);
-    const [showFunctions, setShowFunctions] = useState(false);
+    const [showCalls, setShowCalls] = useState(false);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
     const [showAllNodes, setShowAllNodes] = useState(false);
     const [showLegend, setShowLegend] = useState(true);
     const [legendCollapsed, setLegendCollapsed] = useState(false);
-    const [moreMenuOpen, setMoreMenuOpen] = useState(false);
-    const moreMenuRef = useRef<HTMLDivElement>(null);
     const [resetTrigger, setResetTrigger] = useState(0);
 
     // History stack of last 10 visited files
@@ -1065,19 +1255,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     // Reset showAllNodes when selection or filters change
     useEffect(() => {
         setShowAllNodes(false);
-    }, [selectedFile, focusDepth, simplify, showFunctions, viewMode]);
-
-    // Close "..." menu on click outside
-    useEffect(() => {
-        if (!moreMenuOpen) return;
-        const handleClickOutside = (e: MouseEvent) => {
-            if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
-                setMoreMenuOpen(false);
-            }
-        };
-        document.addEventListener('mousedown', handleClickOutside);
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [moreMenuOpen]);
+    }, [selectedFile, focusDepth, simplify, showCalls, viewMode]);
 
     const handleBack = useCallback(async () => {
         if (visitedHistory.length === 0) return;
@@ -1111,11 +1289,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return counts;
     }, [graph]);
 
-    // Base candidate pool: files only by default, functions/classes hidden unless showFunctions is enabled, repo node removed unless nothing else exists
+    // Base candidate pool: files only by default, functions/classes hidden unless showCalls is enabled, repo node removed unless nothing else exists
     const baseNodes = useMemo(() => {
         if (!graph?.nodes) return [];
         const nonRepoNodes = graph.nodes.filter((n: any) => {
-            if (!showFunctions && n.type !== 'file') return false;
+            if (!showCalls && n.type !== 'file') return false;
             if (simplify && n.type !== 'file') return false;
             if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') return false;
             return Boolean(n.id);
@@ -1124,20 +1302,20 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         return graph.nodes.filter((n: any) => {
             if (n.type === 'repository') return includeRepo;
-            if (!showFunctions && n.type !== 'file') return false;
+            if (!showCalls && n.type !== 'file') return false;
             if (simplify && n.type !== 'file') return false;
             if (n.type !== 'file' && n.type !== 'class' && n.type !== 'function' && n.type !== 'method') return false;
             return Boolean(n.id);
         });
-    }, [graph, showFunctions, simplify]);
+    }, [graph, showCalls, simplify]);
 
     // Default cap: 12 nodes in 2D, 30 in 3D
     const defaultCap = viewMode === '2D' ? 12 : 30;
 
-    // Compute displayed nodes (capped at defaultCap, show all when showAllNodes is true)
-    const { displayNodes, totalCandidateCount } = useMemo(() => {
+    // Compute displayed nodes (capped at defaultCap, max 12 per column in 2D, show all when showAllNodes is true)
+    const { displayNodes, totalCandidateCount, totalImportersCount } = useMemo(() => {
         if (baseNodes.length === 0) {
-            return { displayNodes: [], totalCandidateCount: 0 };
+            return { displayNodes: [], totalCandidateCount: 0, totalImportersCount: 0 };
         }
 
         // Case A: No file selected -> show top files by connections
@@ -1152,7 +1330,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
             return {
                 displayNodes: displayed,
-                totalCandidateCount: total
+                totalCandidateCount: total,
+                totalImportersCount: 0
             };
         }
 
@@ -1176,16 +1355,27 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const sorted = [...baseNodes].sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
             const total = sorted.length;
             const displayed = showAllNodes ? sorted : sorted.slice(0, defaultCap);
-            return { displayNodes: displayed, totalCandidateCount: total };
+            return { displayNodes: displayed, totalCandidateCount: total, totalImportersCount: 0 };
         }
 
         // Direct neighbors (depth 1)
+        const directImportsSet = new Set<string>();
+        const directImportedBySet = new Set<string>();
         const depth1Set = new Set<string>();
+
         for (const e of graph.edges) {
-            if (e.from === centerNode.id && baseNodeMap.has(e.to)) depth1Set.add(e.to);
-            if (e.to === centerNode.id && baseNodeMap.has(e.from)) depth1Set.add(e.from);
+            if (e.from === centerNode.id && baseNodeMap.has(e.to)) {
+                depth1Set.add(e.to);
+                directImportsSet.add(e.to);
+            }
+            if (e.to === centerNode.id && baseNodeMap.has(e.from)) {
+                depth1Set.add(e.from);
+                directImportedBySet.add(e.from);
+            }
         }
         depth1Set.delete(centerNode.id);
+        directImportsSet.delete(centerNode.id);
+        directImportedBySet.delete(centerNode.id);
 
         // Depth 2 neighbors if requested (focusDepth === 2 for Indirect)
         const depth2Set = new Set<string>();
@@ -1200,32 +1390,54 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             }
         }
 
-        const depth1Nodes = Array.from(depth1Set)
+        const importsNodes = Array.from(directImportsSet)
             .map(id => baseNodeMap.get(id))
             .filter(Boolean)
             .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
 
-        const depth2Nodes = Array.from(depth2Set)
+        const importedByNodes = Array.from(directImportedBySet)
             .map(id => baseNodeMap.get(id))
             .filter(Boolean)
             .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
 
-        // Visible nodes = selected + neighbors up to chosen depth only
-        const allCandidates = [centerNode, ...depth1Nodes, ...depth2Nodes];
-        const total = allCandidates.length;
-        const displayed = showAllNodes ? allCandidates : allCandidates.slice(0, defaultCap);
+        const indirectNodes = Array.from(depth2Set)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
+
+        const totalCandidateCount = 1 + importsNodes.length + importedByNodes.length + indirectNodes.length;
+        const totalImportersCount = importedByNodes.length;
+
+        let displayed: any[] = [];
+        if (viewMode === '2D') {
+            if (showAllNodes) {
+                displayed = [centerNode, ...importsNodes, ...importedByNodes, ...indirectNodes];
+            } else {
+                displayed = [
+                    centerNode,
+                    ...importsNodes.slice(0, 12),
+                    ...importedByNodes.slice(0, 12),
+                    ...indirectNodes.slice(0, 12)
+                ];
+            }
+        } else {
+            const all3D = [centerNode, ...importsNodes, ...importedByNodes, ...indirectNodes];
+            displayed = showAllNodes ? all3D : all3D.slice(0, 30);
+        }
 
         return {
             displayNodes: displayed,
-            totalCandidateCount: total
+            totalCandidateCount,
+            totalImportersCount
         };
-    }, [baseNodes, selectedFile, selectedSymbol, focusDepth, showAllNodes, defaultCap, connectionCounts, graph]);
+    }, [baseNodes, selectedFile, selectedSymbol, focusDepth, showAllNodes, defaultCap, connectionCounts, graph, viewMode]);
 
     // Active subgraph with visible nodes & edges
     const displayGraph = useMemo(() => {
         const nodeIds = new Set(displayNodes.map(n => n.id));
         const edges = graph.edges.filter(e => {
             if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) return false;
+            if (!showCalls && e.type === 'calls') return false;
             if (simplify) return e.type === 'imports';
             return true;
         });
@@ -1233,7 +1445,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             nodes: displayNodes,
             edges
         };
-    }, [displayNodes, graph, simplify]);
+    }, [displayNodes, graph, simplify, showCalls]);
 
     const neighborInfo = useMemo(() => {
         return getNeighborInfo(displayGraph, selectedFile, selectedSymbol);
@@ -1252,36 +1464,46 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     }, [displayGraph, hoveredGraphNode]);
 
     const legendData = useMemo(() => {
-        const nodes = displayGraph?.nodes || [];
         const edges = displayGraph?.edges || [];
+        let hasImports = false;
+        let hasImportedBy = false;
+        let hasIndirect = false;
+        let hasCalls = false;
 
-        const hasFile = nodes.some((n: any) => n.type === 'file');
-        const hasFunction = nodes.some((n: any) => n.type === 'function' || n.type === 'method');
-        const hasClass = nodes.some((n: any) => n.type === 'class');
-        const hasRepo = nodes.some((n: any) => n.type === 'repository');
-
-        const hasImports = edges.some((e: any) =>
-            e.type === 'imports' || e.type === 'calls' || !e.type ||
-            (neighborInfo.hasSelection && neighborInfo.outgoingEdgeIds.has(e.id || `${e.from}->${e.to}:${e.type}`))
-        );
-        const hasImportedBy = edges.some((e: any) =>
-            e.type === 'imported_by' ||
-            (neighborInfo.hasSelection && neighborInfo.incomingEdgeIds.has(e.id || `${e.from}->${e.to}:${e.type}`))
-        );
-        const hasContains = edges.some((e: any) => e.type === 'contains');
+        if (selectedFile) {
+            let centerId: string | null = null;
+            for (const n of displayGraph.nodes) {
+                const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
+                if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && (n as any).name === selectedFile)) {
+                    centerId = n.id;
+                    break;
+                }
+            }
+            if (centerId) {
+                for (const e of edges) {
+                    if (e.type === 'calls') {
+                        hasCalls = true;
+                    } else if (e.from === centerId) {
+                        hasImports = true;
+                    } else if (e.to === centerId) {
+                        hasImportedBy = true;
+                    } else {
+                        hasIndirect = true;
+                    }
+                }
+            }
+        } else {
+            hasImports = edges.some(e => e.type === 'imports' || !e.type);
+            hasCalls = edges.some(e => e.type === 'calls');
+        }
 
         return {
-            hasFile,
-            hasFunction,
-            hasClass,
-            hasRepo,
             hasImports,
             hasImportedBy,
-            hasContains,
-            hasAnyNodes: hasFile || hasFunction || hasClass || hasRepo,
-            hasAnyEdges: hasImports || hasImportedBy || hasContains
+            hasIndirect,
+            hasCalls
         };
-    }, [displayGraph, neighborInfo]);
+    }, [displayGraph, selectedFile]);
 
     const handleViewModeChange = (mode: '2D' | '3D') => {
         setViewMode(mode);
@@ -1688,31 +1910,28 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             )}
             style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
         >
-            {/* View Mode & Redesigned Single-Row Toolbar */}
+            {/* View Mode & Toolbar */}
             <div className="absolute top-3.5 left-3.5 z-30 glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-lg p-1.5 flex items-center gap-2 border border-white/10 shadow-lg text-xs font-mono select-none">
                 {/* Back button: left chevron icon button with tooltip "Previous node", disabled when no history */}
-                <button
-                    onClick={handleBack}
-                    disabled={visitedHistory.length === 0}
-                    className={cn(
-                        "p-1.5 rounded transition-colors cursor-pointer flex items-center justify-center",
-                        visitedHistory.length > 0
-                            ? "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06]"
-                            : "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
-                    )}
-                    title="Previous node"
-                >
-                    <ChevronLeft size={14} />
-                </button>
-
-                <div className="h-3.5 w-[1px] bg-white/10" />
+                {visitedHistory.length > 0 && (
+                    <>
+                        <button
+                            onClick={handleBack}
+                            className="p-1.5 rounded transition-colors cursor-pointer flex items-center justify-center text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06]"
+                            title="Previous node"
+                        >
+                            <ChevronLeft size={14} />
+                        </button>
+                        <div className="h-3.5 w-[1px] bg-white/10" />
+                    </>
+                )}
 
                 {/* Segmented control: 2D | 3D */}
                 <div className="flex items-center rounded-md bg-white/[0.04] p-0.5 border border-white/[0.06]">
                     <button
                         onClick={() => handleViewModeChange('2D')}
                         className={cn(
-                            "px-2 py-0.5 text-xs rounded transition-colors cursor-pointer font-medium",
+                            "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer font-medium",
                             viewMode === '2D'
                                 ? "bg-[#4FD1B5] text-[#04100D]"
                                 : "text-[#8A918C] hover:text-[#E8EAE6]"
@@ -1723,7 +1942,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     <button
                         onClick={() => handleViewModeChange('3D')}
                         className={cn(
-                            "px-2 py-0.5 text-xs rounded transition-colors cursor-pointer font-medium",
+                            "px-2.5 py-1 text-xs rounded transition-colors cursor-pointer font-medium",
                             viewMode === '3D'
                                 ? "bg-[#4FD1B5] text-[#04100D]"
                                 : "text-[#8A918C] hover:text-[#E8EAE6]"
@@ -1742,7 +1961,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         }}
                         disabled={!selectedFile}
                         className={cn(
-                            "px-2 py-0.5 text-[11px] font-mono rounded transition-colors select-none",
+                            "px-2.5 py-1 text-[11px] font-mono rounded transition-colors select-none",
                             !selectedFile
                                 ? "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
                                 : focusDepth === 1
@@ -1760,7 +1979,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         }}
                         disabled={!selectedFile}
                         className={cn(
-                            "px-2 py-0.5 text-[11px] font-mono rounded transition-colors select-none",
+                            "px-2.5 py-1 text-[11px] font-mono rounded transition-colors select-none",
                             !selectedFile
                                 ? "text-[#8A918C]/40 opacity-40 cursor-not-allowed"
                                 : focusDepth === 2
@@ -1775,79 +1994,45 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                 <div className="h-3.5 w-[1px] bg-white/10" />
 
-                {/* Expand icon button */}
+                {/* "Show calls" toggle button */}
+                <button
+                    onClick={() => setShowCalls(prev => !prev)}
+                    className={cn(
+                        "px-2.5 py-1 text-xs rounded-md border transition-colors cursor-pointer flex items-center gap-1.5",
+                        showCalls
+                            ? "bg-[#4FD1B5]/20 border-[#4FD1B5]/50 text-[#4FD1B5] font-medium"
+                            : "bg-white/[0.04] border-white/[0.06] text-[#8A918C] hover:text-[#E8EAE6]"
+                    )}
+                    title="Toggle function-level calls"
+                >
+                    <span>Show calls</span>
+                </button>
+
+                {/* "Reset view" visible button */}
+                <button
+                    onClick={handleReset}
+                    className="px-2.5 py-1 text-xs rounded-md border border-white/[0.06] bg-white/[0.04] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08] transition-colors cursor-pointer flex items-center gap-1.5"
+                    title="Reset view"
+                >
+                    <RefreshCw size={12} />
+                    <span>Reset view</span>
+                </button>
+
+                <div className="h-3.5 w-[1px] bg-white/10" />
+
+                {/* Fullscreen icon button */}
                 <button
                     onClick={toggleExpanded}
                     className={cn(
-                        "p-1.5 rounded transition-colors flex items-center justify-center cursor-pointer",
+                        "p-1.5 rounded-md border border-white/[0.06] transition-colors flex items-center justify-center cursor-pointer",
                         isExpanded
                             ? "bg-[#4FD1B5] text-[#04100D]"
-                            : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06]"
+                            : "bg-white/[0.04] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08]"
                     )}
-                    title={isExpanded ? "Collapse (Esc to exit)" : "Expand (Esc to exit)"}
+                    title={isExpanded ? "Exit fullscreen (Esc)" : "Fullscreen (Esc to exit)"}
                 >
                     {isExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
                 </button>
-
-                {/* "..." menu holding Simplify, Show functions, Reset view, Legend */}
-                <div className="relative" ref={moreMenuRef}>
-                    <button
-                        onClick={() => setMoreMenuOpen(prev => !prev)}
-                        className={cn(
-                            "p-1.5 rounded transition-colors flex items-center justify-center cursor-pointer",
-                            moreMenuOpen
-                                ? "bg-white/[0.08] text-[#E8EAE6]"
-                                : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06]"
-                        )}
-                        title="More options"
-                    >
-                        <MoreHorizontal size={14} />
-                    </button>
-
-                    {moreMenuOpen && (
-                        <div className="absolute top-full left-0 mt-1.5 w-48 glass-surface bg-[rgba(16,20,21,0.95)] backdrop-blur-md border border-white/10 rounded-lg p-1.5 shadow-2xl z-50 text-xs font-mono space-y-0.5">
-                            <button
-                                onClick={() => setSimplify(!simplify)}
-                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                            >
-                                <span>Simplify</span>
-                                <span className={cn("text-[10px] px-1.5 py-0.5 rounded", simplify ? "bg-[#4FD1B5]/20 text-[#4FD1B5]" : "text-[#8A918C]")}>
-                                    {simplify ? "On" : "Off"}
-                                </span>
-                            </button>
-
-                            <button
-                                onClick={() => setShowFunctions(!showFunctions)}
-                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                            >
-                                <span>Show functions</span>
-                                <span className={cn("text-[10px] px-1.5 py-0.5 rounded", showFunctions ? "bg-[#4FD1B5]/20 text-[#4FD1B5]" : "text-[#8A918C]")}>
-                                    {showFunctions ? "On" : "Off"}
-                                </span>
-                            </button>
-
-                            <button
-                                onClick={() => {
-                                    handleReset();
-                                    setMoreMenuOpen(false);
-                                }}
-                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                            >
-                                <span>Reset view</span>
-                            </button>
-
-                            <button
-                                onClick={() => setLegendCollapsed(!legendCollapsed)}
-                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                            >
-                                <span>Legend</span>
-                                <span className={cn("text-[10px] px-1.5 py-0.5 rounded", !legendCollapsed ? "bg-[#4FD1B5]/20 text-[#4FD1B5]" : "text-[#8A918C]")}>
-                                    {!legendCollapsed ? "Expanded" : "Collapsed"}
-                                </span>
-                            </button>
-                        </div>
-                    )}
-                </div>
             </div>
 
             {/* In expanded mode, floating glass panel */}
@@ -1902,6 +2087,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     hoveredGraphNode={hoveredGraphNode}
                     focusDepth={focusDepth}
                     resetTrigger={resetTrigger}
+                    showCalls={showCalls}
                 />
             ) : (
                 <ForceGraph3D
@@ -1911,30 +2097,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     height={dimensions.height > 0 ? dimensions.height : undefined}
                     nodeRelSize={4}
                     nodeVal={(node: any) => node.val}
-                    nodeLabel={(node: any) => {
-                        const nodePath = node.path || (node.type === 'file' ? node.id : '');
-                        const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
-                        const baseName = node.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
-                        const hasPath = Boolean(nodePath && nodePath !== baseName);
-                        return `
-                            <div style="background: rgba(16, 20, 21, 0.95); backdrop-filter: blur(8px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; padding: 4px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 1.3; color: #E8EAE6; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); pointer-events: none;">
-                                <div style="font-weight: 600; color: #4FD1B5;">${baseName}</div>
-                                ${hasPath ? `<div style="font-size: 10px; color: #8A918C; margin-top: 1px;">${nodePath}</div>` : ''}
-                            </div>
-                        `;
-                    }}
-                    linkColor={(link: any) => {
-                        const edgeId = link.id || `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}:${link.type}`;
-                        if (neighborInfo.hasSelection) {
-                            if (neighborInfo.incomingEdgeIds.has(edgeId)) return '#E3A04A'; // imported by amber
-                            if (neighborInfo.outgoingEdgeIds.has(edgeId)) return '#4FD1B5'; // imports teal
-                            if (link.type === 'contains') return '#8A918C'; // contains grey
-                            return '#4FD1B5';
-                        }
-                        if (link.type === 'contains') return '#8A918C';
-                        if (link.type === 'imports' || link.type === 'calls') return '#4FD1B5';
-                        return '#8A918C';
-                    }}
+                    linkDirectionalArrowLength={6}
+                    linkDirectionalArrowRelPos={1}
+                    linkDirectionalArrowColor={(link: any) => link.color}
+                    linkColor={(link: any) => link.color}
                     linkWidth={1}
                     linkOpacity={0.4}
                     linkDirectionalParticles={0}
@@ -1944,7 +2110,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.55)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
-                        const isSelected = neighborInfo.selectedNodeIds.has(node.id);
+                        const isSelected = neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
                         const isHovered = hoveredGraphNode ? (nodePath === hoveredGraphNode || node.id === hoveredGraphNode) : false;
                         const isTop8Degree = top8DegreeNodeIds.has(node.id);
                         const isRepo = node.type === 'repository';
@@ -1954,7 +2120,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const connCount = Number(node.connections || 0);
                         // Bigger node spheres (radius by degree, min 6px)
                         const baseRadius = Math.max(6, Math.min(18, 6 + Math.sqrt(connCount) * 2));
-                        const radius = isSelected ? baseRadius * 1.25 : baseRadius;
+                        const radius = isSelected ? Math.max(20, baseRadius * 1.5) : baseRadius;
 
                         // Labels only for selected, hovered and the 8 highest-degree nodes
                         const shouldShowLabel = isSelected || isHovered || isTop8Degree;
@@ -1977,8 +2143,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             const ringMat = new THREE.MeshBasicMaterial({ color: 0xE8EAE6 });
                             group.add(new THREE.Mesh(ringGeo, ringMat));
                         } else {
+                            // Selected file: brightest node (white fill, teal glow)
                             const material = new THREE.MeshLambertMaterial({
-                                color: isSelected ? '#4FD1B5' : baseColor,
+                                color: isSelected ? 0xFFFFFF : baseColor,
                                 emissive: isSelected ? 0x4FD1B5 : (isHovered ? baseColor : 0x000000),
                                 emissiveIntensity: isSelected ? 0.8 : (isHovered ? 0.4 : 0.1)
                             });
@@ -1986,7 +2153,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
                             // Highlight selected node with prominent wireframe halo
                             if (isSelected) {
-                                const haloGeo = new THREE.SphereGeometry(radius * 1.35, 16, 16);
+                                const haloGeo = new THREE.SphereGeometry(radius * 1.3, 16, 16);
                                 const haloMat = new THREE.MeshBasicMaterial({
                                     color: 0x4FD1B5,
                                     wireframe: true,
@@ -2029,11 +2196,21 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
             {/* Bottom-left: Status pill and Legend */}
             <div className="absolute bottom-3.5 left-3.5 z-20 flex flex-col items-start gap-2 pointer-events-auto select-none">
-                {/* Status pill: "Showing 12 of 32 files" plus a "Show all" action */}
+                {/* Status pill: "Showing 12 of 24 importers" or "Showing 12 of 32 files" plus a "Show all" action */}
                 <div className="glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-md px-2.5 py-1 flex items-center gap-2 border border-white/10 text-xs font-mono shadow-md text-[#8A918C]">
-                    <span>
-                        Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> of <span className="text-[#E8EAE6] font-medium">{totalCandidateCount}</span> files
-                    </span>
+                    {selectedFile && !showAllNodes && totalImportersCount > 12 ? (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">12</span> of <span className="text-[#E8EAE6] font-medium">{totalImportersCount}</span> importers
+                        </span>
+                    ) : displayNodes.length < totalCandidateCount ? (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> of <span className="text-[#E8EAE6] font-medium">{totalCandidateCount}</span> files
+                        </span>
+                    ) : (
+                        <span>
+                            Showing <span className="text-[#E8EAE6] font-medium">{displayNodes.length}</span> files
+                        </span>
+                    )}
                     {displayNodes.length < totalCandidateCount && (
                         <>
                             <span className="text-white/20">|</span>
@@ -2048,12 +2225,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 </div>
 
                 {/* Legend always visible by default (compact, bottom-left, small collapse chevron), filtered to present types */}
-                <div className="glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2 text-xs font-mono shadow-xl max-w-xs">
+                <div className="glass-surface bg-[rgba(16,20,21,0.9)] backdrop-blur-md border border-white/10 rounded-lg p-2.5 text-xs font-mono shadow-xl max-w-xs select-none">
                     <div
                         className="flex items-center justify-between gap-3 border-b border-white/[0.08] pb-1 cursor-pointer"
                         onClick={() => setLegendCollapsed(prev => !prev)}
                     >
-                        <span className="font-semibold text-[10px] text-[#E8EAE6]">Legend</span>
+                        <span className="font-semibold text-[11px] text-[#E8EAE6]">Legend</span>
                         <button
                             onClick={(e) => {
                                 e.stopPropagation();
@@ -2062,26 +2239,55 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             className="text-[#8A918C] hover:text-[#E8EAE6] text-[10px] cursor-pointer p-0.5"
                             title={legendCollapsed ? "Expand legend" : "Collapse legend"}
                         >
-                            {legendCollapsed ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                            {legendCollapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                         </button>
                     </div>
                     {!legendCollapsed && (
-                        <div className="pt-1.5 space-y-1.5">
-                            {legendData.hasAnyNodes && (
-                                <div className="flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap">
-                                    {legendData.hasFile && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#4FD1B5]" />File</span>}
-                                    {legendData.hasFunction && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#8A918C]" />Function</span>}
-                                    {legendData.hasClass && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-[#E3A04A]" />Class</span>}
-                                    {legendData.hasRepo && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full border border-[#E8EAE6] bg-transparent inline-block" />Repo</span>}
-                                </div>
-                            )}
-                            {legendData.hasAnyEdges && (
-                                <div className={cn("flex items-center gap-2.5 text-[11px] text-[#8A918C] flex-wrap", legendData.hasAnyNodes && "pt-1 border-t border-white/[0.06]")}>
-                                    {legendData.hasImports && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#4FD1B5] inline-block" />Imports</span>}
-                                    {legendData.hasImportedBy && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#E3A04A] inline-block" />Imported by</span>}
-                                    {legendData.hasContains && <span className="flex items-center gap-1"><span className="w-2 h-[2px] bg-[#8A918C] inline-block" />Contains</span>}
-                                </div>
-                            )}
+                        <div className="pt-2 space-y-2 text-[11px]">
+                            {/* Arrow samples: teal Imports, amber Imported by, grey dashed Indirect */}
+                            <div className="space-y-1.5">
+                                {legendData.hasImports && (
+                                    <div className="flex items-center gap-2 text-[#8A918C]">
+                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
+                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#4FD1B5" strokeWidth="1.5" />
+                                            <polygon points="15,2 21,5 15,8" fill="#4FD1B5" />
+                                        </svg>
+                                        <span className="text-[#E8EAE6]">Imports</span>
+                                    </div>
+                                )}
+                                {legendData.hasImportedBy && (
+                                    <div className="flex items-center gap-2 text-[#8A918C]">
+                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
+                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#E3A04A" strokeWidth="1.5" />
+                                            <polygon points="15,2 21,5 15,8" fill="#E3A04A" />
+                                        </svg>
+                                        <span className="text-[#E8EAE6]">Imported by</span>
+                                    </div>
+                                )}
+                                {legendData.hasIndirect && (
+                                    <div className="flex items-center gap-2 text-[#8A918C]">
+                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
+                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#8A918C" strokeWidth="1.5" strokeDasharray="3 3" />
+                                            <polygon points="15,2 21,5 15,8" fill="#8A918C" />
+                                        </svg>
+                                        <span className="text-[#E8EAE6]">Indirect</span>
+                                    </div>
+                                )}
+                                {showCalls && legendData.hasCalls && (
+                                    <div className="flex items-center gap-2 text-[#8A918C]">
+                                        <svg width="22" height="10" viewBox="0 0 22 10" className="inline-block shrink-0">
+                                            <line x1="1" y1="5" x2="17" y2="5" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
+                                            <polygon points="15,2 21,5 15,8" fill="#6F8F9A" />
+                                        </svg>
+                                        <span className="text-[#E8EAE6]">Calls</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* One line explanatory note */}
+                            <div className="text-[10px] text-[#8A918C] pt-1.5 border-t border-white/[0.06] italic">
+                                Arrow points to the file being imported.
+                            </div>
                         </div>
                     )}
                 </div>

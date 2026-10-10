@@ -499,6 +499,17 @@ export function selectRepoStats(state: { graph: RepositoryGraph | null; treeFile
     };
 }
 
+export interface Layout2DResult {
+    positions: Map<string, { x: number; y: number }>;
+    columnCounts: { imports: number; importedBy: number; indirect: number };
+    nodeHops: Map<string, number>;
+    leftIds: string[];
+    rightIds: string[];
+    indirectIds: string[];
+    colSpacing: number;
+    baseColOffset: number;
+}
+
 export function compute2DLayout(
     nodes: Array<{ id: string; type?: string; [key: string]: any }>,
     edges: Array<{ from: string; to: string; type?: string; [key: string]: any }>,
@@ -507,14 +518,26 @@ export function compute2DLayout(
         isFocused?: boolean;
         focusDepth?: 1 | 2;
     }
-): Map<string, { x: number; y: number }> {
+): Layout2DResult {
     const positions = new Map<string, { x: number; y: number }>();
-    if (nodes.length === 0) return positions;
+    const nodeHops = new Map<string, number>();
+    const columnCounts = { imports: 0, importedBy: 0, indirect: 0 };
+    const colSpacing = 340;
+    const defaultRes: Layout2DResult = {
+        positions,
+        columnCounts,
+        nodeHops,
+        leftIds: [],
+        rightIds: [],
+        indirectIds: [],
+        colSpacing,
+        baseColOffset: 1
+    };
+    if (nodes.length === 0) return defaultRes;
 
-    const colSpacing = 360;
     const nodeHeight = 28;
     const verticalGap = 40;
-    const rowStep = nodeHeight + verticalGap; // 68px between row centers -> 40px gap between 28px boxes
+    const rowStep = nodeHeight + verticalGap; // 68px between row centers
 
     const centerId = options?.centerId;
     const centerNode = centerId ? nodes.find(n => n.id === centerId) : null;
@@ -522,69 +545,73 @@ export function compute2DLayout(
     if (centerNode && centerId) {
         const cId: string = centerId;
         // Direct relationships:
-        // Imports (outgoing from center: center imports target) -> Left column
-        // Imported by (incoming to center: source imports center) -> Right column
-        const importsSet = new Set<string>();
-        const importedBySet = new Set<string>();
+        // Imports (selected -> file: selected imports file) -> Left column
+        // Imported by (file -> selected: file imports selected) -> Right column
+        const directImportsSet = new Set<string>();
+        const directImportedBySet = new Set<string>();
 
         for (const e of edges) {
             if (e.from === cId && e.to !== cId) {
-                importsSet.add(e.to);
+                directImportsSet.add(e.to);
             }
             if (e.to === cId && e.from !== cId) {
-                importedBySet.add(e.from);
+                directImportedBySet.add(e.from);
             }
         }
 
-        // For depth 2 (or any indirect nodes), trace connections to existing imports or importedBy sets
+        // Indirect (2+ hops): compute shortest path hops from center
+        const hopsMap = new Map<string, number>();
+        hopsMap.set(cId, 0);
+        const queue: Array<{ id: string; hops: number }> = [{ id: cId, hops: 0 }];
+        const adj = new Map<string, string[]>();
         for (const e of edges) {
-            if (e.from !== cId && e.to !== cId) {
-                if (importsSet.has(e.from) && !importedBySet.has(e.to) && e.to !== cId) {
-                    importsSet.add(e.to);
-                }
-                if (importsSet.has(e.to) && !importedBySet.has(e.from) && e.from !== cId) {
-                    importsSet.add(e.from);
-                }
-                if (importedBySet.has(e.to) && !importsSet.has(e.from) && e.from !== cId) {
-                    importedBySet.add(e.from);
-                }
-                if (importedBySet.has(e.from) && !importsSet.has(e.to) && e.to !== cId) {
-                    importedBySet.add(e.to);
+            if (!adj.has(e.from)) adj.set(e.from, []);
+            if (!adj.has(e.to)) adj.set(e.to, []);
+            adj.get(e.from)!.push(e.to);
+            adj.get(e.to)!.push(e.from);
+        }
+        while (queue.length > 0) {
+            const curr = queue.shift()!;
+            const neighbors = adj.get(curr.id) || [];
+            for (const nbr of neighbors) {
+                if (!hopsMap.has(nbr)) {
+                    hopsMap.set(nbr, curr.hops + 1);
+                    queue.push({ id: nbr, hops: curr.hops + 1 });
                 }
             }
         }
 
-        // Three columns:
-        // Imports on the left (-colSpacing)
-        // Selected in the center (0)
-        // Imported by on the right (colSpacing)
-        const leftIds: string[] = [];
-        const rightIds: string[] = [];
-        const remaining: string[] = [];
+        const leftIds: string[] = [];      // Imports
+        const rightIds: string[] = [];     // Imported by
+        const indirectIds: string[] = [];  // Indirect (2+ hops)
 
         for (const n of nodes) {
             if (n.id === cId) continue;
-            if (importsSet.has(n.id) && !importedBySet.has(n.id)) {
+            const hops = hopsMap.get(n.id) || 1;
+            nodeHops.set(n.id, hops);
+
+            if (hops >= 2) {
+                indirectIds.push(n.id);
+            } else if (directImportsSet.has(n.id) && !directImportedBySet.has(n.id)) {
                 leftIds.push(n.id);
-            } else if (importedBySet.has(n.id) && !importsSet.has(n.id)) {
+            } else if (directImportedBySet.has(n.id) && !directImportsSet.has(n.id)) {
                 rightIds.push(n.id);
-            } else if (importsSet.has(n.id) && importedBySet.has(n.id)) {
+            } else if (directImportsSet.has(n.id) && directImportedBySet.has(n.id)) {
                 leftIds.push(n.id);
             } else {
-                remaining.push(n.id);
+                // If connected indirectly or unclassified
+                indirectIds.push(n.id);
             }
         }
 
-        remaining.forEach((id, idx) => {
-            if (idx % 2 === 0) leftIds.push(id);
-            else rightIds.push(id);
-        });
+        columnCounts.imports = leftIds.length;
+        columnCounts.importedBy = rightIds.length;
+        columnCounts.indirect = indirectIds.length;
 
-        // Selected in the center, at (0, 0)
+        // Selected in center at (0, 0)
         positions.set(cId, { x: 0, y: 0 });
 
-        // Left column(s) (imports on the left), centered vertically on the selected node (y = 0)
-        // If leftCount > 10, place in multiple columns (max 10 per column)
+        // Left column (Imports) at x = -colSpacing
         const leftCount = leftIds.length;
         if (leftCount > 0) {
             const leftColCount = Math.max(1, Math.ceil(leftCount / 10));
@@ -600,11 +627,10 @@ export function compute2DLayout(
             }
         }
 
-        // Right column(s) (imported by on the right), centered vertically on the selected node (y = 0)
-        // If rightCount > 10, place in multiple columns (max 10 per column)
+        // Right column (Imported by) at x = colSpacing
         const rightCount = rightIds.length;
+        const rightColCount = Math.max(1, Math.ceil(rightCount / 10));
         if (rightCount > 0) {
-            const rightColCount = Math.max(1, Math.ceil(rightCount / 10));
             const rightChunkSize = Math.ceil(rightCount / rightColCount);
             for (let c = 0; c < rightColCount; c++) {
                 const chunk = rightIds.slice(c * rightChunkSize, (c + 1) * rightChunkSize);
@@ -617,7 +643,33 @@ export function compute2DLayout(
             }
         }
 
-        return positions;
+        // Far right column (Indirect) at x = colSpacing * (baseColOffset + 1)
+        const indirectCount = indirectIds.length;
+        const baseColOffset = Math.max(1, Math.ceil(rightCount / 10));
+        if (indirectCount > 0) {
+            const indColCount = Math.max(1, Math.ceil(indirectCount / 10));
+            const indChunkSize = Math.ceil(indirectCount / indColCount);
+            for (let c = 0; c < indColCount; c++) {
+                const chunk = indirectIds.slice(c * indChunkSize, (c + 1) * indChunkSize);
+                const x = colSpacing * (baseColOffset + 1 + c);
+                const span = (chunk.length - 1) * rowStep;
+                chunk.forEach((id, idx) => {
+                    const y = Math.round(-span / 2 + idx * rowStep);
+                    positions.set(id, { x, y });
+                });
+            }
+        }
+
+        return {
+            positions,
+            columnCounts,
+            nodeHops,
+            leftIds,
+            rightIds,
+            indirectIds,
+            colSpacing,
+            baseColOffset
+        };
     }
 
     // When no node is selected: multiple columns (max 10 per column), 40px vertical gap, centered vertically at y = 0
@@ -651,5 +703,14 @@ export function compute2DLayout(
         });
     }
 
-    return positions;
+    return {
+        positions,
+        columnCounts,
+        nodeHops,
+        leftIds: [],
+        rightIds: [],
+        indirectIds: [],
+        colSpacing,
+        baseColOffset: 1
+    };
 }
