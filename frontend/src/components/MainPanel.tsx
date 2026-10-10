@@ -244,63 +244,148 @@ export function getLanguageBadge(filePath?: string): { label: string; color: str
     return null;
 }
 
+function computeFitViewport(
+    nodes: any[],
+    positions: Map<string, { x: number; y: number }>,
+    nodeHops: Map<string, number>,
+    containerWidth: number,
+    containerHeight: number,
+    showAllNodes: boolean = false
+): { x: number; y: number; zoom: number } {
+    if (!containerWidth || !containerHeight || nodes.length === 0) {
+        return { x: 0, y: 0, zoom: 1 };
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    nodes.forEach(n => {
+        const pos = positions.get(n.id) || { x: 0, y: 0 };
+        const hops = nodeHops.get(n.id) || 1;
+        const name = n.name || (n.path ? n.path.split('/').pop() : n.id);
+        const labelText = name.length > 28 ? name.slice(0, 27) + '…' : name;
+        const pillWidth = Math.max(140, Math.min(260, 24 + 14 + labelText.length * 7.5 + (hops >= 2 ? 45 : 0)));
+        const halfW = pillWidth / 2;
+        const halfH = 17;
+
+        minX = Math.min(minX, pos.x - halfW);
+        maxX = Math.max(maxX, pos.x + halfW);
+        minY = Math.min(minY, pos.y - halfH);
+        maxY = Math.max(maxY, pos.y + halfH);
+    });
+
+    if (!isFinite(minX) || !isFinite(maxX)) {
+        return { x: containerWidth / 2, y: (containerHeight + 16) / 2, zoom: 1 };
+    }
+
+    const boxWidth = Math.max(1, maxX - minX);
+    const boxHeight = Math.max(1, maxY - minY);
+    const boxCenterX = (minX + maxX) / 2;
+    const boxCenterY = (minY + maxY) / 2;
+
+    const freeWidth = containerWidth;
+    const freeHeight = Math.max(100, containerHeight - 72 - 56);
+
+    const targetWidth = freeWidth * 0.85;
+    const targetHeight = freeHeight * 0.85;
+
+    const scaleX = targetWidth / boxWidth;
+    const scaleY = targetHeight / boxHeight;
+    let zoom = Math.min(scaleX, scaleY);
+
+    // If not showing all nodes, ensure effective font is at least 12px (zoom >= 1.0)
+    if (!showAllNodes) {
+        zoom = Math.max(1.0, zoom);
+    } else {
+        zoom = Math.max(0.2, zoom);
+    }
+    // Scale UP as well as down, allow up to 3x
+    zoom = Math.min(3.0, zoom);
+
+    // Center point in screen coordinates (accounting for top 72px and bottom 56px bands)
+    const screenCenterX = containerWidth / 2;
+    const screenCenterY = 72 + freeHeight / 2;
+
+    const x = screenCenterX - boxCenterX * zoom;
+    const y = screenCenterY - boxCenterY * zoom;
+
+    return { x, y, zoom };
+}
+
 function FlowFitViewHandler({
-    isExpanded,
-    selectedFile,
-    simplify,
-    focusDepth,
-    resetTrigger,
-    layoutVersion,
-    hasDetailsOffset
+    fitViewport,
+    triggerKey
 }: {
-    isExpanded: boolean;
-    selectedFile: string | null;
-    simplify: boolean;
-    focusDepth: 1 | 2;
-    resetTrigger: number;
-    layoutVersion: number;
-    hasDetailsOffset?: boolean;
+    fitViewport: { x: number; y: number; zoom: number };
+    triggerKey: string;
 }) {
-    const { fitView } = useReactFlow();
-    const prevSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
-    const rafRef = useRef<number | null>(null);
+    const { setViewport } = useReactFlow();
 
-    // Call fitView once after layout, resetTrigger, or entering/leaving fullscreen
     useEffect(() => {
-        if (layoutVersion === 0) return;
-        const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        const timer = setTimeout(() => {
-            fitView({
-                padding: { top: 80, bottom: 64, left: 32, right: 32 },
-                maxZoom: 2.5,
-                minZoom: 0.2,
-                duration: prefersReducedMotion ? 0 : 300
-            });
-        }, 60);
-        return () => clearTimeout(timer);
-    }, [layoutVersion, resetTrigger, isExpanded, hasDetailsOffset, fitView]);
-
-    // Fit-to-view on real container resize (> 2px), debounced with requestAnimationFrame
-    useEffect(() => {
-        const handleWindowResize = () => {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            rafRef.current = requestAnimationFrame(() => {
-                const w = window.innerWidth;
-                const h = window.innerHeight;
-                if (Math.abs(w - prevSizeRef.current.width) >= 2 || Math.abs(h - prevSizeRef.current.height) >= 2) {
-                    prevSizeRef.current = { width: w, height: h };
-                    fitView({ padding: { top: 80, bottom: 64, left: 32, right: 32 }, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
-                }
-            });
-        };
-        window.addEventListener('resize', handleWindowResize);
-        return () => {
-            window.removeEventListener('resize', handleWindowResize);
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        };
-    }, [fitView]);
+        if (!fitViewport || fitViewport.zoom <= 0) return;
+        setViewport(fitViewport, { duration: 0 });
+    }, [fitViewport, triggerKey, setViewport]);
 
     return null;
+}
+
+function ColumnHeadingsOverlay({
+    columnHeaders,
+    focusDepth,
+    colSpacing = 340,
+    baseColOffset = 1
+}: {
+    columnHeaders: { visible: boolean; imports: number; importedBy: number; indirect: number };
+    focusDepth: 1 | 2;
+    colSpacing?: number;
+    baseColOffset?: number;
+}) {
+    const { x, zoom } = useViewport();
+
+    if (!columnHeaders.visible) return null;
+
+    const xLeft = -colSpacing;
+    const xRight = colSpacing;
+    const xIndirect = colSpacing * (baseColOffset + 1);
+
+    const screenXLeft = xLeft * zoom + x;
+    const screenXRight = xRight * zoom + x;
+    const screenXIndirect = xIndirect * zoom + x;
+
+    return (
+        <div className="absolute top-[76px] inset-x-0 pointer-events-none z-20 font-mono text-[13px]">
+            {columnHeaders.imports > 0 && (
+                <div
+                    className="absolute -translate-x-1/2 flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm whitespace-nowrap"
+                    style={{ left: `${screenXLeft}px` }}
+                >
+                    <span className="font-semibold text-[#4FD1B5]">Imports</span>
+                    <span className="text-[#8A918C]">({columnHeaders.imports})</span>
+                </div>
+            )}
+            <div
+                className="absolute -translate-x-1/2 flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm whitespace-nowrap"
+                style={{ left: `${screenXRight}px` }}
+            >
+                <span className="font-semibold text-[#E3A04A]">Imported by</span>
+                <span className="text-[#8A918C]">({columnHeaders.importedBy})</span>
+                {focusDepth !== 1 && columnHeaders.importedBy === 0 && (
+                    <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>
+                )}
+            </div>
+            {focusDepth !== 1 && columnHeaders.indirect > 0 && (
+                <div
+                    className="absolute -translate-x-1/2 flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm whitespace-nowrap"
+                    style={{ left: `${screenXIndirect}px` }}
+                >
+                    <span className="font-semibold text-[#8A918C]">Indirect</span>
+                    <span className="text-[#8A918C]">({columnHeaders.indirect})</span>
+                </div>
+            )}
+        </div>
+    );
 }
 
 function CodeBlock({ code, lang }: { code: string; lang?: string }) {
@@ -740,7 +825,8 @@ function OverviewGraph2D({
     focusDepth,
     resetTrigger,
     showCalls,
-    hasDetailsOffset
+    hasDetailsOffset,
+    showAllNodes
 }: {
     graph: import('../api').RepositoryGraph;
     simplify: boolean;
@@ -754,6 +840,7 @@ function OverviewGraph2D({
     resetTrigger: number;
     showCalls?: boolean;
     hasDetailsOffset?: boolean;
+    showAllNodes?: boolean;
 }) {
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
     const unhoverTimeoutRef = useRef<any>(null);
@@ -1206,11 +1293,6 @@ function OverviewGraph2D({
         };
     }, []);
 
-    // Track layout version to trigger fit-to-view once when layout changes
-    const layoutVersion = useMemo(() => {
-        return visibleNodes.length + validEdges.length + (selectedFile ? 1000 : 0) + (focusDepth * 100);
-    }, [visibleNodes.length, validEdges.length, selectedFile, focusDepth]);
-
     // CSS selectors string for highlighted nodes and edges during hover
     const hoverStyles = useMemo(() => {
         if (!activeHoverId) return '';
@@ -1227,8 +1309,69 @@ function OverviewGraph2D({
         return `${nodeRules.join('\n')}\n${edgeRules.join('\n')}`;
     }, [activeHoverId, hoverPathNodeIds, hoverPathEdgeIds]);
 
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+
+    useEffect(() => {
+        if (!containerRef.current) return;
+        const updateSize = () => {
+            if (!containerRef.current) return;
+            const w = Math.round(containerRef.current.clientWidth);
+            const h = Math.round(containerRef.current.clientHeight);
+            if (w > 0 && h > 0) {
+                setContainerSize(prev => {
+                    if (Math.abs(prev.width - w) >= 2 || Math.abs(prev.height - h) >= 2) {
+                        return { width: w, height: h };
+                    }
+                    return prev;
+                });
+            }
+        };
+        updateSize();
+
+        const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                const w = Math.round(entry.contentRect.width);
+                const h = Math.round(entry.contentRect.height);
+                if (w > 0 && h > 0) {
+                    setContainerSize(prev => {
+                        if (Math.abs(prev.width - w) >= 2 || Math.abs(prev.height - h) >= 2) {
+                            return { width: w, height: h };
+                        }
+                        return prev;
+                    });
+                }
+            }
+        });
+        observer.observe(containerRef.current);
+        return () => observer.disconnect();
+    }, []);
+
+    const fitViewport = useMemo(() => {
+        const w = containerSize.width || (containerRef.current ? containerRef.current.clientWidth : 0);
+        const h = containerSize.height || (containerRef.current ? containerRef.current.clientHeight : 0);
+        return computeFitViewport(
+            visibleNodes,
+            layoutResult.positions,
+            layoutResult.nodeHops,
+            w,
+            h,
+            Boolean(showAllNodes)
+        );
+    }, [
+        visibleNodes,
+        layoutResult.positions,
+        layoutResult.nodeHops,
+        containerSize.width,
+        containerSize.height,
+        showAllNodes
+    ]);
+
+    const fitTriggerKey = `${containerSize.width}x${containerSize.height}:${visibleNodes.length}:${focusDepth}:${resetTrigger}:${isExpanded ? 1 : 0}:${showAllNodes ? 1 : 0}`;
+
     return (
         <div
+            ref={containerRef}
             className={cn(
                 "w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__edges]:pointer-events-none",
                 Boolean(activeHoverId) && "graph-hover-active"
@@ -1252,44 +1395,19 @@ function OverviewGraph2D({
                 </div>
             )}
 
-            {/* Fixed-size HTML overlay column headers (13px, not scaled with graph zoom, safe area below toolbar) */}
-            {columnHeaders.visible && (
-                <div className="absolute top-[76px] inset-x-0 pointer-events-none z-20 flex justify-center items-center gap-10 font-mono text-[13px] px-8">
-                    {columnHeaders.imports > 0 && (
-                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
-                            <span className="font-semibold text-[#4FD1B5]">Imports</span>
-                            <span className="text-[#8A918C]">({columnHeaders.imports})</span>
-                        </div>
-                    )}
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
-                        <span className="font-semibold text-[#E3A04A]">Imported by</span>
-                        <span className="text-[#8A918C]">({columnHeaders.importedBy})</span>
-                        {focusDepth !== 1 && columnHeaders.importedBy === 0 && (
-                            <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>
-                        )}
-                    </div>
-                    {focusDepth !== 1 && columnHeaders.indirect > 0 && (
-                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
-                            <span className="font-semibold text-[#8A918C]">Indirect</span>
-                            <span className="text-[#8A918C]">({columnHeaders.indirect})</span>
-                        </div>
-                    )}
-                </div>
-            )}
-
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
                 nodeTypes={customNodeTypes}
+                nodeOrigin={[0.5, 0.5]}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 onNodeMouseEnter={handleNodeMouseEnter}
                 onNodeMouseLeave={handleNodeMouseLeave}
                 onPaneClick={() => onSelectNode(null)}
-                fitView
-                fitViewOptions={{ padding: { top: 80, bottom: 64, left: 32, right: 32 }, maxZoom: 2.5, minZoom: 0.2 }}
-                maxZoom={2.5}
+                defaultViewport={fitViewport.zoom > 0 ? fitViewport : undefined}
                 minZoom={0.2}
+                maxZoom={3.0}
                 proOptions={{ hideAttribution: true }}
             >
                 <Background color="#27272a" gap={16} size={1} />
@@ -1297,14 +1415,15 @@ function OverviewGraph2D({
                     position="bottom-right"
                     className="!bg-[#10161A] !backdrop-blur-md !border !border-white/10 !rounded-lg !shadow-xl !overflow-hidden [&>button]:!bg-[#10161A] [&>button]:!border-b [&>button]:!border-white/10 last:[&>button]:!border-b-0 [&>button]:!text-[#8A918C] [&>button:hover]:!bg-white/[0.06] [&>button:hover]:!text-[#4FD1B5] [&>button>svg]:!fill-current [&>button]:!w-7 [&>button]:!h-7"
                 />
-                <FlowFitViewHandler
-                    isExpanded={isExpanded}
-                    selectedFile={selectedFile}
-                    simplify={simplify}
+                <ColumnHeadingsOverlay
+                    columnHeaders={columnHeaders}
                     focusDepth={focusDepth}
-                    resetTrigger={resetTrigger}
-                    layoutVersion={layoutVersion}
-                    hasDetailsOffset={hasDetailsOffset}
+                    colSpacing={layoutResult.colSpacing}
+                    baseColOffset={layoutResult.baseColOffset}
+                />
+                <FlowFitViewHandler
+                    fitViewport={fitViewport}
+                    triggerKey={fitTriggerKey}
                 />
             </ReactFlow>
         </div>
@@ -2469,6 +2588,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         resetTrigger={resetTrigger}
                         showCalls={showCalls}
                         hasDetailsOffset={isExpanded && detailsOpen}
+                        showAllNodes={showAllNodes}
                     />
                 </div>
             ) : (
