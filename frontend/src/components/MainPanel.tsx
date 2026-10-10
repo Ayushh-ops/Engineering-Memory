@@ -2444,9 +2444,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     }
                 }
 
+                const sourceNode = nodeMap.get(linkSource) || linkSource;
+                const targetNode = nodeMap.get(linkTarget) || linkTarget;
+
                 const link = {
-                    source: linkSource,
-                    target: linkTarget,
+                    source: sourceNode,
+                    target: targetNode,
+                    sourceId: linkSource,
+                    targetId: linkTarget,
                     originalFrom: e.from,
                     originalTo: e.to,
                     type: e.type,
@@ -2764,59 +2769,88 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     enableNodeDrag={false}
                     cooldownTicks={0}
                     warmupTicks={0}
-                    linkDirectionalArrowLength={(link: any) => {
+                    linkThreeObject={(link: any) => {
+                        const isIndirect = link.edgeRole === 'indirect';
+                        const group = new THREE.Group();
+
+                        // Line geometry between two points
+                        const geom = new THREE.BufferGeometry();
+                        const positions = new Float32Array(6);
+                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+                        const colorHex = link.color ? new THREE.Color(link.color) : new THREE.Color(0x8A918C);
+                        const lineMat = new THREE.LineBasicMaterial({
+                            color: colorHex,
+                            transparent: true,
+                            opacity: isIndirect ? 0.40 : 0.75,
+                            linewidth: 1.5,
+                            depthTest: true
+                        });
+                        const line = new THREE.Line(geom, lineMat);
+                        group.add(line);
+
+                        // Arrowhead cone pointing towards target (imported end)
+                        // Direct links show arrow; indirect does not need cone or small cone
+                        const coneGeo = new THREE.ConeGeometry(3, 7, 8);
+                        // Rotate cone so its tip points along +Z axis
+                        coneGeo.rotateX(Math.PI / 2);
+                        const coneMat = new THREE.MeshBasicMaterial({
+                            color: colorHex,
+                            transparent: true,
+                            opacity: isIndirect ? 0.40 : 0.85,
+                            depthTest: true
+                        });
+                        const coneMesh = new THREE.Mesh(coneGeo, coneMat);
+                        group.add(coneMesh);
+
+                        (group as any).userData = { line, geom, coneMesh, lineMat, coneMat };
+                        return group;
+                    }}
+                    linkPositionUpdate={(group: any, { start, end }: any, link: any) => {
+                        if (!group || !start || !end) return false;
+                        const userData = (group as any).userData;
+                        if (!userData) return false;
+
                         const isIndirect = link.edgeRole === 'indirect';
                         if (isIndirect) {
-                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
-                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
-                            return isConnectedToHoveredOrSelected ? 6 : 0;
+                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.sourceId === hovered3DNodeId || link.targetId === hovered3DNodeId)) ||
+                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.sourceId === selectedFile || link.targetId === selectedFile));
+                            group.visible = !!isConnectedToHoveredOrSelected;
+                            if (!group.visible) return true;
+                        } else {
+                            group.visible = true;
                         }
-                        return 6;
+
+                        // Update line endpoints
+                        const positions = userData.geom.attributes.position.array;
+                        positions[0] = start.x;
+                        positions[1] = start.y;
+                        positions[2] = start.z;
+                        positions[3] = end.x;
+                        positions[4] = end.y;
+                        positions[5] = end.z;
+                        userData.geom.attributes.position.needsUpdate = true;
+
+                        // Position arrowhead cone along edge towards target, stopping just outside target cube
+                        const targetCubeSize = link.target?.cubeSize || 14;
+                        const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
+                        const dist = dir.length();
+                        if (dist > 0.001) {
+                            dir.normalize();
+                            // Place cone tip slightly ahead of target surface
+                            const offsetFromTarget = (targetCubeSize / 2) + 4;
+                            const conePos = new THREE.Vector3(
+                                end.x - dir.x * offsetFromTarget,
+                                end.y - dir.y * offsetFromTarget,
+                                end.z - dir.z * offsetFromTarget
+                            );
+                            userData.coneMesh.position.copy(conePos);
+                            userData.coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+                            userData.coneMesh.visible = !isIndirect && dist > offsetFromTarget;
+                        }
+
+                        return true;
                     }}
-                    linkDirectionalArrowRelPos={1}
-                    linkDirectionalArrowColor={(link: any) => {
-                        if (hovered3DNodeId) {
-                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
-                            return isConnected ? (link.color || '#E8EAE6') : 'rgba(138, 145, 140, 0.15)';
-                        }
-                        return link.color || '#8A918C';
-                    }}
-                    linkColor={(link: any) => {
-                        const isIndirect = link.edgeRole === 'indirect';
-                        if (isIndirect) {
-                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
-                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
-                            return isConnectedToHoveredOrSelected ? 'rgba(138, 145, 140, 0.40)' : 'transparent';
-                        }
-                        if (hovered3DNodeId) {
-                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
-                            return isConnected ? (link.color || '#E8EAE6') : 'rgba(138, 145, 140, 0.15)';
-                        }
-                        return link.color || '#8A918C';
-                    }}
-                    linkWidth={(link: any) => {
-                        const isIndirect = link.edgeRole === 'indirect';
-                        if (isIndirect) {
-                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
-                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
-                            return isConnectedToHoveredOrSelected ? 1.5 : 0;
-                        }
-                        if (hovered3DNodeId) {
-                            const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
-                            return isConnected ? 2.2 : 1.5;
-                        }
-                        return 1.5;
-                    }}
-                    linkOpacity={hovered3DNodeId ? 0.95 : 0.70}
-                    linkDirectionalParticles={(link: any) => {
-                        if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
-                        const isIndirect = link.edgeRole === 'indirect';
-                        if (isIndirect) return 0;
-                        return 2;
-                    }}
-                    linkDirectionalParticleSpeed={0.0018}
-                    linkDirectionalParticleWidth={2.0}
-                    linkDirectionalParticleColor={(link: any) => link.color || '#4FD1B5'}
                     backgroundColor="#07090A"
                     onNodeHover={(node: any) => {
                         setHovered3DNodeId(node ? node.id : null);
@@ -2912,18 +2946,24 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             emissive: emissiveColor,
                             emissiveIntensity,
                             transparent: true,
-                            opacity
+                            opacity,
+                            polygonOffset: true,
+                            polygonOffsetFactor: 1,
+                            polygonOffsetUnits: 1
                         });
                         const cubeMesh = new THREE.Mesh(cubeGeo, cubeMat);
                         (cubeMesh as any).userData = { isRotatableCube: true };
                         group.add(cubeMesh);
 
-                        // EdgesGeometry outline for sharp facet definition
+                        // EdgesGeometry outline for sharp facet definition (polygonOffset avoids z-fighting with cube faces)
                         const edgesGeo = new THREE.EdgesGeometry(cubeGeo);
                         const edgesMat = new THREE.LineBasicMaterial({
                             color: isSelected ? 0x4FD1B5 : (isHovered ? 0xFFFFFF : hexColor),
                             transparent: true,
-                            opacity: Math.max(0.4, opacity)
+                            opacity: Math.max(0.4, opacity),
+                            polygonOffset: true,
+                            polygonOffsetFactor: -1,
+                            polygonOffsetUnits: -1
                         });
                         const edgesLines = new THREE.LineSegments(edgesGeo, edgesMat);
                         group.add(edgesLines);
