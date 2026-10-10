@@ -12,6 +12,7 @@ import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
 import { CodeViewer } from './CodeViewer';
 import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, selectRepoStats, compute2DLayout, getConnectedFiles } from '../graph-helpers';
 import { ConnectedFilesList } from './ConnectedFilesList';
+import { RightPanel } from './RightPanel';
 import { ErrorBoundary } from './ErrorBoundary';
 
 function downloadTextFile(filename: string, content: string, mime = 'text/markdown;charset=utf-8;') {
@@ -249,36 +250,54 @@ function FlowFitViewHandler({
     simplify,
     focusDepth,
     resetTrigger,
-    nodes,
-    edges
+    layoutVersion,
+    hasDetailsOffset
 }: {
     isExpanded: boolean;
     selectedFile: string | null;
     simplify: boolean;
     focusDepth: 1 | 2;
     resetTrigger: number;
-    nodes: any[];
-    edges: any[];
+    layoutVersion: number;
+    hasDetailsOffset?: boolean;
 }) {
     const { fitView } = useReactFlow();
+    const prevSizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 });
+    const rafRef = useRef<number | null>(null);
 
-    // Call fitView with 40px padding (~0.12), maxZoom 2.5 after layout, and on entering/leaving fullscreen
+    // Call fitView once after layout, resetTrigger, or entering/leaving fullscreen
     useEffect(() => {
-        if (nodes.length === 0) return;
+        if (layoutVersion === 0) return;
         const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         const timer = setTimeout(() => {
-            fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: prefersReducedMotion ? 0 : 300 });
-        }, 80);
+            fitView({
+                padding: 0.12,
+                maxZoom: 2.5,
+                minZoom: 0.2,
+                duration: prefersReducedMotion ? 0 : 300
+            });
+        }, 60);
         return () => clearTimeout(timer);
-    }, [nodes, edges, simplify, focusDepth, resetTrigger, isExpanded, fitView]);
+    }, [layoutVersion, resetTrigger, isExpanded, hasDetailsOffset, fitView]);
 
-    // Fit-to-view on window resize
+    // Fit-to-view on real container resize (> 2px), debounced with requestAnimationFrame
     useEffect(() => {
-        const handleResize = () => {
-            fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
+        const handleWindowResize = () => {
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            rafRef.current = requestAnimationFrame(() => {
+                const w = window.innerWidth;
+                const h = window.innerHeight;
+                if (Math.abs(w - prevSizeRef.current.width) >= 2 || Math.abs(h - prevSizeRef.current.height) >= 2) {
+                    prevSizeRef.current = { width: w, height: h };
+                    fitView({ padding: 0.12, maxZoom: 2.5, minZoom: 0.2, duration: 0 });
+                }
+            });
         };
-        window.addEventListener('resize', handleResize);
-        return () => window.removeEventListener('resize', handleResize);
+        window.addEventListener('resize', handleWindowResize);
+        return () => {
+            window.removeEventListener('resize', handleWindowResize);
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        };
     }, [fitView]);
 
     return null;
@@ -669,17 +688,16 @@ function ProseRenderer({ text }: { text: string }) {
 }
 
 function CustomGraphNode({ data }: { data: any }) {
-    const { zoom } = useViewport();
-    const effectiveFontSize = zoom > 0 && zoom < 1 ? Math.max(12, Math.round(12 / zoom)) : 12;
-    const effectiveHeight = zoom > 0 && zoom < 1 ? Math.max(28, Math.round(28 / zoom)) : 28;
-
     return (
-        <div style={{ ...data.style, fontSize: `${effectiveFontSize}px`, minHeight: `${effectiveHeight}px`, height: `${effectiveHeight}px` }}>
+        <div
+            style={data.style}
+            className="relative min-h-[28px] flex items-center cursor-pointer select-none"
+        >
             <Handle
                 id="target-left"
                 type="target"
                 position={Position.Left}
-                style={{ opacity: 0, pointerEvents: 'none' }}
+                style={{ opacity: 0, pointerEvents: 'none' as const }}
             />
             <Handle
                 id="source-left"
@@ -704,25 +722,8 @@ function CustomGraphNode({ data }: { data: any }) {
     );
 }
 
-function ColumnHeaderNode({ data }: { data: any }) {
-    return (
-        <div className="select-none pointer-events-none text-center">
-            <div className="text-[12px] font-mono font-medium text-[#E8EAE6] flex items-center justify-center gap-1.5">
-                <span>{data.title}</span>
-                <span className="text-[11px] text-[#8A918C]">({data.count})</span>
-            </div>
-            {data.isEmpty && (
-                <div className="text-[11px] text-[#8A918C]/60 mt-1 italic">
-                    None
-                </div>
-            )}
-        </div>
-    );
-}
-
 const customNodeTypes = {
-    custom: CustomGraphNode,
-    columnHeader: ColumnHeaderNode
+    custom: CustomGraphNode
 };
 
 function OverviewGraph2D({
@@ -736,7 +737,8 @@ function OverviewGraph2D({
     hoveredGraphNode,
     focusDepth,
     resetTrigger,
-    showCalls
+    showCalls,
+    hasDetailsOffset
 }: {
     graph: import('../api').RepositoryGraph;
     simplify: boolean;
@@ -749,156 +751,90 @@ function OverviewGraph2D({
     focusDepth: 1 | 2;
     resetTrigger: number;
     showCalls?: boolean;
+    hasDetailsOffset?: boolean;
 }) {
-    const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
-    const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
-    useEffect(() => {
-        // Use the same visible-node set for edges and nodes
-        const visibleNodes: any[] = (graph?.nodes || []).filter((n: any) => Boolean(n && n.id));
-        const visibleNodeIds = new Set(visibleNodes.map((n: any) => n.id));
-        const validEdges = (graph?.edges || []).filter((e: any) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to));
+    // Compute static layout only once per (graph, selectedFile, selectedSymbol, focusDepth, simplify, showCalls)
+    const {
+        visibleNodes,
+        validEdges,
+        centerId,
+        centerName,
+        layoutResult,
+        top3RiskEdgeIds,
+        neighborInfo,
+        connectedToSelectedIds,
+        columnHeaders
+    } = useMemo(() => {
+        const vNodes: any[] = (graph?.nodes || []).filter((n: any) => Boolean(n && n.id));
+        const vNodeIds = new Set(vNodes.map((n: any) => n.id));
+        const vEdges = (graph?.edges || []).filter((e: any) => vNodeIds.has(e.from) && vNodeIds.has(e.to));
 
-        const neighborInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
+        const nInfo = getNeighborInfo(graph, selectedFile, selectedSymbol);
 
-        // Find center node ID and name if focused
-        let centerId: string | null = null;
-        let centerName = '';
+        let cId: string | null = null;
+        let cName = '';
         if (selectedFile) {
-            for (const n of visibleNodes) {
+            for (const n of vNodes) {
                 const nPath = (n as any).path || (n.type === 'file' ? n.id : undefined);
                 if (nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && (n as any).name === selectedFile)) {
                     if (selectedSymbol) {
                         if ((n as any).name === selectedSymbol.name && n.type === selectedSymbol.type) {
-                            centerId = n.id;
-                            centerName = n.name || (nPath ? nPath.split('/').pop() : n.id);
+                            cId = n.id;
+                            cName = n.name || (nPath ? nPath.split('/').pop() : n.id);
                             break;
                         }
                     } else if (n.type === 'file') {
-                        centerId = n.id;
-                        centerName = n.name || (nPath ? nPath.split('/').pop() : n.id);
+                        cId = n.id;
+                        cName = n.name || (nPath ? nPath.split('/').pop() : n.id);
                         break;
                     }
                 }
             }
-            if (!centerId && neighborInfo.selectedNodeIds.size > 0) {
-                centerId = Array.from(neighborInfo.selectedNodeIds)[0];
-                const cNode = visibleNodes.find(n => n.id === centerId);
-                centerName = cNode?.name || (cNode?.path ? cNode.path.split('/').pop() : centerId);
+            if (!cId && nInfo.selectedNodeIds.size > 0) {
+                cId = Array.from(nInfo.selectedNodeIds)[0];
+                const cNode = vNodes.find(n => n.id === cId);
+                cName = cNode?.name || (cNode?.path ? cNode.path.split('/').pop() : cId);
             }
         }
 
-        const layoutResult = compute2DLayout(visibleNodes, validEdges, {
-            centerId,
+        const lResult = compute2DLayout(vNodes, vEdges, {
+            centerId: cId,
             isFocused: Boolean(selectedFile),
             focusDepth
         });
 
-        const { positions, columnCounts, nodeHops, leftIds, rightIds, indirectIds, colSpacing, baseColOffset } = layoutResult;
-        const leftIdSet = new Set(leftIds);
-        const rightIdSet = new Set(rightIds);
-        const indirectIdSet = new Set(indirectIds);
-
-        // Compute top 3 highest-risk edges
+        // Top 3 risk edges
         const nodeRiskMap = new Map<string, number>();
-        visibleNodes.forEach(n => {
+        vNodes.forEach(n => {
             const p = n.path || n.id;
             const r = computeRisk(p, graph).score;
             nodeRiskMap.set(n.id, r);
         });
-        const scoredEdges = validEdges.map((e: any, idx: number) => {
+        const scoredEdges = vEdges.map((e: any, idx: number) => {
             const risk = Math.max(nodeRiskMap.get(e.from) || 0, nodeRiskMap.get(e.to) || 0);
             const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
             return { edgeId, risk, idx };
         });
         scoredEdges.sort((a, b) => b.risk - a.risk || a.idx - b.idx);
-        const top3RiskEdgeIds = new Set(scoredEdges.slice(0, 3).map(x => x.edgeId));
+        const top3Set = new Set(scoredEdges.slice(0, 3).map(x => x.edgeId));
 
-        // Active hover path calculation
-        const activeHoverId = hoveredNodeId || hoveredGraphNode;
-        let hoverPathNodeIds = new Set<string>();
-        let hoverPathEdgeIds = new Set<string>();
-        let activeHoverSentence = '';
-
-        if (activeHoverId && centerId) {
-            const hNode = visibleNodes.find(n => n.id === activeHoverId || n.path === activeHoverId);
-            const hId = hNode ? hNode.id : activeHoverId;
-            const hName = hNode ? (hNode.name || (hNode.path ? hNode.path.split('/').pop() : hId)) : hId;
-
-            if (hId === centerId) {
-                hoverPathNodeIds.add(centerId);
-                activeHoverSentence = `${centerName}`;
-            } else {
-                // Check direct edge
-                const dirOutgoing = validEdges.find(e => e.from === centerId && e.to === hId);
-                const dirIncoming = validEdges.find(e => e.from === hId && e.to === centerId);
-
-                if (dirOutgoing) {
-                    hoverPathNodeIds.add(centerId);
-                    hoverPathNodeIds.add(hId);
-                    hoverPathEdgeIds.add(dirOutgoing.id || `${dirOutgoing.from}->${dirOutgoing.to}:${dirOutgoing.type}`);
-                    activeHoverSentence = `${centerName} imports ${hName}`;
-                } else if (dirIncoming) {
-                    hoverPathNodeIds.add(centerId);
-                    hoverPathNodeIds.add(hId);
-                    hoverPathEdgeIds.add(dirIncoming.id || `${dirIncoming.from}->${dirIncoming.to}:${dirIncoming.type}`);
-                    activeHoverSentence = `${hName} imports ${centerName}`;
-                } else {
-                    // BFS shortest path between hId and centerId
-                    const adj = new Map<string, Array<{ neighbor: string; edgeId: string }>>();
-                    for (const e of validEdges) {
-                        const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-                        if (!adj.has(e.from)) adj.set(e.from, []);
-                        if (!adj.has(e.to)) adj.set(e.to, []);
-                        adj.get(e.from)!.push({ neighbor: e.to, edgeId });
-                        adj.get(e.to)!.push({ neighbor: e.from, edgeId });
-                    }
-                    const visited = new Set<string>([hId]);
-                    const queue: Array<{ id: string; pNodes: string[]; pEdges: string[] }> = [{ id: hId, pNodes: [hId], pEdges: [] }];
-                    while (queue.length > 0) {
-                        const curr = queue.shift()!;
-                        if (curr.id === centerId) {
-                            hoverPathNodeIds = new Set(curr.pNodes);
-                            hoverPathEdgeIds = new Set(curr.pEdges);
-                            const hops = curr.pEdges.length;
-                            activeHoverSentence = `${hName} reaches ${centerName} (${hops} hops)`;
-                            break;
-                        }
-                        for (const item of (adj.get(curr.id) || [])) {
-                            if (!visited.has(item.neighbor)) {
-                                visited.add(item.neighbor);
-                                queue.push({
-                                    id: item.neighbor,
-                                    pNodes: [...curr.pNodes, item.neighbor],
-                                    pEdges: [...curr.pEdges, item.edgeId]
-                                });
-                            }
-                        }
-                    }
-                    if (hoverPathNodeIds.size === 0) {
-                        hoverPathNodeIds.add(hId);
-                        activeHoverSentence = `${hName}`;
-                    }
-                }
-            }
-        }
-
-        // Compute connected nodes for fading unconnected ones when there is a selection
-        const connectedToSelectedIds = new Set<string>();
-        if (neighborInfo.hasSelection) {
-            neighborInfo.selectedNodeIds.forEach(id => connectedToSelectedIds.add(id));
-            let currentLevel = new Set(neighborInfo.selectedNodeIds);
+        // Connected to selected
+        const connSet = new Set<string>();
+        if (nInfo.hasSelection) {
+            nInfo.selectedNodeIds.forEach(id => connSet.add(id));
+            let currentLevel = new Set(nInfo.selectedNodeIds);
             const maxDepth = focusDepth || 2;
             for (let d = 0; d < maxDepth; d++) {
                 const nextLevel = new Set<string>();
-                for (const edge of validEdges) {
-                    if (currentLevel.has(edge.from) && !connectedToSelectedIds.has(edge.to)) {
-                        connectedToSelectedIds.add(edge.to);
+                for (const edge of vEdges) {
+                    if (currentLevel.has(edge.from) && !connSet.has(edge.to)) {
+                        connSet.add(edge.to);
                         nextLevel.add(edge.to);
                     }
-                    if (currentLevel.has(edge.to) && !connectedToSelectedIds.has(edge.from)) {
-                        connectedToSelectedIds.add(edge.from);
+                    if (currentLevel.has(edge.to) && !connSet.has(edge.from)) {
+                        connSet.add(edge.from);
                         nextLevel.add(edge.from);
                     }
                 }
@@ -906,25 +842,141 @@ function OverviewGraph2D({
             }
         }
 
-        const layoutNodes: any[] = visibleNodes.map((n: any) => {
+        const colHeaders = {
+            imports: lResult.columnCounts.imports,
+            importedBy: lResult.columnCounts.importedBy,
+            indirect: lResult.columnCounts.indirect,
+            visible: Boolean(selectedFile && cId)
+        };
+
+        return {
+            visibleNodes: vNodes,
+            validEdges: vEdges,
+            centerId: cId,
+            centerName: cName,
+            layoutResult: lResult,
+            top3RiskEdgeIds: top3Set,
+            neighborInfo: nInfo,
+            connectedToSelectedIds: connSet,
+            columnHeaders: colHeaders
+        };
+    }, [graph, selectedFile, selectedSymbol, focusDepth, simplify, showCalls]);
+
+    // Active hover path calculation without triggering layout or fitView
+    const activeHoverId = hoveredNodeId || hoveredGraphNode;
+    const { hoverPathNodeIds, hoverPathEdgeIds, activeHoverSentence, hoveredNodeConnectedEdgeIds } = useMemo(() => {
+        let pNodeIds = new Set<string>();
+        let pEdgeIds = new Set<string>();
+        let hSentence = '';
+        let directNbrEdgeIds = new Set<string>();
+
+        if (activeHoverId) {
+            const hNode = visibleNodes.find(n => n.id === activeHoverId || n.path === activeHoverId);
+            const hId = hNode ? hNode.id : activeHoverId;
+            const hName = hNode ? (hNode.name || (hNode.path ? hNode.path.split('/').pop() : hId)) : hId;
+
+            // Direct connected edges for the hovered node
+            for (const e of validEdges) {
+                const eId = e.id || `${e.from}->${e.to}:${e.type}`;
+                if (e.from === hId || e.to === hId) {
+                    directNbrEdgeIds.add(eId);
+                }
+            }
+
+            if (centerId) {
+                if (hId === centerId) {
+                    pNodeIds.add(centerId);
+                    hSentence = centerName;
+                } else {
+                    const dirOutgoing = validEdges.find(e => e.from === centerId && e.to === hId);
+                    const dirIncoming = validEdges.find(e => e.from === hId && e.to === centerId);
+
+                    if (dirOutgoing) {
+                        pNodeIds.add(centerId);
+                        pNodeIds.add(hId);
+                        pEdgeIds.add(dirOutgoing.id || `${dirOutgoing.from}->${dirOutgoing.to}:${dirOutgoing.type}`);
+                        hSentence = `${centerName} imports ${hName}`;
+                    } else if (dirIncoming) {
+                        pNodeIds.add(centerId);
+                        pNodeIds.add(hId);
+                        pEdgeIds.add(dirIncoming.id || `${dirIncoming.from}->${dirIncoming.to}:${dirIncoming.type}`);
+                        hSentence = `${hName} imports ${centerName}`;
+                    } else {
+                        // BFS shortest path
+                        const adj = new Map<string, Array<{ neighbor: string; edgeId: string }>>();
+                        for (const e of validEdges) {
+                            const eId = e.id || `${e.from}->${e.to}:${e.type}`;
+                            if (!adj.has(e.from)) adj.set(e.from, []);
+                            if (!adj.has(e.to)) adj.set(e.to, []);
+                            adj.get(e.from)!.push({ neighbor: e.to, edgeId: eId });
+                            adj.get(e.to)!.push({ neighbor: e.from, edgeId: eId });
+                        }
+                        const visited = new Set<string>([hId]);
+                        const queue: Array<{ id: string; pNodes: string[]; pEdges: string[] }> = [{ id: hId, pNodes: [hId], pEdges: [] }];
+                        while (queue.length > 0) {
+                            const curr = queue.shift()!;
+                            if (curr.id === centerId) {
+                                pNodeIds = new Set(curr.pNodes);
+                                pEdgeIds = new Set(curr.pEdges);
+                                const hops = curr.pEdges.length;
+                                hSentence = `${hName} reaches ${centerName} (${hops} hops)`;
+                                break;
+                            }
+                            for (const item of (adj.get(curr.id) || [])) {
+                                if (!visited.has(item.neighbor)) {
+                                    visited.add(item.neighbor);
+                                    queue.push({
+                                        id: item.neighbor,
+                                        pNodes: [...curr.pNodes, item.neighbor],
+                                        pEdges: [...curr.pEdges, item.edgeId]
+                                    });
+                                }
+                            }
+                        }
+                        if (pNodeIds.size === 0) {
+                            pNodeIds.add(hId);
+                            hSentence = hName;
+                        }
+                    }
+                }
+            } else {
+                pNodeIds.add(hId);
+                hSentence = hName;
+            }
+        }
+
+        return {
+            hoverPathNodeIds: pNodeIds,
+            hoverPathEdgeIds: pEdgeIds,
+            activeHoverSentence: hSentence,
+            hoveredNodeConnectedEdgeIds: directNbrEdgeIds
+        };
+    }, [activeHoverId, visibleNodes, validEdges, centerId, centerName]);
+
+    // Build memoized ReactFlow nodes
+    const { positions, nodeHops, leftIds, rightIds, indirectIds } = layoutResult;
+    const leftIdSet = useMemo(() => new Set(leftIds), [leftIds]);
+    const rightIdSet = useMemo(() => new Set(rightIds), [rightIds]);
+    const indirectIdSet = useMemo(() => new Set(indirectIds), [indirectIds]);
+
+    const nodes = useMemo(() => {
+        return visibleNodes.map((n: any) => {
             const pos = positions.get(n.id) || { x: 0, y: 0 };
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
             const isSelected = neighborInfo.selectedNodeIds.has(n.id) || (centerId === n.id);
             const isRepo = n.type === 'repository';
             const isCallable = n.type === 'function' || n.type === 'method';
 
-            // Base name only (client.js, not src/client.js)
             const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const displayName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
             const labelText = isCallable ? `${displayName}()` : displayName;
 
-            const hops = nodeHops.get(n.id) || 1;
+            // Grow to fit up to 28 characters, then ellipsis with tooltip
+            const displayLabel = labelText.length > 28 ? labelText.slice(0, 27) + '…' : labelText;
 
-            // Pill colors:
-            // Selected file: brightest node (white fill, teal ring)
-            // Left (Imports): teal
-            // Right (Imported by): amber
-            // Indirect: grey
+            const hops = nodeHops.get(n.id) || 1;
+            const isIndirect = indirectIdSet.has(n.id) || hops >= 2;
+
             let bg = 'rgba(16, 20, 21, 0.95)';
             let border = '1px solid rgba(255, 255, 255, 0.08)';
             let boxShadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
@@ -947,7 +999,7 @@ function OverviewGraph2D({
             } else if (rightIdSet.has(n.id)) {
                 border = '1px solid rgba(227, 160, 74, 0.45)';
                 dotColor = '#E3A04A';
-            } else if (indirectIdSet.has(n.id)) {
+            } else if (isIndirect) {
                 border = '1px solid rgba(138, 145, 140, 0.35)';
                 dotColor = '#8A918C';
             } else if (isCallable) {
@@ -955,12 +1007,12 @@ function OverviewGraph2D({
                 dotColor = '#6F8F9A';
             }
 
-            // Opacity: if active hover, dim everything not on hover path to 20%
-            let nodeOpacity = 1;
+            // Opacity handling
+            let nodeOpacity = isIndirect ? 0.55 : 1;
             if (activeHoverId) {
-                nodeOpacity = hoverPathNodeIds.has(n.id) ? 1 : 0.2;
+                nodeOpacity = hoverPathNodeIds.has(n.id) ? 1 : 0.15;
             } else if (neighborInfo.hasSelection) {
-                nodeOpacity = connectedToSelectedIds.has(n.id) ? 1 : 0.25;
+                nodeOpacity = connectedToSelectedIds.has(n.id) ? (isIndirect ? 0.55 : 1) : 0.25;
             }
 
             const nodeStyle = {
@@ -978,12 +1030,12 @@ function OverviewGraph2D({
                 color: textColor,
                 fontSize: '12px',
                 cursor: 'pointer',
-                transition: 'border-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease',
+                transition: 'border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease',
                 position: 'relative' as const
             };
 
             const isHovered = activeHoverId ? (nodePath === activeHoverId || n.id === activeHoverId) : false;
-            const nodeTooltip = activeHoverSentence && isHovered ? activeHoverSentence : (nodePath || displayName);
+            const nodeTooltip = activeHoverSentence && isHovered ? activeHoverSentence : (nodePath || labelText);
 
             return {
                 id: n.id,
@@ -992,7 +1044,7 @@ function OverviewGraph2D({
                 data: {
                     label: (
                         <div
-                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none truncate max-w-[220px]"
+                            className="flex items-center gap-1.5 font-mono select-none pointer-events-none whitespace-nowrap"
                             title={nodeTooltip}
                         >
                             <span
@@ -1003,10 +1055,10 @@ function OverviewGraph2D({
                                 style={isRepo ? undefined : { backgroundColor: dotColor }}
                             />
                             <span
-                                style={{ fontSize: 'inherit', color: textColor, fontWeight: isSelected ? '600' : '400' }}
-                                className="truncate text-[12px] leading-none font-mono"
+                                style={{ fontSize: '12px', color: textColor, fontWeight: isSelected ? '600' : '400' }}
+                                className="text-[12px] leading-none font-mono tracking-tight"
                             >
-                                {labelText}
+                                {displayLabel}
                             </span>
                             {hops >= 2 && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0">
@@ -1020,68 +1072,28 @@ function OverviewGraph2D({
                 }
             };
         });
+    }, [
+        visibleNodes,
+        positions,
+        neighborInfo,
+        centerId,
+        nodeHops,
+        indirectIdSet,
+        leftIdSet,
+        rightIdSet,
+        activeHoverId,
+        hoverPathNodeIds,
+        connectedToSelectedIds,
+        activeHoverSentence
+    ]);
 
-        // Insert Hub Column Headers when a file is selected
-        if (selectedFile && centerId) {
-            const importsMinY = leftIds.length > 0
-                ? Math.min(...leftIds.map(id => positions.get(id)?.y ?? 0)) - 55
-                : -40;
-            layoutNodes.push({
-                id: 'col-imports-header',
-                type: 'columnHeader',
-                position: { x: -colSpacing, y: importsMinY },
-                selectable: false,
-                draggable: false,
-                data: {
-                    title: 'Imports',
-                    count: columnCounts.imports,
-                    isEmpty: columnCounts.imports === 0
-                }
-            });
-
-            const importedByMinY = rightIds.length > 0
-                ? Math.min(...rightIds.map(id => positions.get(id)?.y ?? 0)) - 55
-                : -40;
-            layoutNodes.push({
-                id: 'col-imported-by-header',
-                type: 'columnHeader',
-                position: { x: colSpacing, y: importedByMinY },
-                selectable: false,
-                draggable: false,
-                data: {
-                    title: 'Imported by',
-                    count: columnCounts.importedBy,
-                    isEmpty: columnCounts.importedBy === 0
-                }
-            });
-
-            const indirectMinY = indirectIds.length > 0
-                ? Math.min(...indirectIds.map(id => positions.get(id)?.y ?? 0)) - 55
-                : -40;
-            layoutNodes.push({
-                id: 'col-indirect-header',
-                type: 'columnHeader',
-                position: { x: colSpacing * (baseColOffset + 1), y: indirectMinY },
-                selectable: false,
-                draggable: false,
-                data: {
-                    title: 'Indirect',
-                    count: columnCounts.indirect,
-                    isEmpty: columnCounts.indirect === 0
-                }
-            });
-        }
-
-        const layoutEdges = validEdges.map((e: any, idx: number) => {
+    // Build memoized ReactFlow edges
+    const edges = useMemo(() => {
+        return validEdges.map((e: any, idx: number) => {
             const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
-
-            // Arrow direction: an arrow points to the file being imported (e.to)
-            // Imports (selected uses): teal #4FD1B5, solid
-            // Imported by (files using selected): amber #E3A04A, solid
-            // Indirect (2+ hops): grey #8A918C, dashed
-            // Calls: #6F8F9A, dotted
             let stroke = '#4FD1B5';
             let strokeDasharray: string | undefined = undefined;
+            let isIndirectEdge = false;
 
             if (e.type === 'calls') {
                 stroke = '#6F8F9A';
@@ -1094,11 +1106,13 @@ function OverviewGraph2D({
                 } else {
                     stroke = '#8A918C'; // Indirect
                     strokeDasharray = '4 4';
+                    isIndirectEdge = true;
                 }
             } else {
                 if (e.type === 'contains') {
                     stroke = '#8A918C';
                     strokeDasharray = '4 4';
+                    isIndirectEdge = true;
                 } else if (e.type === 'imported_by') {
                     stroke = '#E3A04A';
                 } else {
@@ -1107,16 +1121,23 @@ function OverviewGraph2D({
             }
 
             const isTop3 = top3RiskEdgeIds.has(edgeId);
-
             let edgeOpacity = isTop3 ? 0.95 : 0.55;
             let strokeWidth = isTop3 ? 2 : 1.2;
+
+            // Clutter rule: indirect edges are hidden by default!
+            if (isIndirectEdge) {
+                edgeOpacity = 0;
+            }
 
             if (activeHoverId) {
                 if (hoverPathEdgeIds.has(edgeId)) {
                     edgeOpacity = 0.95;
                     strokeWidth = 2;
+                } else if (hoveredNodeConnectedEdgeIds.has(edgeId)) {
+                    edgeOpacity = isIndirectEdge ? 0.8 : 0.95;
+                    strokeWidth = isIndirectEdge ? 1.4 : 2;
                 } else {
-                    edgeOpacity = 0.2;
+                    edgeOpacity = 0.15;
                 }
             }
 
@@ -1158,19 +1179,49 @@ function OverviewGraph2D({
                 }
             };
         });
+    }, [
+        validEdges,
+        neighborInfo,
+        centerId,
+        top3RiskEdgeIds,
+        activeHoverId,
+        hoverPathEdgeIds,
+        hoveredNodeConnectedEdgeIds,
+        positions
+    ]);
 
-        setNodes(layoutNodes);
-        setEdges(layoutEdges);
-    }, [graph, simplify, selectedFile, selectedSymbol, hoveredGraphNode, hoveredNodeId, focusDepth, showCalls, setNodes, setEdges]);
+    // Track layout version to trigger fit-to-view once when layout changes
+    const layoutVersion = useMemo(() => {
+        return visibleNodes.length + validEdges.length + (selectedFile ? 1000 : 0) + (focusDepth * 100);
+    }, [visibleNodes.length, validEdges.length, selectedFile, focusDepth]);
 
     return (
-        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2]">
+        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__edges]:pointer-events-none">
+            {/* Fixed-size HTML overlay column headers (13px, not scaled with graph zoom) */}
+            {columnHeaders.visible && (
+                <div className="absolute top-4 inset-x-0 pointer-events-none z-20 flex justify-center items-center gap-12 font-mono text-[13px] px-8">
+                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
+                        <span className="font-semibold text-[#4FD1B5]">Imports</span>
+                        <span className="text-[#8A918C]">({columnHeaders.imports})</span>
+                        {columnHeaders.imports === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
+                        <span className="font-semibold text-[#E3A04A]">Imported by</span>
+                        <span className="text-[#8A918C]">({columnHeaders.importedBy})</span>
+                        {columnHeaders.importedBy === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
+                    </div>
+                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#101415]/90 border border-white/10 backdrop-blur shadow-sm">
+                        <span className="font-semibold text-[#8A918C]">Indirect</span>
+                        <span className="text-[#8A918C]">({columnHeaders.indirect})</span>
+                        {columnHeaders.indirect === 0 && <span className="text-[11px] text-[#8A918C]/60 italic ml-1">None</span>}
+                    </div>
+                </div>
+            )}
+
             <ReactFlow
                 nodes={nodes}
                 edges={edges}
                 nodeTypes={customNodeTypes}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
@@ -1193,8 +1244,8 @@ function OverviewGraph2D({
                     simplify={simplify}
                     focusDepth={focusDepth}
                     resetTrigger={resetTrigger}
-                    nodes={nodes}
-                    edges={edges}
+                    layoutVersion={layoutVersion}
+                    hasDetailsOffset={hasDetailsOffset}
                 />
             </ReactFlow>
         </div>
@@ -1389,6 +1440,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [showLegend, setShowLegend] = useState(true);
     const [legendCollapsed, setLegendCollapsed] = useState(false);
     const [resetTrigger, setResetTrigger] = useState(0);
+    const [detailsOpen, setDetailsOpen] = useState(false);
 
     // History stack of last 10 visited files
     const [visitedHistory, setVisitedHistory] = useState<string[]>([]);
@@ -1571,7 +1623,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     centerNode,
                     ...importsNodes.slice(0, 12),
                     ...importedByNodes.slice(0, 12),
-                    ...indirectNodes.slice(0, 12)
+                    ...indirectNodes.slice(0, 8)
                 ];
             }
         } else {
@@ -2247,60 +2299,49 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 </button>
             </div>
 
-            {/* In expanded mode, floating glass panel */}
+            {/* In expanded mode, collapsible details button and drawer */}
             {isExpanded && (
-                <div className="absolute top-3.5 right-3.5 z-30 w-72 max-h-[calc(100dvh-2rem)] overflow-y-auto glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md border border-white/10 rounded-xl p-3.5 text-xs shadow-2xl space-y-3">
-                    <div className="flex items-center justify-between pb-2 border-b border-white/10">
-                        <span className="font-semibold text-xs text-[#E8EAE6]">Node details</span>
-                        <button
-                            onClick={() => setIsExpanded(false)}
-                            className="text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
-                            title="Exit expanded view (Esc)"
-                        >
-                            Collapse
-                        </button>
-                    </div>
-                    {selectedFile ? (
-                        <div className="space-y-3">
-                            <div className="space-y-1.5 pb-2.5 border-b border-white/[0.08]">
-                                <div className="flex justify-between py-1 border-b border-white/[0.06] text-[#8A918C]">
-                                    <span>Type</span>
-                                    <b className="text-[#E8EAE6] font-mono">{selectedSymbol?.type || 'file'}</b>
-                                </div>
-                                <div className="flex justify-between py-1 text-[#8A918C]">
-                                    <span>Path</span>
-                                    <b className="text-[#E8EAE6] font-mono text-[11px] truncate max-w-[170px]" title={selectedFile}>
-                                        {selectedFile}
-                                    </b>
-                                </div>
-                            </div>
-                            <div>
-                                <ConnectedFilesList maxHeightClass="max-h-56" />
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="text-[11px] text-[#8A918C] py-4 text-center font-sans">
-                            Click a node to inspect details and connections
+                <>
+                    <button
+                        onClick={() => setDetailsOpen(prev => !prev)}
+                        className={cn(
+                            "absolute top-3.5 right-3.5 z-30 px-3 py-1.5 rounded-lg border text-xs font-mono transition-all cursor-pointer shadow-lg backdrop-blur-md flex items-center gap-1.5",
+                            detailsOpen
+                                ? "bg-[#4FD1B5] text-[#04100D] border-[#4FD1B5] font-medium"
+                                : "glass-surface bg-[rgba(16,20,21,0.85)] border-white/10 text-[#8A918C] hover:text-[#E8EAE6]"
+                        )}
+                        title={detailsOpen ? "Close details panel" : "Open details panel"}
+                    >
+                        <span>Details</span>
+                        {detailsOpen ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
+                    </button>
+
+                    {detailsOpen && (
+                        <div className="absolute top-12 right-3.5 z-30 w-80 max-h-[calc(100dvh-4rem)] overflow-hidden glass-surface bg-[rgba(16,20,21,0.92)] backdrop-blur-md border border-white/10 rounded-xl shadow-2xl flex flex-col">
+                            <RightPanel className="border-l-0 h-full max-h-[calc(100dvh-4rem)]" />
                         </div>
                     )}
-                </div>
+                </>
             )}
 
             {/* Main Graph View: 2D or 3D */}
             {viewMode === '2D' ? (
-                <OverviewGraph2D
-                    graph={displayGraph}
-                    simplify={simplify}
-                    selectedFile={selectedFile}
-                    selectedSymbol={selectedSymbol}
-                    onSelectNode={handleSelectNode}
-                    onDoubleClickNode={handleDoubleClickNode}
-                    isExpanded={isExpanded}
-                    hoveredGraphNode={hoveredGraphNode}
-                    focusDepth={focusDepth}
-                    resetTrigger={resetTrigger}
-                    showCalls={showCalls}
-                />
+                <div className={cn("w-full h-full transition-all", isExpanded && detailsOpen && "pr-80")}>
+                    <OverviewGraph2D
+                        graph={displayGraph}
+                        simplify={simplify}
+                        selectedFile={selectedFile}
+                        selectedSymbol={selectedSymbol}
+                        onSelectNode={handleSelectNode}
+                        onDoubleClickNode={handleDoubleClickNode}
+                        isExpanded={isExpanded}
+                        hoveredGraphNode={hoveredGraphNode}
+                        focusDepth={focusDepth}
+                        resetTrigger={resetTrigger}
+                        showCalls={showCalls}
+                        hasDetailsOffset={isExpanded && detailsOpen}
+                    />
+                </div>
             ) : (
                 <ForceGraph3D
                     ref={fgRef as any}
