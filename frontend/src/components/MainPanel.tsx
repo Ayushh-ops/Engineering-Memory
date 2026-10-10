@@ -1259,30 +1259,90 @@ interface Hub3DNodePos {
     role: 'center' | 'imports' | 'importedBy' | 'indirect' | 'calls' | 'default';
 }
 
-function fibonacciCap(index: number, count: number, radius: number, direction: 1 | -1, maxAngleDeg = 60): { x: number; y: number; z: number } {
+function fibonacciSpreadHalfSpace(
+    index: number,
+    count: number,
+    radius: number,
+    direction: 1 | -1
+): { x: number; y: number; z: number } {
     if (count <= 1) {
         return { x: direction * radius, y: 0, z: 0 };
     }
-    const thetaMax = (maxAngleDeg * Math.PI) / 180;
-    const cosThetaMax = Math.cos(thetaMax);
     const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+    // y in [-1, 1]
+    const yNorm = 1 - (index / Math.max(1, count - 1)) * 2;
+    // z in [-0.8, 0.8]
+    const zNorm = 0.8 * Math.sin(index * goldenAngle);
+    const planeRadiusSq = Math.max(0.04, 1 - yNorm * yNorm * 0.45 - zNorm * zNorm * 0.45);
+    const xNorm = Math.sqrt(planeRadiusSq);
 
-    const t = (index + 0.5) / count;
-    const cosTheta = 1 - t * (1 - cosThetaMax);
-    const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
-    const phi = index * goldenAngle;
-
-    const x = direction * radius * cosTheta;
-    const y = radius * sinTheta * Math.cos(phi);
-    const z = radius * sinTheta * Math.sin(phi);
-
+    const x = direction * radius * xNorm;
+    const y = radius * yNorm * 0.75;
+    const z = radius * zNorm * 0.75;
     return { x, y, z };
+}
+
+function runDeterministicRelaxation(
+    positions: Map<string, Hub3DNodePos>,
+    fixedId: string | null,
+    minDistance = 36,
+    iterations = 35
+) {
+    const ids = Array.from(positions.keys());
+    for (let it = 0; it < iterations; it++) {
+        let maxShift = 0;
+        for (let i = 0; i < ids.length; i++) {
+            const idA = ids[i];
+            const pA = positions.get(idA)!;
+            if (idA === fixedId) continue;
+
+            let forceX = 0;
+            let forceY = 0;
+            let forceZ = 0;
+
+            for (let j = 0; j < ids.length; j++) {
+                if (i === j) continue;
+                const idB = ids[j];
+                const pB = positions.get(idB)!;
+
+                const dx = pA.x - pB.x;
+                const dy = pA.y - pB.y;
+                const dz = pA.z - pB.z;
+                const distSq = dx * dx + dy * dy + dz * dz;
+                const dist = Math.sqrt(distSq);
+
+                if (dist < minDistance && dist > 0.001) {
+                    const overlap = (minDistance - dist) / dist;
+                    const push = overlap * 0.35;
+                    forceX += dx * push;
+                    forceY += dy * push;
+                    forceZ += dz * push;
+                } else if (dist <= 0.001) {
+                    forceY += 1.5;
+                    forceZ += 1.5;
+                }
+            }
+
+            pA.x += forceX;
+            pA.y += forceY;
+            pA.z += forceZ;
+
+            // Preserve hemisphere half-space
+            if (pA.role === 'imports' && pA.x > -20) pA.x = -20;
+            if (pA.role === 'importedBy' && pA.x < 20) pA.x = 20;
+
+            const shift = Math.sqrt(forceX * forceX + forceY * forceY + forceZ * forceZ);
+            if (shift > maxShift) maxShift = shift;
+        }
+        if (maxShift < 0.2) break;
+    }
 }
 
 function compute3DHubLayout(
     nodes: any[],
     edges: any[],
-    selectedNodeId: string | null
+    selectedNodeId: string | null,
+    graphFull?: any
 ): Map<string, Hub3DNodePos> {
     const positions = new Map<string, Hub3DNodePos>();
     if (!nodes || nodes.length === 0) return positions;
@@ -1291,7 +1351,7 @@ function compute3DHubLayout(
         const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
         const count = sorted.length;
         const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-        const radius = 140;
+        const radius = 180;
 
         sorted.forEach((node, i) => {
             const y = count <= 1 ? 0 : 1 - (i / (count - 1)) * 2;
@@ -1299,14 +1359,16 @@ function compute3DHubLayout(
             const theta = i * goldenAngle;
             positions.set(node.id, {
                 x: radius * rCircle * Math.cos(theta),
-                y: radius * y,
+                y: radius * y * 0.85,
                 z: radius * rCircle * Math.sin(theta),
                 role: 'default'
             });
         });
+        runDeterministicRelaxation(positions, null, 36, 30);
         return positions;
     }
 
+    // Selected node always fixed at origin (0, 0, 0)
     positions.set(selectedNodeId, { x: 0, y: 0, z: 0, role: 'center' });
 
     const directImports: string[] = [];
@@ -1343,26 +1405,45 @@ function compute3DHubLayout(
         }
     }
 
-    const uniqueImports = Array.from(new Set(directImports)).sort();
-    const uniqueImportedBy = Array.from(new Set(directImportedBy)).sort();
-    const uniqueCalls = Array.from(new Set(callNodes)).sort();
-    const uniqueIndirect = Array.from(new Set(indirectNodes)).sort();
+    // Risk scoring comparator (highest risk first, then ID)
+    const riskComparator = (idA: string, idB: string) => {
+        const riskA = graphFull ? computeRisk(idA, graphFull).score : 0;
+        const riskB = graphFull ? computeRisk(idB, graphFull).score : 0;
+        if (riskB !== riskA) return riskB - riskA;
+        return idA.localeCompare(idB);
+    };
 
+    const uniqueImports = Array.from(new Set(directImports)).sort(riskComparator);
+    const uniqueImportedBy = Array.from(new Set(directImportedBy)).sort(riskComparator);
+    const uniqueCalls = Array.from(new Set(callNodes)).sort(riskComparator);
+    const uniqueIndirect = Array.from(new Set(indirectNodes)).sort(riskComparator);
+
+    // 3 concentric shells: inner=150, middle=210, outer=270
+    const SHELL_RADII = [150, 210, 270];
+
+    // Place Imports in left half-space (x < 0) across 3 shells by risk rank
     uniqueImports.forEach((id, i) => {
-        const p = fibonacciCap(i, uniqueImports.length, 140, -1, 60);
+        const shellIdx = i % 3;
+        const radius = SHELL_RADII[shellIdx];
+        const p = fibonacciSpreadHalfSpace(i, uniqueImports.length, radius, -1);
         positions.set(id, { ...p, role: 'imports' });
     });
 
+    // Place Imported by in right half-space (x > 0) across 3 shells by risk rank
     uniqueImportedBy.forEach((id, i) => {
-        const p = fibonacciCap(i, uniqueImportedBy.length, 140, 1, 60);
+        const shellIdx = i % 3;
+        const radius = SHELL_RADII[shellIdx];
+        const p = fibonacciSpreadHalfSpace(i, uniqueImportedBy.length, radius, 1);
         positions.set(id, { ...p, role: 'importedBy' });
     });
 
+    // Place Calls (on negative X side with tighter radius)
     uniqueCalls.forEach((id, i) => {
-        const p = fibonacciCap(i, uniqueCalls.length, 140, -1, 45);
+        const p = fibonacciSpreadHalfSpace(i, uniqueCalls.length, 160, -1);
         positions.set(id, { ...p, role: 'calls' });
     });
 
+    // Indirect nodes further out (radius 310) on appropriate side
     const indirectToNegativeX: string[] = [];
     const indirectToPositiveX: string[] = [];
     uniqueIndirect.forEach((id) => {
@@ -1393,14 +1474,17 @@ function compute3DHubLayout(
     });
 
     indirectToNegativeX.forEach((id, i) => {
-        const p = fibonacciCap(i, indirectToNegativeX.length, 260, -1, 65);
+        const p = fibonacciSpreadHalfSpace(i, indirectToNegativeX.length, 310, -1);
         positions.set(id, { ...p, role: 'indirect' });
     });
 
     indirectToPositiveX.forEach((id, i) => {
-        const p = fibonacciCap(i, indirectToPositiveX.length, 260, 1, 65);
+        const p = fibonacciSpreadHalfSpace(i, indirectToPositiveX.length, 310, 1);
         positions.set(id, { ...p, role: 'indirect' });
     });
+
+    // One-time deterministic relaxation so no two nodes are closer than 36 units
+    runDeterministicRelaxation(positions, selectedNodeId, 36, 40);
 
     return positions;
 }
@@ -1480,7 +1564,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setShowAllNodes(false);
         setResetTrigger(prev => prev + 1);
         if (viewMode === '3D' && fgInstanceRef.current) {
-            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.4);
+            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.70);
         }
     }, [setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
 
@@ -1789,7 +1873,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 });
             }
             if (viewMode === '3D' && fgInstanceRef.current) {
-                fitCameraToVisibleNodes(graphData.nodes, 0.4);
+                fitCameraToVisibleNodes(graphData.nodes, 0.70);
             }
         }, 100);
         return () => clearTimeout(timer);
@@ -1845,10 +1929,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         handleSelectNode(node);
     }, [handleSelectNode]);
 
-    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.55) => {
+    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.70) => {
         const fg = fgInstanceRef.current;
-        if (!fg || !targetNodes || targetNodes.length === 0) return;
-        const camera = typeof fg.camera === 'function' ? fg.camera() : null;
+        if (!fg || typeof fg.camera !== 'function') return;
+
+        const camera = fg.camera();
         if (!camera) return;
 
         let minX = Infinity, maxX = -Infinity;
@@ -1870,21 +1955,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         if (count === 0) return;
 
-        let centerX = (minX + maxX) / 2;
-        let centerY = (minY + maxY) / 2;
-        let centerZ = (minZ + maxZ) / 2;
+        // Origin centering: selected file is always at (0, 0, 0)
+        let centerX = 0;
+        let centerY = 0;
+        let centerZ = 0;
 
-        if (selectedFile) {
-            const selectedNodeObj = targetNodes.find((n: any) =>
-                n.path === selectedFile ||
-                n.id === selectedFile ||
-                (n.type === 'file' && n.name === selectedFile)
-            );
-            if (selectedNodeObj && typeof selectedNodeObj.x === 'number' && typeof selectedNodeObj.y === 'number' && typeof selectedNodeObj.z === 'number') {
-                centerX = selectedNodeObj.x;
-                centerY = selectedNodeObj.y;
-                centerZ = selectedNodeObj.z;
-            }
+        if (!selectedFile) {
+            centerX = (minX + maxX) / 2;
+            centerY = (minY + maxY) / 2;
+            centerZ = (minZ + maxZ) / 2;
         }
 
         const fovRad = ((camera.fov || 45) * Math.PI) / 180;
@@ -1893,7 +1972,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         let distance: number;
 
         if (count === 1) {
-            const nodeRadiusWorld = 6;
+            const nodeRadiusWorld = 16;
             distance = (nodeRadiusWorld * domHeight) / (16 * Math.tan(fovRad / 2));
         } else {
             let maxDistSq = 0;
@@ -1903,28 +1982,32 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     if (distSq > maxDistSq) maxDistSq = distSq;
                 }
             }
-            const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 4, 15);
+            const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 6, 25);
             const minDistanceForSphere = sphereRadius / (fillFraction * Math.tan(fovRad / 2));
 
-            const sizeX = Math.max(maxX - minX, 20);
-            const sizeY = Math.max(maxY - minY, 20);
-            const sizeZ = Math.max(maxZ - minZ, 20);
+            const sizeX = Math.max(maxX - minX, 30);
+            const sizeY = Math.max(maxY - minY, 30);
+            const sizeZ = Math.max(maxZ - minZ, 30);
             const maxDim = Math.max(sizeX, sizeY, sizeZ);
             const boxDistance = maxDim / (2 * Math.tan(fovRad / 2) * fillFraction);
 
             distance = Math.max(boxDistance, minDistanceForSphere);
         }
 
-        const currentPos = camera.position;
-        let dir = new THREE.Vector3().subVectors(currentPos, new THREE.Vector3(centerX, centerY, centerZ)).normalize();
-        if (dir.lengthSq() < 0.001 || (Math.abs(dir.x) < 0.05 && Math.abs(dir.y) < 0.05 && Math.abs(dir.z) < 0.05)) {
-            dir = new THREE.Vector3(0, 0.08, 1).normalize();
-        }
+        // Default yaw 25 degrees and pitch 15 degrees:
+        // yaw 25 deg = 0.4363 rad, pitch 15 deg = 0.2618 rad
+        const yawRad = (25 * Math.PI) / 180;
+        const pitchRad = (15 * Math.PI) / 180;
+        const cosPitch = Math.cos(pitchRad);
+        const sinPitch = Math.sin(pitchRad);
+        const dirX = Math.sin(yawRad) * cosPitch;
+        const dirY = sinPitch;
+        const dirZ = Math.cos(yawRad) * cosPitch;
 
         const targetPos = {
-            x: centerX + dir.x * distance,
-            y: centerY + dir.y * distance,
-            z: centerZ + dir.z * distance
+            x: centerX + dirX * distance,
+            y: centerY + dirY * distance,
+            z: centerZ + dirZ * distance
         };
         const lookAt = { x: centerX, y: centerY, z: centerZ };
 
@@ -1955,7 +2038,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 }
             }
             setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.55);
+                fitCameraToVisibleNodes(graphData.nodes, 0.70);
             }, 300);
         }
     }, [graphData.nodes, fitCameraToVisibleNodes]);
@@ -1974,7 +2057,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             if (found) selectedNodeId = found.id;
         }
 
-        const layoutPositions = compute3DHubLayout(visible3DNodes, displayGraph.edges, selectedNodeId);
+        const layoutPositions = compute3DHubLayout(visible3DNodes, displayGraph.edges, selectedNodeId, graph);
 
         const nodeConnMap = new Map<string, number>();
         displayGraph.edges.forEach((e: any) => {
@@ -2092,11 +2175,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setGraphData({ nodes, links });
     }, [displayGraph, selectedFile]);
 
-    // Precompute top 8 highest-degree nodes for 3D label display
-    const top8DegreeNodeIds = useMemo(() => {
+    // Precompute top 10 direct nodes by degree for persistent 3D label display
+    const top10DirectNodeIds = useMemo(() => {
         if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
-        const sorted = [...graphData.nodes].sort((a, b) => (b.connections || 0) - (a.connections || 0));
-        return new Set(sorted.slice(0, 8).map(n => n.id));
+        const directNodes = graphData.nodes.filter(n => n.role === 'imports' || n.role === 'importedBy' || n.role === 'calls');
+        const sorted = [...directNodes].sort((a, b) => (b.connections || 0) - (a.connections || 0));
+        return new Set(sorted.slice(0, 10).map(n => n.id));
     }, [graphData.nodes]);
 
     // Center 3D camera on visible nodes bounding box (~55% of canvas) when selectedFile changes
@@ -2401,7 +2485,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     }}
                     onNodeClick={handleNodeClick3D}
                     onBackgroundClick={() => handleSelectNode(null)}
-                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.55)}
+                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.70)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
                         const isSelected = node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
@@ -2409,7 +2493,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const isIndirect = node.role === 'indirect';
                         const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
 
-                        const radius = isSelected ? 14 : isDirect ? 8 : 5;
+                        // Selected largest (radius 16), direct (radius 9), indirect (radius 5)
+                        const radius = isSelected ? 16 : isDirect ? 9 : 5;
 
                         let baseColor = node.color || '#8A918C';
                         if (node.role === 'imports') baseColor = '#4FD1B5';
@@ -2432,17 +2517,17 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             const sphereMat = new THREE.MeshLambertMaterial({
                                 color: 0xFAFAFA,
                                 emissive: 0x4FD1B5,
-                                emissiveIntensity: 0.6,
+                                emissiveIntensity: 0.7,
                                 transparent: true,
                                 opacity
                             });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 24, 24), sphereMat));
+                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 28, 28), sphereMat));
 
-                            const torusGeo = new THREE.TorusGeometry(radius * 1.35, 1.2, 16, 40);
+                            const torusGeo = new THREE.TorusGeometry(radius * 1.35, 1.4, 16, 40);
                             const torusMat = new THREE.MeshBasicMaterial({
                                 color: 0x4FD1B5,
                                 transparent: true,
-                                opacity: Math.max(0.2, opacity)
+                                opacity: Math.max(0.3, opacity)
                             });
                             const torusMesh = new THREE.Mesh(torusGeo, torusMat);
                             torusMesh.rotation.x = Math.PI / 4;
@@ -2452,14 +2537,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             const mat = new THREE.MeshLambertMaterial({
                                 color: baseColor,
                                 emissive: isHovered ? baseColor : 0x000000,
-                                emissiveIntensity: isHovered ? 0.4 : 0.05,
+                                emissiveIntensity: isHovered ? 0.45 : 0.05,
                                 transparent: true,
                                 opacity
                             });
-                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 18, 18), mat));
+                            group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 20), mat));
                         }
 
-                        const shouldShowLabel = isSelected || isHovered || isDirect;
+                        // Labels: selected node + up to 10 direct nodes; indirect labels only on hover
+                        const isTop10Direct = top10DirectNodeIds.has(node.id);
+                        const shouldShowLabel = isSelected || isHovered || (isDirect && isTop10Direct);
 
                         if (shouldShowLabel && (!isIndirect || isHovered)) {
                             const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
@@ -2472,9 +2559,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             sprite.backgroundColor = '#10161A';
                             sprite.borderRadius = 3;
                             sprite.padding = [4, 2];
-                            sprite.borderColor = 'rgba(255, 255, 255, 0.12)';
+                            sprite.borderColor = 'rgba(255, 255, 255, 0.15)';
                             sprite.borderWidth = 0.5;
-                            sprite.position.y = radius + 5;
+                            // Placed offset above-right of the node, never centered on it
+                            sprite.position.x = radius + 6;
+                            sprite.position.y = radius + 4;
+                            sprite.position.z = 0;
                             sprite.renderOrder = 999;
                             sprite.material.depthTest = false;
                             if (opacity < 0.5) {
