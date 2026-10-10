@@ -1,7 +1,7 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
 import SpriteText from 'three-spritetext';
@@ -687,11 +687,13 @@ function ProseRenderer({ text }: { text: string }) {
     return <>{elements}</>;
 }
 
-function CustomGraphNode({ data }: { data: any }) {
+const CustomGraphNode = memo(function CustomGraphNode({ data, id }: { data: any; id: string }) {
     return (
         <div
+            data-node-id={id}
+            data-indirect={data.isIndirect ? "true" : "false"}
             style={data.style}
-            className="relative min-h-[28px] flex items-center cursor-pointer select-none"
+            className="graph-2d-node relative min-h-[28px] h-[28px] flex items-center cursor-pointer select-none transition-[opacity,box-shadow,border-color] duration-150"
         >
             <Handle
                 id="target-left"
@@ -703,24 +705,24 @@ function CustomGraphNode({ data }: { data: any }) {
                 id="source-left"
                 type="source"
                 position={Position.Left}
-                style={{ opacity: 0, pointerEvents: 'none' }}
+                style={{ opacity: 0, pointerEvents: 'none' as const }}
             />
             <Handle
                 id="target-right"
                 type="target"
                 position={Position.Right}
-                style={{ opacity: 0, pointerEvents: 'none' }}
+                style={{ opacity: 0, pointerEvents: 'none' as const }}
             />
             <Handle
                 id="source-right"
                 type="source"
                 position={Position.Right}
-                style={{ opacity: 0, pointerEvents: 'none' }}
+                style={{ opacity: 0, pointerEvents: 'none' as const }}
             />
             {data.label}
         </div>
     );
-}
+});
 
 const customNodeTypes = {
     custom: CustomGraphNode
@@ -754,6 +756,7 @@ function OverviewGraph2D({
     hasDetailsOffset?: boolean;
 }) {
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+    const unhoverTimeoutRef = useRef<any>(null);
 
     // Compute static layout only once per (graph, selectedFile, selectedSymbol, focusDepth, simplify, showCalls)
     const {
@@ -862,9 +865,9 @@ function OverviewGraph2D({
         };
     }, [graph, selectedFile, selectedSymbol, focusDepth, simplify, showCalls]);
 
-    // Active hover path calculation without triggering layout or fitView
+    // Active hover path calculation without triggering layout, fitView, or nodes/edges rebuild
     const activeHoverId = hoveredNodeId || hoveredGraphNode;
-    const { hoverPathNodeIds, hoverPathEdgeIds, activeHoverSentence, hoveredNodeConnectedEdgeIds } = useMemo(() => {
+    const { hoverPathNodeIds, hoverPathEdgeIds, activeHoverSentence } = useMemo(() => {
         let pNodeIds = new Set<string>();
         let pEdgeIds = new Set<string>();
         let hSentence = '';
@@ -875,7 +878,6 @@ function OverviewGraph2D({
             const hId = hNode ? hNode.id : activeHoverId;
             const hName = hNode ? (hNode.name || (hNode.path ? hNode.path.split('/').pop() : hId)) : hId;
 
-            // Direct connected edges for the hovered node
             for (const e of validEdges) {
                 const eId = e.id || `${e.from}->${e.to}:${e.type}`;
                 if (e.from === hId || e.to === hId) {
@@ -948,12 +950,11 @@ function OverviewGraph2D({
         return {
             hoverPathNodeIds: pNodeIds,
             hoverPathEdgeIds: pEdgeIds,
-            activeHoverSentence: hSentence,
-            hoveredNodeConnectedEdgeIds: directNbrEdgeIds
+            activeHoverSentence: hSentence
         };
     }, [activeHoverId, visibleNodes, validEdges, centerId, centerName]);
 
-    // Build memoized ReactFlow nodes
+    // Build memoized ReactFlow nodes: NEVER recomputed on hover!
     const { positions, nodeHops, leftIds, rightIds, indirectIds } = layoutResult;
     const leftIdSet = useMemo(() => new Set(leftIds), [leftIds]);
     const rightIdSet = useMemo(() => new Set(rightIds), [rightIds]);
@@ -1007,11 +1008,8 @@ function OverviewGraph2D({
                 dotColor = '#6F8F9A';
             }
 
-            // Opacity handling
             let nodeOpacity = isIndirect ? 0.55 : 1;
-            if (activeHoverId) {
-                nodeOpacity = hoverPathNodeIds.has(n.id) ? 1 : 0.15;
-            } else if (neighborInfo.hasSelection) {
+            if (neighborInfo.hasSelection) {
                 nodeOpacity = connectedToSelectedIds.has(n.id) ? (isIndirect ? 0.55 : 1) : 0.25;
             }
 
@@ -1030,12 +1028,8 @@ function OverviewGraph2D({
                 color: textColor,
                 fontSize: '12px',
                 cursor: 'pointer',
-                transition: 'border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease',
                 position: 'relative' as const
             };
-
-            const isHovered = activeHoverId ? (nodePath === activeHoverId || n.id === activeHoverId) : false;
-            const nodeTooltip = activeHoverSentence && isHovered ? activeHoverSentence : (nodePath || labelText);
 
             return {
                 id: n.id,
@@ -1045,7 +1039,7 @@ function OverviewGraph2D({
                     label: (
                         <div
                             className="flex items-center gap-1.5 font-mono select-none pointer-events-none whitespace-nowrap"
-                            title={nodeTooltip}
+                            title={nodePath || labelText}
                         >
                             <span
                                 className={cn(
@@ -1056,19 +1050,20 @@ function OverviewGraph2D({
                             />
                             <span
                                 style={{ fontSize: '12px', color: textColor, fontWeight: isSelected ? '600' : '400' }}
-                                className="text-[12px] leading-none font-mono tracking-tight"
+                                className="text-[12px] leading-none font-mono tracking-tight pointer-events-none"
                             >
                                 {displayLabel}
                             </span>
                             {hops >= 2 && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0">
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0 pointer-events-none">
                                     {hops} hops
                                 </span>
                             )}
                         </div>
                     ),
                     style: nodeStyle,
-                    rawNode: n
+                    rawNode: n,
+                    isIndirect
                 }
             };
         });
@@ -1081,13 +1076,10 @@ function OverviewGraph2D({
         indirectIdSet,
         leftIdSet,
         rightIdSet,
-        activeHoverId,
-        hoverPathNodeIds,
-        connectedToSelectedIds,
-        activeHoverSentence
+        connectedToSelectedIds
     ]);
 
-    // Build memoized ReactFlow edges
+    // Build memoized ReactFlow edges: NEVER recomputed on hover!
     const edges = useMemo(() => {
         return validEdges.map((e: any, idx: number) => {
             const edgeId = e.id || `${e.from}->${e.to}:${e.type}`;
@@ -1124,21 +1116,9 @@ function OverviewGraph2D({
             let edgeOpacity = isTop3 ? 0.95 : 0.55;
             let strokeWidth = isTop3 ? 2 : 1.2;
 
-            // Clutter rule: indirect edges are hidden by default!
+            // Indirect edges are hidden by default
             if (isIndirectEdge) {
                 edgeOpacity = 0;
-            }
-
-            if (activeHoverId) {
-                if (hoverPathEdgeIds.has(edgeId)) {
-                    edgeOpacity = 0.95;
-                    strokeWidth = 2;
-                } else if (hoveredNodeConnectedEdgeIds.has(edgeId)) {
-                    edgeOpacity = isIndirectEdge ? 0.8 : 0.95;
-                    strokeWidth = isIndirectEdge ? 1.4 : 2;
-                } else {
-                    edgeOpacity = 0.15;
-                }
             }
 
             const posSource = positions.get(e.from) || { x: 0, y: 0 };
@@ -1164,13 +1144,18 @@ function OverviewGraph2D({
                 sourceHandle,
                 targetHandle,
                 type: 'bezier',
+                className: cn(
+                    'graph-2d-edge',
+                    isIndirectEdge && 'edge-indirect',
+                    isTop3 && 'edge-top3'
+                ),
                 markerEnd: {
                     type: MarkerType.ArrowClosed,
                     color: stroke,
                     width: 6,
                     height: 6
                 },
-                zIndex: activeHoverId && hoverPathEdgeIds.has(edgeId) ? 10 : (isTop3 ? 5 : 1),
+                zIndex: isTop3 ? 5 : 1,
                 style: {
                     stroke,
                     strokeWidth,
@@ -1184,19 +1169,79 @@ function OverviewGraph2D({
         neighborInfo,
         centerId,
         top3RiskEdgeIds,
-        activeHoverId,
-        hoverPathEdgeIds,
-        hoveredNodeConnectedEdgeIds,
         positions
     ]);
+
+    // Handle mouse enter / leave with small debounce on leave to prevent flicker
+    const handleNodeMouseEnter = useCallback((_event: any, node: any) => {
+        if (unhoverTimeoutRef.current) {
+            clearTimeout(unhoverTimeoutRef.current);
+            unhoverTimeoutRef.current = null;
+        }
+        setHoveredNodeId(node.id);
+    }, []);
+
+    const handleNodeMouseLeave = useCallback(() => {
+        if (unhoverTimeoutRef.current) {
+            clearTimeout(unhoverTimeoutRef.current);
+        }
+        unhoverTimeoutRef.current = setTimeout(() => {
+            setHoveredNodeId(null);
+        }, 60);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (unhoverTimeoutRef.current) clearTimeout(unhoverTimeoutRef.current);
+        };
+    }, []);
 
     // Track layout version to trigger fit-to-view once when layout changes
     const layoutVersion = useMemo(() => {
         return visibleNodes.length + validEdges.length + (selectedFile ? 1000 : 0) + (focusDepth * 100);
     }, [visibleNodes.length, validEdges.length, selectedFile, focusDepth]);
 
+    // CSS selectors string for highlighted nodes and edges during hover
+    const hoverStyles = useMemo(() => {
+        if (!activeHoverId) return '';
+        const nodeRules: string[] = [];
+        hoverPathNodeIds.forEach(id => {
+            const escapedId = CSS.escape(id);
+            nodeRules.push(`.graph-hover-active .graph-2d-node[data-node-id="${escapedId}"] { opacity: 1 !important; }`);
+        });
+        const edgeRules: string[] = [];
+        hoverPathEdgeIds.forEach(id => {
+            const escapedId = CSS.escape(id);
+            edgeRules.push(`.graph-hover-active .react-flow__edge[data-id="${escapedId}"] path { stroke-width: 2px !important; opacity: 0.95 !important; }`);
+        });
+        return `${nodeRules.join('\n')}\n${edgeRules.join('\n')}`;
+    }, [activeHoverId, hoverPathNodeIds, hoverPathEdgeIds]);
+
     return (
-        <div className="w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__edges]:pointer-events-none">
+        <div
+            className={cn(
+                "w-full h-full relative [&_.react-flow__edges]:!z-[1] [&_.react-flow__nodes]:!z-[2] [&_.react-flow__edges]:pointer-events-none",
+                Boolean(activeHoverId) && "graph-hover-active"
+            )}
+        >
+            <style>{`
+                .graph-hover-active .graph-2d-node {
+                    opacity: 0.15 !important;
+                }
+                .graph-hover-active .react-flow__edge path {
+                    opacity: 0.15 !important;
+                }
+                ${hoverStyles}
+            `}</style>
+
+            {/* Hover sentence tooltip floating pill */}
+            {activeHoverSentence && (
+                <div className="absolute bottom-5 inset-x-0 mx-auto w-max max-w-md z-30 pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#101415]/95 border border-[#4FD1B5]/30 text-xs font-mono text-[#E8EAE6] shadow-xl backdrop-blur-md">
+                    <span className="w-2 h-2 rounded-full bg-[#4FD1B5] shrink-0 animate-pulse" />
+                    <span className="truncate">{activeHoverSentence}</span>
+                </div>
+            )}
+
             {/* Fixed-size HTML overlay column headers (13px, not scaled with graph zoom) */}
             {columnHeaders.visible && (
                 <div className="absolute top-4 inset-x-0 pointer-events-none z-20 flex justify-center items-center gap-12 font-mono text-[13px] px-8">
@@ -1224,8 +1269,8 @@ function OverviewGraph2D({
                 nodeTypes={customNodeTypes}
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
-                onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
-                onNodeMouseLeave={() => setHoveredNodeId(null)}
+                onNodeMouseEnter={handleNodeMouseEnter}
+                onNodeMouseLeave={handleNodeMouseLeave}
                 onPaneClick={() => onSelectNode(null)}
                 fitView
                 fitViewOptions={{ padding: 0.12, maxZoom: 2.5, minZoom: 0.2 }}
