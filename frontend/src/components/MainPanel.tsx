@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
@@ -3344,6 +3344,8 @@ export function MainPanel({ className }: { className?: string }) {
 
     const [drawerFile, setDrawerFile] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
+    const [impactSheetOpen, setImpactSheetOpen] = useState(false);
+    const [impactSearchQuery, setImpactSearchQuery] = useState('');
 
     const handleOpenDrawer = useCallback((filePath: string) => {
         setDrawerFile(filePath);
@@ -4638,7 +4640,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                 <div className="text-xs text-[#8A918C]">Select a file from the sidebar to calculate its blast radius and impact.</div>
                             </div>
                         ) : (
-                            <div className="flex-1 flex flex-col space-y-4 min-h-0">
+                            <div className="flex-1 flex flex-col space-y-3 min-h-0 h-full overflow-hidden">
                                 <ComponentToolbar
                                     title={
                                         <span>
@@ -4683,10 +4685,25 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     return base + Math.min(6, Math.max(0, (score / 100) * 6));
                                 };
 
+                                const visibleDirect = directList.slice(0, 10);
+                                const visibleIndirect = indirectList.slice(0, 6);
+
+                                // Check for duplicate base names across visible nodes on rings
+                                const ringBaseNameCounts = new Map<string, number>();
+                                [...visibleDirect, ...visibleIndirect].forEach(n => {
+                                    ringBaseNameCounts.set(n.name, (ringBaseNameCounts.get(n.name) || 0) + 1);
+                                });
+
+                                const modalFiltered = rankedAll.filter(item => {
+                                    if (!impactSearchQuery.trim()) return true;
+                                    const q = impactSearchQuery.toLowerCase();
+                                    return item.name.toLowerCase().includes(q) || item.path.toLowerCase().includes(q) || (item.folder && item.folder.toLowerCase().includes(q));
+                                });
+
                                 return (
-                                    <div className="flex-1 flex flex-col min-h-0 space-y-3.5">
+                                    <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden space-y-3 relative">
                                         {/* 1. Verdict line at top (22px, editorial, file name highlighted in amber) */}
-                                        <div className="glass-surface px-5 py-4 rounded-xl border-white/10 shrink-0">
+                                        <div className="glass-surface px-5 py-3.5 rounded-xl border-white/10 shrink-0">
                                             <h2 className="text-[22px] font-normal tracking-tight text-[#E8EAE6] leading-snug">
                                                 Changing <span className="font-mono text-[#E3A04A] font-semibold">{targetDisplayName}</span> can break{' '}
                                                 <span className="font-mono font-semibold text-[#E8EAE6]">{directCount}</span> file{directCount === 1 ? '' : 's'} directly and{' '}
@@ -4698,7 +4715,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         </div>
 
                                         {/* Two columns: Left ~60% (Blast radius rings), Right ~40% (Ranked list + tests + why score) */}
-                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-[500px]">
+                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-0 h-full overflow-hidden">
                                             {/* Left (about 60%): blast radius rings filling whole card */}
                                             <div
                                                 className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-between relative overflow-hidden h-full min-h-0 select-none"
@@ -4724,7 +4741,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 <svg
                                                     viewBox="0 0 540 500"
                                                     preserveAspectRatio="xMidYMid meet"
-                                                    className="w-full flex-1 max-h-[460px] max-w-[500px] overflow-visible"
+                                                    className="w-full flex-1 min-h-0 max-h-[460px] max-w-[500px] overflow-visible"
                                                     role="img"
                                                 >
                                                     <title>Blast radius rings</title>
@@ -4791,31 +4808,34 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         <text
                                                             x="270"
                                                             y="266"
-                                                            fontSize="11"
-                                                            fontWeight="600"
+                                                            fontSize="12"
+                                                            fontWeight="700"
                                                             fill="#E8EAE6"
                                                             textAnchor="middle"
                                                             fontFamily="'IBM Plex Mono', monospace"
                                                         >
+                                                            <title>{selectedFile}</title>
                                                             {targetDisplayName.length > 24 ? `${targetDisplayName.slice(0, 23)}…` : targetDisplayName}
                                                         </text>
                                                     </g>
 
-                                                    {/* Ring 1 (Direct) nodes - Amber #E3A04A, size by risk */}
+                                                    {/* Ring 1 (Direct) nodes - Amber #E3A04A, size by risk, max 10 */}
                                                     {(() => {
-                                                        const maxNodes = 10;
-                                                        const visible = directList.slice(0, maxNodes);
                                                         const r = 95;
+                                                        const wouldCollide = visibleDirect.length > 4;
 
                                                         return (
                                                             <>
-                                                                {visible.map((node, i) => {
-                                                                    const angle = (i / Math.max(1, visible.length)) * 2 * Math.PI - Math.PI / 2;
+                                                                {visibleDirect.map((node, i) => {
+                                                                    const angle = (i / Math.max(1, visibleDirect.length)) * 2 * Math.PI - Math.PI / 2;
                                                                     const px = 270 + Math.cos(angle) * r;
                                                                     const py = 235 + Math.sin(angle) * r;
                                                                     const nodeRadius = getRiskRadius(node.score, true);
                                                                     const isHovered = hoveredImpactNode?.path === node.path;
                                                                     const displayName = node.name.length > 24 ? `${node.name.slice(0, 23)}…` : node.name;
+                                                                    const parentFolder = node.folder ? (node.folder.length > 22 ? `${node.folder.slice(0, 21)}…` : node.folder) : '';
+                                                                    const isDuplicateName = (ringBaseNameCounts.get(node.name) || 0) > 1;
+                                                                    const showFolder = isDuplicateName || isHovered || !wouldCollide;
 
                                                                     // Measure available space and flip label if it would leave canvas or overlap center
                                                                     const cosA = Math.cos(angle);
@@ -4836,7 +4856,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                     return (
                                                                         <g
                                                                             key={`ring1-${node.path}-${i}`}
-                                                                            onClick={() => selectFile(node.path)}
+                                                                            onClick={() => setImpactSheetOpen(true)}
                                                                             onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'direct', x: px, y: py })}
                                                                             className="cursor-pointer group"
                                                                         >
@@ -4860,13 +4880,31 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             <text
                                                                                 x={lx}
                                                                                 y={ly}
-                                                                                fontSize="11"
-                                                                                fill={isHovered ? "#FFFFFF" : "#E8EAE6"}
                                                                                 textAnchor={anchor}
                                                                                 fontFamily="'IBM Plex Mono', monospace"
-                                                                                className="pointer-events-none transition-colors"
+                                                                                className="pointer-events-none select-none"
                                                                             >
-                                                                                {displayName}
+                                                                                <title>{node.path}</title>
+                                                                                <tspan
+                                                                                    x={lx}
+                                                                                    dy="0"
+                                                                                    fontSize="12"
+                                                                                    fontWeight="700"
+                                                                                    fill={isHovered ? "#FFFFFF" : "#E8EAE6"}
+                                                                                >
+                                                                                    {displayName}
+                                                                                </tspan>
+                                                                                {showFolder && parentFolder && (
+                                                                                    <tspan
+                                                                                        x={lx}
+                                                                                        dy="13"
+                                                                                        fontSize="10.5"
+                                                                                        fontWeight="400"
+                                                                                        fill="#8A918C"
+                                                                                    >
+                                                                                        {parentFolder}
+                                                                                    </tspan>
+                                                                                )}
                                                                             </text>
                                                                         </g>
                                                                     );
@@ -4875,21 +4913,23 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         );
                                                     })()}
 
-                                                    {/* Ring 2 (Indirect) nodes - Grey #8A918C, size by risk */}
+                                                    {/* Ring 2 (Indirect) nodes - Grey #8A918C, size by risk, max 6 */}
                                                     {(() => {
-                                                        const maxNodes = 12;
-                                                        const visible = indirectList.slice(0, maxNodes);
                                                         const r = 180;
+                                                        const wouldCollide = visibleIndirect.length > 6;
 
                                                         return (
                                                             <>
-                                                                {visible.map((node, i) => {
-                                                                    const angle = (i / Math.max(1, visible.length)) * 2 * Math.PI - Math.PI / 2 + 0.22;
+                                                                {visibleIndirect.map((node, i) => {
+                                                                    const angle = (i / Math.max(1, visibleIndirect.length)) * 2 * Math.PI - Math.PI / 2 + 0.22;
                                                                     const px = 270 + Math.cos(angle) * r;
                                                                     const py = 235 + Math.sin(angle) * r;
                                                                     const nodeRadius = getRiskRadius(node.score, false);
                                                                     const isHovered = hoveredImpactNode?.path === node.path;
                                                                     const displayName = node.name.length > 24 ? `${node.name.slice(0, 23)}…` : node.name;
+                                                                    const parentFolder = node.folder ? (node.folder.length > 22 ? `${node.folder.slice(0, 21)}…` : node.folder) : '';
+                                                                    const isDuplicateName = (ringBaseNameCounts.get(node.name) || 0) > 1;
+                                                                    const showFolder = isDuplicateName || isHovered || !wouldCollide;
 
                                                                     // Measure available space and flip label if it would leave canvas
                                                                     const cosA = Math.cos(angle);
@@ -4910,7 +4950,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                     return (
                                                                         <g
                                                                             key={`ring2-${node.path}-${i}`}
-                                                                            onClick={() => selectFile(node.path)}
+                                                                            onClick={() => setImpactSheetOpen(true)}
                                                                             onMouseEnter={() => setHoveredImpactNode({ ...node, type: 'indirect', x: px, y: py })}
                                                                             className="cursor-pointer group"
                                                                         >
@@ -4935,13 +4975,31 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             <text
                                                                                 x={lx}
                                                                                 y={ly}
-                                                                                fontSize="11"
-                                                                                fill={isHovered ? "#FFFFFF" : "#8A918C"}
                                                                                 textAnchor={anchor}
                                                                                 fontFamily="'IBM Plex Mono', monospace"
-                                                                                className="pointer-events-none transition-colors"
+                                                                                className="pointer-events-none select-none"
                                                                             >
-                                                                                {displayName}
+                                                                                <title>{node.path}</title>
+                                                                                <tspan
+                                                                                    x={lx}
+                                                                                    dy="0"
+                                                                                    fontSize="12"
+                                                                                    fontWeight="700"
+                                                                                    fill={isHovered ? "#FFFFFF" : "#8A918C"}
+                                                                                >
+                                                                                    {displayName}
+                                                                                </tspan>
+                                                                                {showFolder && parentFolder && (
+                                                                                    <tspan
+                                                                                        x={lx}
+                                                                                        dy="13"
+                                                                                        fontSize="10.5"
+                                                                                        fontWeight="400"
+                                                                                        fill="#8A918C"
+                                                                                    >
+                                                                                        {parentFolder}
+                                                                                    </tspan>
+                                                                                )}
                                                                             </text>
                                                                         </g>
                                                                     );
@@ -4952,17 +5010,23 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 </svg>
 
                                                 {/* Bottom pill row for +N more placed outside the outer ring at the bottom */}
-                                                {(directList.length > 10 || indirectList.length > 12) && (
+                                                {(directCount > 10 || indirectCount > 6) && (
                                                     <div className="w-full flex items-center justify-center gap-3 py-1.5 shrink-0">
-                                                        {directList.length > 10 && (
-                                                            <div className="px-3 py-1 rounded-full bg-[#10161A] border border-[#E3A04A]/40 text-[#E3A04A] font-mono text-[11px] shadow-sm">
-                                                                +{directList.length - 10} more direct
-                                                            </div>
+                                                        {directCount > 10 && (
+                                                            <button
+                                                                onClick={() => setImpactSheetOpen(true)}
+                                                                className="px-3 py-1 rounded-full bg-[#10161A] border border-[#E3A04A]/40 text-[#E3A04A] font-mono text-[11px] shadow-sm hover:bg-[#E3A04A]/10 hover:border-[#E3A04A]/70 transition-colors cursor-pointer"
+                                                            >
+                                                                +{directCount - 10} more direct
+                                                            </button>
                                                         )}
-                                                        {indirectList.length > 12 && (
-                                                            <div className="px-3 py-1 rounded-full bg-[#10161A] border border-[#8A918C]/40 text-[#8A918C] font-mono text-[11px] shadow-sm">
-                                                                +{indirectList.length - 12} more indirect
-                                                            </div>
+                                                        {indirectCount > 6 && (
+                                                            <button
+                                                                onClick={() => setImpactSheetOpen(true)}
+                                                                className="px-3 py-1 rounded-full bg-[#10161A] border border-[#8A918C]/40 text-[#8A918C] font-mono text-[11px] shadow-sm hover:bg-white/[0.08] hover:border-[#8A918C]/70 transition-colors cursor-pointer"
+                                                            >
+                                                                +{indirectCount - 6} more indirect
+                                                            </button>
                                                         )}
                                                     </div>
                                                 )}
@@ -4994,7 +5058,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 )}
                                             </div>
 
-                                            {/* Right (about 40%): ranked list "Files that could break" + Collapsible footer */}
+                                            {/* Right (about 40%): ranked list "Files that could break" + Tests + Why score */}
                                             <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     {/* Sticky Header: Files that could break */}
@@ -5014,7 +5078,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     </div>
 
                                                     {/* Scrollable Ranked list (shows at least 6 rows) */}
-                                                    <div className="flex-1 min-h-[260px] overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
+                                                    <div className="flex-1 min-h-[220px] overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
                                                         {rankedAll.length === 0 ? (
                                                             <div className="text-xs text-[#8A918C] py-4 text-center">
                                                                 No dependents found.
@@ -5086,35 +5150,48 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     </div>
                                                 </div>
 
-                                                {/* Collapsible Footer: Tests to run & Why this score */}
-                                                <div className="pt-2.5 border-t border-white/[0.08] mt-2 shrink-0 space-y-1.5">
-                                                    <details className="group/tests text-xs rounded-lg border border-white/[0.06] bg-white/[0.02]">
-                                                        <summary className="p-2 cursor-pointer font-medium text-[#8A918C] flex items-center justify-between select-none hover:text-[#E8EAE6]">
-                                                            <span>Tests to run ({testCount})</span>
-                                                            <span className="text-[10px] font-mono opacity-60 group-open/tests:rotate-180 transition-transform">▼</span>
-                                                        </summary>
-                                                        <div className="p-2.5 pt-0">
-                                                            {tests.length === 0 ? (
-                                                                <div className="p-2 rounded border border-[#E3A04A]/25 bg-[#E3A04A]/5 text-[11px] text-[#E3A04A]">
-                                                                    No test covers this file. Add a unit test to prevent regressions.
-                                                                </div>
-                                                            ) : (
-                                                                <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-custom">
-                                                                    {tests.map((testPath, i) => (
+                                                {/* Footer: Tests to run & Why this score */}
+                                                <div className="pt-2 border-t border-white/[0.08] mt-2 shrink-0 space-y-2">
+                                                    {/* Tests to run block: expanded with amber warning when count 0, or list with Direct/2 hops tag */}
+                                                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 text-xs">
+                                                        <div className="flex items-center justify-between mb-1.5">
+                                                            <span className="font-medium text-[#8A918C]">Tests to run ({testCount})</span>
+                                                        </div>
+                                                        {testCount === 0 ? (
+                                                            <div className="p-2.5 rounded border border-[#E3A04A]/30 bg-[#E3A04A]/10 text-[11px] text-[#E3A04A] leading-relaxed">
+                                                                No test covers this file. Add a unit test covering this module before modifying it.
+                                                            </div>
+                                                        ) : (
+                                                            <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-custom pr-0.5">
+                                                                {tests.map((testPath, i) => {
+                                                                    const isIndirect = indirectList.some(item => item.path === testPath);
+                                                                    const testTag = isIndirect ? '2 hops' : 'Direct';
+                                                                    return (
                                                                         <button
                                                                             key={i}
                                                                             onClick={() => selectFile(testPath)}
-                                                                            className="w-full text-left font-mono text-[11px] text-[#E8EAE6] hover:text-[#4FD1B5] p-1 rounded glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 transition-colors truncate block cursor-pointer"
+                                                                            className="w-full flex items-center justify-between p-1.5 rounded glass-surface border-white/[0.06] hover:border-[#4FD1B5]/30 hover:bg-white/[0.04] transition-colors cursor-pointer group text-left"
                                                                             title={testPath}
                                                                         >
-                                                                            {testPath.split('/').pop()}
+                                                                            <span className="font-mono text-[11px] text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate flex-1 mr-2">
+                                                                                {testPath.split('/').pop()}
+                                                                            </span>
+                                                                            <span className={cn(
+                                                                                "font-sans text-[10px] px-1.5 py-0.2 rounded border shrink-0",
+                                                                                testTag === 'Direct'
+                                                                                    ? "border-[#E3A04A]/30 text-[#E3A04A] bg-[#E3A04A]/10"
+                                                                                    : "border-white/15 text-[#8A918C] bg-white/[0.03]"
+                                                                            )}>
+                                                                                {testTag}
+                                                                            </span>
                                                                         </button>
-                                                                    ))}
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </details>
+                                                                    );
+                                                                })}
+                                                            </div>
+                                                        )}
+                                                    </div>
 
+                                                    {/* Why this score stays collapsed */}
                                                     <details className="group/why text-xs rounded-lg border border-white/[0.06] bg-white/[0.02]">
                                                         <summary className="p-2 cursor-pointer font-medium text-[#8A918C] flex items-center justify-between select-none hover:text-[#E8EAE6]">
                                                             <span>Why this score</span>
@@ -5146,6 +5223,114 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 </div>
                                             </div>
                                         </div>
+
+                                        {/* Side sheet / modal with full ranked list of all affected files */}
+                                        {impactSheetOpen && (
+                                            <div
+                                                className="absolute inset-0 z-40 bg-[#07090A]/80 backdrop-blur-sm flex justify-end animate-in fade-in duration-150"
+                                                onClick={() => setImpactSheetOpen(false)}
+                                            >
+                                                <div
+                                                    className="w-full max-w-lg h-full bg-[#10161A] border-l border-white/10 shadow-2xl flex flex-col p-5 overflow-hidden"
+                                                    onClick={e => e.stopPropagation()}
+                                                >
+                                                    {/* Header */}
+                                                    <div className="flex items-center justify-between pb-3 border-b border-white/[0.08] shrink-0">
+                                                        <div>
+                                                            <h3 className="text-sm font-semibold text-[#E8EAE6]">All Affected Files</h3>
+                                                            <p className="text-xs text-[#8A918C]">
+                                                                {rankedAll.length} total ({directCount} direct, {indirectCount} indirect)
+                                                            </p>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => setImpactSheetOpen(false)}
+                                                            className="p-1.5 rounded-lg text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors"
+                                                            title="Close"
+                                                        >
+                                                            <X size={18} />
+                                                        </button>
+                                                    </div>
+
+                                                    {/* Search box */}
+                                                    <div className="py-3 shrink-0">
+                                                        <div className="relative">
+                                                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8A918C]" />
+                                                            <input
+                                                                type="text"
+                                                                value={impactSearchQuery}
+                                                                onChange={e => setImpactSearchQuery(e.target.value)}
+                                                                placeholder="Search affected files..."
+                                                                className="w-full pl-9 pr-3 py-1.5 text-xs bg-white/[0.04] border border-white/10 rounded-lg text-[#E8EAE6] placeholder-[#8A918C]/60 focus:outline-none focus:border-[#4FD1B5]/50 font-mono"
+                                                                autoFocus
+                                                            />
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Scrollable list */}
+                                                    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom space-y-1.5 pr-1">
+                                                        {modalFiltered.length === 0 ? (
+                                                            <div className="text-xs text-[#8A918C] text-center py-8">
+                                                                No files matching "{impactSearchQuery}"
+                                                            </div>
+                                                        ) : (
+                                                            modalFiltered.map((item, idx) => (
+                                                                <div
+                                                                    key={`sheet-${item.path}-${idx}`}
+                                                                    onClick={() => {
+                                                                        selectFile(item.path);
+                                                                        setImpactSheetOpen(false);
+                                                                    }}
+                                                                    className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/15 transition-colors cursor-pointer group text-xs"
+                                                                >
+                                                                    {/* Rank */}
+                                                                    <span className="font-mono text-[11px] text-[#8A918C] w-6 shrink-0">
+                                                                        {idx + 1}
+                                                                    </span>
+
+                                                                    {/* Name & Folder */}
+                                                                    <div className="min-w-0 flex-1 mr-3">
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] font-semibold truncate" title={item.path}>
+                                                                                {item.name}
+                                                                            </span>
+                                                                            <span className={cn(
+                                                                                "font-sans text-[10px] px-1.5 py-0.2 rounded border shrink-0",
+                                                                                item.type === 'direct'
+                                                                                    ? "border-[#E3A04A]/30 text-[#E3A04A] bg-[#E3A04A]/10"
+                                                                                    : "border-white/15 text-[#8A918C] bg-white/[0.03]"
+                                                                            )}>
+                                                                                {item.type === 'direct' ? 'Direct' : `${item.hops || 2} hops`}
+                                                                            </span>
+                                                                        </div>
+                                                                        {item.folder && (
+                                                                            <span className="font-mono text-[10.5px] text-[#8A918C] truncate block mt-0.5" title={item.folder}>
+                                                                                {item.folder}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+
+                                                                    {/* Risk bar and score */}
+                                                                    <div className="flex items-center gap-2 shrink-0">
+                                                                        <div className="w-14 h-1.5 rounded-full bg-white/[0.08] overflow-hidden">
+                                                                            <div
+                                                                                className="h-full rounded-full"
+                                                                                style={{
+                                                                                    width: `${item.score}%`,
+                                                                                    backgroundColor: item.type === 'direct' ? '#E3A04A' : '#8A918C'
+                                                                                }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className="font-mono text-[11px] text-[#8A918C] w-6 text-right">
+                                                                            {item.score}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 );
                             })()}
