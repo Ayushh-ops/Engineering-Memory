@@ -843,6 +843,7 @@ function OverviewGraph2D({
     showAllNodes?: boolean;
 }) {
     const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+    const [pointerPos, setPointerPos] = useState<{ x: number; y: number } | null>(null);
     const unhoverTimeoutRef = useRef<any>(null);
 
     // Compute static layout only once per (graph, selectedFile, selectedSymbol, focusDepth, simplify, showCalls)
@@ -892,7 +893,8 @@ function OverviewGraph2D({
         const lResult = compute2DLayout(vNodes, vEdges, {
             centerId: cId,
             isFocused: Boolean(selectedFile),
-            focusDepth
+            focusDepth,
+            graph
         });
 
         // Top 3 risk edges
@@ -1031,6 +1033,11 @@ function OverviewGraph2D({
             } else {
                 pNodeIds.add(hId);
                 hSentence = hName;
+            }
+
+            // Also include all direct incident edges of the hovered node
+            for (const eId of directNbrEdgeIds) {
+                pEdgeIds.add(eId);
             }
         }
 
@@ -1270,12 +1277,29 @@ function OverviewGraph2D({
     ]);
 
     // Handle mouse enter / leave with small debounce on leave to prevent flicker
-    const handleNodeMouseEnter = useCallback((_event: any, node: any) => {
+    const handleNodeMouseEnter = useCallback((event: any, node: any) => {
         if (unhoverTimeoutRef.current) {
             clearTimeout(unhoverTimeoutRef.current);
             unhoverTimeoutRef.current = null;
         }
         setHoveredNodeId(node.id);
+        if (event && containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            setPointerPos({
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top
+            });
+        }
+    }, []);
+
+    const handleNodeMouseMove = useCallback((event: any) => {
+        if (containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            setPointerPos({
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top
+            });
+        }
     }, []);
 
     const handleNodeMouseLeave = useCallback(() => {
@@ -1284,6 +1308,7 @@ function OverviewGraph2D({
         }
         unhoverTimeoutRef.current = setTimeout(() => {
             setHoveredNodeId(null);
+            setPointerPos(null);
         }, 60);
     }, []);
 
@@ -1305,6 +1330,7 @@ function OverviewGraph2D({
         hoverPathEdgeIds.forEach(id => {
             const escapedId = CSS.escape(id);
             edgeRules.push(`.graph-hover-active .react-flow__edge[data-id="${escapedId}"] path { stroke-width: 2px !important; opacity: 0.95 !important; }`);
+            edgeRules.push(`.graph-hover-active .react-flow__edge[data-id="${escapedId}"].edge-indirect path { stroke-width: 2px !important; opacity: 0.95 !important; stroke: #8A918C !important; stroke-dasharray: 4 4 !important; }`);
         });
         return `${nodeRules.join('\n')}\n${edgeRules.join('\n')}`;
     }, [activeHoverId, hoverPathNodeIds, hoverPathEdgeIds]);
@@ -1387,13 +1413,40 @@ function OverviewGraph2D({
                 ${hoverStyles}
             `}</style>
 
-            {/* Hover sentence tooltip floating pill */}
-            {activeHoverSentence && (
-                <div className="absolute bottom-5 inset-x-0 mx-auto w-max max-w-md z-30 pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#101415]/95 border border-[#4FD1B5]/30 text-xs font-mono text-[#E8EAE6] shadow-xl backdrop-blur-md">
-                    <span className="w-2 h-2 rounded-full bg-[#4FD1B5] shrink-0 animate-pulse" />
-                    <span className="truncate">{activeHoverSentence}</span>
-                </div>
-            )}
+            {/* Hover sentence tooltip positioned next to pointer, clamped inside canvas, flipping above near bottom */}
+            {activeHoverSentence && (() => {
+                const w = containerSize.width || (containerRef.current ? containerRef.current.clientWidth : 800);
+                const h = containerSize.height || (containerRef.current ? containerRef.current.clientHeight : 600);
+                let left = w / 2 - 120;
+                let top: number | undefined = undefined;
+                let bottom: number | undefined = 20;
+
+                if (pointerPos) {
+                    left = Math.max(12, Math.min(w - 332, pointerPos.x + 16));
+                    // If near the bottom band (< 80px from bottom), flip above pointer
+                    if (pointerPos.y > h - 80) {
+                        bottom = h - pointerPos.y + 12;
+                        top = undefined;
+                    } else {
+                        top = Math.max(76, pointerPos.y - 12);
+                        bottom = undefined;
+                    }
+                }
+
+                return (
+                    <div
+                        style={{
+                            left: `${left}px`,
+                            top: top !== undefined ? `${top}px` : undefined,
+                            bottom: bottom !== undefined ? `${bottom}px` : undefined
+                        }}
+                        className="absolute z-30 pointer-events-none max-w-[320px] w-max px-3 py-1.5 rounded-lg bg-[#101415]/95 border border-[#4FD1B5]/30 text-xs font-mono text-[#E8EAE6] shadow-xl backdrop-blur-md flex items-start gap-2 whitespace-normal break-words"
+                    >
+                        <span className="w-2 h-2 rounded-full bg-[#4FD1B5] shrink-0 animate-pulse mt-1" />
+                        <span className="leading-snug">{activeHoverSentence}</span>
+                    </div>
+                );
+            })()}
 
             <ReactFlow
                 nodes={nodes}
@@ -1403,6 +1456,7 @@ function OverviewGraph2D({
                 onNodeClick={(_event, node) => onSelectNode(node.data?.rawNode)}
                 onNodeDoubleClick={(_event, node) => onDoubleClickNode(node.data?.rawNode)}
                 onNodeMouseEnter={handleNodeMouseEnter}
+                onNodeMouseMove={handleNodeMouseMove}
                 onNodeMouseLeave={handleNodeMouseLeave}
                 onPaneClick={() => onSelectNode(null)}
                 defaultViewport={fitViewport.zoom > 0 ? fitViewport : undefined}
@@ -1699,6 +1753,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [showCalls, setShowCalls] = useState(false);
     const [focusDepth, setFocusDepth] = useState<1 | 2>(1);
     const [showAllNodes, setShowAllNodes] = useState(false);
+    const [showIndirectListModal, setShowIndirectListModal] = useState(false);
     const [resetTrigger, setResetTrigger] = useState(0);
     const [detailsOpen, setDetailsOpen] = useState(false);
 
@@ -1721,6 +1776,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     // Reset showAllNodes when selection or filters change
     useEffect(() => {
         setShowAllNodes(false);
+        setShowIndirectListModal(false);
     }, [selectedFile, focusDepth, simplify, showCalls, viewMode]);
 
     const handleBack = useCallback(async () => {
@@ -1779,9 +1835,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const defaultCap = viewMode === '2D' ? 12 : 30;
 
     // Compute displayed nodes (capped at defaultCap, max 12 per column in 2D, show all when showAllNodes is true)
-    const { displayNodes, totalCandidateCount, totalImportersCount } = useMemo(() => {
+    const { displayNodes, totalCandidateCount, totalImportersCount, totalIndirectCount, allIndirectNodes } = useMemo(() => {
         if (baseNodes.length === 0) {
-            return { displayNodes: [], totalCandidateCount: 0, totalImportersCount: 0 };
+            return { displayNodes: [], totalCandidateCount: 0, totalImportersCount: 0, totalIndirectCount: 0, allIndirectNodes: [] };
         }
 
         // Case A: No file selected -> show top files by connections
@@ -1797,7 +1853,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             return {
                 displayNodes: displayed,
                 totalCandidateCount: total,
-                totalImportersCount: 0
+                totalImportersCount: 0,
+                totalIndirectCount: 0,
+                allIndirectNodes: []
             };
         }
 
@@ -1821,7 +1879,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const sorted = [...baseNodes].sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
             const total = sorted.length;
             const displayed = showAllNodes ? sorted : sorted.slice(0, defaultCap);
-            return { displayNodes: displayed, totalCandidateCount: total, totalImportersCount: 0 };
+            return { displayNodes: displayed, totalCandidateCount: total, totalImportersCount: 0, totalIndirectCount: 0, allIndirectNodes: [] };
         }
 
         // Direct neighbors (depth 1)
@@ -1867,10 +1925,17 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         const indirectNodes = Array.from(indirectNodeIds)
             .map(id => baseNodeMap.get(id))
             .filter(Boolean)
-            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
+            .sort((a, b) => {
+                const pathA = a.path || a.id;
+                const pathB = b.path || b.id;
+                const rA = computeRisk(pathA, graph).score;
+                const rB = computeRisk(pathB, graph).score;
+                return rB - rA || (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0);
+            });
 
         const totalCandidateCount = 1 + importsNodes.length + importedByNodes.length + indirectNodes.length;
         const totalImportersCount = importedByNodes.length;
+        const totalIndirectCount = indirectNodes.length;
 
         let displayed: any[] = [];
         if (viewMode === '2D') {
@@ -1881,7 +1946,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     centerNode,
                     ...importsNodes.slice(0, 12),
                     ...importedByNodes.slice(0, 12),
-                    ...indirectNodes.slice(0, 8)
+                    ...indirectNodes.slice(0, 12)
                 ];
             }
         } else {
@@ -1892,7 +1957,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return {
             displayNodes: displayed,
             totalCandidateCount,
-            totalImportersCount
+            totalImportersCount,
+            totalIndirectCount,
+            allIndirectNodes: indirectNodes
         };
     }, [baseNodes, selectedFile, selectedSymbol, focusDepth, showAllNodes, defaultCap, connectionCounts, graph, viewMode]);
 
@@ -2601,7 +2668,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         <>
                             <span className="text-white/20">|</span>
                             <button
-                                onClick={() => setShowAllNodes(true)}
+                                onClick={() => {
+                                    if (focusDepth === 2 && totalIndirectCount > 30) {
+                                        setShowIndirectListModal(true);
+                                    } else {
+                                        setShowAllNodes(true);
+                                    }
+                                }}
                                 className="text-[#4FD1B5] hover:underline font-medium cursor-pointer"
                             >
                                 Show all
@@ -2879,6 +2952,59 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     Arrow points to the file being imported.
                 </span>
             </div>
+
+            {/* Scrollable list modal for Indirect files when M > 30 */}
+            {showIndirectListModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+                    <div className="bg-[#10161A] border border-white/10 rounded-xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col overflow-hidden">
+                        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-[#151C22]">
+                            <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-[#8A918C]" />
+                                <h3 className="text-sm font-semibold text-[#E8EAE6] font-mono">
+                                    Indirect Dependents ({allIndirectNodes.length})
+                                </h3>
+                            </div>
+                            <button
+                                onClick={() => setShowIndirectListModal(false)}
+                                className="text-[#8A918C] hover:text-[#E8EAE6] p-1 rounded hover:bg-white/[0.06] text-xs font-mono"
+                            >
+                                ✕ Close
+                            </button>
+                        </div>
+                        <div className="p-3 overflow-y-auto divide-y divide-white/5 space-y-1">
+                            {allIndirectNodes.map((node: any) => {
+                                const path = node.path || node.id;
+                                const name = node.name || (path ? path.split('/').pop() : node.id);
+                                const risk = computeRisk(path, graph).score;
+                                return (
+                                    <div
+                                        key={node.id}
+                                        onClick={() => {
+                                            setShowIndirectListModal(false);
+                                            handleSelectNode(node);
+                                        }}
+                                        className="flex items-center justify-between p-2 rounded hover:bg-white/[0.04] cursor-pointer group transition-colors"
+                                    >
+                                        <div className="flex flex-col min-w-0 pr-2">
+                                            <span className="text-xs font-mono text-[#E8EAE6] group-hover:text-[#4FD1B5] truncate">
+                                                {name}
+                                            </span>
+                                            <span className="text-[10px] font-mono text-[#8A918C] truncate">
+                                                {path}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.06] font-mono text-[#8A918C]">
+                                                Risk {risk}
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

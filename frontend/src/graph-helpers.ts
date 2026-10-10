@@ -599,6 +599,8 @@ export function compute2DLayout(
         centerId?: string | null;
         isFocused?: boolean;
         focusDepth?: 1 | 2;
+        graph?: RepositoryGraph | null;
+        commits?: any[];
     }
 ): Layout2DResult {
     const positions = new Map<string, { x: number; y: number }>();
@@ -687,6 +689,17 @@ export function compute2DLayout(
             }
         }
 
+        // Sort indirectIds by risk score (highest risk first)
+        indirectIds.sort((idA, idB) => {
+            const nodeA = nodes.find(n => n.id === idA);
+            const nodeB = nodes.find(n => n.id === idB);
+            const pathA = (nodeA as any)?.path || idA;
+            const pathB = (nodeB as any)?.path || idB;
+            const rA = computeRisk(pathA, options?.graph || null, options?.commits || []).score;
+            const rB = computeRisk(pathB, options?.graph || null, options?.commits || []).score;
+            return rB - rA;
+        });
+
         columnCounts.imports = leftIds.length;
         columnCounts.importedBy = rightIds.length;
         columnCounts.indirect = indirectIds.length;
@@ -728,21 +741,16 @@ export function compute2DLayout(
             }
         }
 
-        // Indirect mode: add the second column further right
+        // Indirect mode: in ONE column to the right of the Imported-by column
         const indirectCount = indirectIds.length;
         const baseColOffset = rightColCount;
         if (indirectCount > 0 && !isDirectMode) {
-            const indColCount = Math.max(1, Math.ceil(indirectCount / 12));
-            const indChunkSize = Math.ceil(indirectCount / indColCount);
-            for (let c = 0; c < indColCount; c++) {
-                const chunk = indirectIds.slice(c * indChunkSize, (c + 1) * indChunkSize);
-                const x = colSpacing * (baseColOffset + 1 + c);
-                const span = (chunk.length - 1) * rowStep;
-                chunk.forEach((id, idx) => {
-                    const y = Math.round(-span / 2 + idx * rowStep);
-                    positions.set(id, { x, y });
-                });
-            }
+            const x = colSpacing * (baseColOffset + 1);
+            const span = (indirectCount - 1) * rowStep;
+            indirectIds.forEach((id, idx) => {
+                const y = Math.round(-span / 2 + idx * rowStep);
+                positions.set(id, { x, y });
+            });
         }
 
         return {
