@@ -1491,35 +1491,54 @@ interface Hub3DNodePos {
     role: 'center' | 'imports' | 'importedBy' | 'indirect' | 'calls' | 'default';
 }
 
-function fibonacciSpreadHalfSpace(
-    index: number,
-    count: number,
+function placeTiltedRingArc(
+    nodeIds: string[],
     radius: number,
-    direction: 1 | -1
-): { x: number; y: number; z: number } {
-    if (count <= 1) {
-        return { x: direction * radius, y: 0, z: 0 };
-    }
-    const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-    // y in [-1, 1]
-    const yNorm = 1 - (index / Math.max(1, count - 1)) * 2;
-    // z in [-0.8, 0.8]
-    const zNorm = 0.8 * Math.sin(index * goldenAngle);
-    // x in half space so x^2 + y^2 + z^2 ~ 1
-    const planeRadiusSq = Math.max(0.04, 1 - yNorm * yNorm - zNorm * zNorm);
-    const xNorm = Math.sqrt(planeRadiusSq);
+    isLeftHalf: boolean,
+    tiltDeg: number,
+    role: Hub3DNodePos['role'],
+    positions: Map<string, Hub3DNodePos>,
+    rankOffset = 0
+) {
+    const count = nodeIds.length;
+    if (count === 0) return;
 
-    const x = direction * radius * xNorm;
-    const y = radius * yNorm;
-    const z = radius * zNorm;
-    return { x, y, z };
+    const tiltRad = (tiltDeg * Math.PI) / 180;
+    // For left half (Imports, x < 0): angle centered around Math.PI
+    // For right half (Imported by, x > 0): angle centered around 0
+    const centerAngle = isLeftHalf ? Math.PI : 0;
+    const arcSpan = count === 1 ? 0 : Math.min(Math.PI * 0.78, 0.35 + (count - 1) * 0.28);
+
+    nodeIds.forEach((id, idx) => {
+        let angle = centerAngle;
+        if (count > 1) {
+            angle = (centerAngle - arcSpan / 2) + (idx / (count - 1)) * arcSpan;
+        }
+
+        const x0 = radius * Math.cos(angle);
+        const z0 = radius * Math.sin(angle);
+
+        // Plane tilted 25 degrees around X axis:
+        const yTilted = -z0 * Math.sin(tiltRad);
+        const zTilted = z0 * Math.cos(tiltRad);
+
+        // Small deterministic y-offset (+-18) per node for depth:
+        const yOffset = ((idx + rankOffset) % 2 === 0 ? 18 : -18);
+
+        positions.set(id, {
+            x: x0,
+            y: yTilted + yOffset,
+            z: zTilted,
+            role
+        });
+    });
 }
 
 function runDeterministicRelaxation(
     positions: Map<string, Hub3DNodePos>,
     fixedId: string | null,
-    minDistance = 36,
-    iterations = 35
+    minDistance = 44,
+    iterations = 45
 ) {
     const ids = Array.from(positions.keys());
     for (let it = 0; it < iterations; it++) {
@@ -1546,13 +1565,13 @@ function runDeterministicRelaxation(
 
                 if (dist < minDistance && dist > 0.001) {
                     const overlap = (minDistance - dist) / dist;
-                    const push = overlap * 0.35;
+                    const push = overlap * 0.4;
                     forceX += dx * push;
                     forceY += dy * push;
                     forceZ += dz * push;
                 } else if (dist <= 0.001) {
-                    forceY += 1.5;
-                    forceZ += 1.5;
+                    forceY += 2;
+                    forceZ += 2;
                 }
             }
 
@@ -1561,8 +1580,8 @@ function runDeterministicRelaxation(
             pA.z += forceZ;
 
             // Preserve hemisphere half-space
-            if (pA.role === 'imports' && pA.x > -20) pA.x = -20;
-            if (pA.role === 'importedBy' && pA.x < 20) pA.x = 20;
+            if (pA.role === 'imports' && pA.x > -25) pA.x = -25;
+            if (pA.role === 'importedBy' && pA.x < 25) pA.x = 25;
 
             const shift = Math.sqrt(forceX * forceX + forceY * forceY + forceZ * forceZ);
             if (shift > maxShift) maxShift = shift;
@@ -1597,11 +1616,11 @@ function compute3DHubLayout(
                 role: 'default'
             });
         });
-        runDeterministicRelaxation(positions, null, 40, 30);
+        runDeterministicRelaxation(positions, null, 44, 35);
         return positions;
     }
 
-    // Selected node always fixed at origin (0, 0, 0)
+    // Selected node always fixed at exact centre (0, 0, 0)
     positions.set(selectedNodeId, { x: 0, y: 0, z: 0, role: 'center' });
 
     const directImports: string[] = [];
@@ -1651,75 +1670,132 @@ function compute3DHubLayout(
     const uniqueCalls = Array.from(new Set(callNodes)).sort(riskComparator);
     const uniqueIndirect = Array.from(new Set(indirectNodes)).sort(riskComparator);
 
-    // 3 concentric shells: inner=150, middle=210, outer=270 assigned by risk rank
-    const SHELL_RADII = [150, 210, 270];
+    // Tilted ring layout:
+    // Direct nodes evenly spaced on 2 concentric rings (radius 140 and 210, alternating by rank, highest risk on the inner ring)
+    // In a plane tilted 25 degrees, with a small deterministic y-offset (+-18) per node for depth.
+    // Imports on the left half and Imported by on the right half of the ring.
+    const innerImports = uniqueImports.filter((_, idx) => idx % 2 === 0);
+    const middleImports = uniqueImports.filter((_, idx) => idx % 2 === 1);
+    placeTiltedRingArc(innerImports, 140, true, 25, 'imports', positions, 0);
+    placeTiltedRingArc(middleImports, 210, true, 25, 'imports', positions, 1);
 
-    // Place Imports in left half-space (x < 0) across 3 shells by risk rank
-    uniqueImports.forEach((id, i) => {
-        const shellIdx = i % 3;
-        const radius = SHELL_RADII[shellIdx];
-        const p = fibonacciSpreadHalfSpace(i, uniqueImports.length, radius, -1);
-        positions.set(id, { ...p, role: 'imports' });
+    const innerImportedBy = uniqueImportedBy.filter((_, idx) => idx % 2 === 0);
+    const middleImportedBy = uniqueImportedBy.filter((_, idx) => idx % 2 === 1);
+    placeTiltedRingArc(innerImportedBy, 140, false, 25, 'importedBy', positions, 0);
+    placeTiltedRingArc(middleImportedBy, 210, false, 25, 'importedBy', positions, 1);
+
+    // Calls placed on left half on intermediate radius 175
+    if (uniqueCalls.length > 0) {
+        placeTiltedRingArc(uniqueCalls, 175, true, 25, 'calls', positions, 0);
+    }
+
+    // Indirect nodes on an outer ring (radius 290) in dim grey
+    const tiltRad = (25 * Math.PI) / 180;
+    uniqueIndirect.forEach((id, idx) => {
+        const angle = (idx / Math.max(1, uniqueIndirect.length)) * 2 * Math.PI;
+        const x0 = 290 * Math.cos(angle);
+        const z0 = 290 * Math.sin(angle);
+        const yTilted = -z0 * Math.sin(tiltRad);
+        const zTilted = z0 * Math.cos(tiltRad);
+        const yOffset = (idx % 2 === 0 ? 18 : -18);
+
+        positions.set(id, {
+            x: x0,
+            y: yTilted + yOffset,
+            z: zTilted,
+            role: 'indirect'
+        });
     });
 
-    // Place Imported by in right half-space (x > 0) across 3 shells by risk rank
-    uniqueImportedBy.forEach((id, i) => {
-        const shellIdx = i % 3;
-        const radius = SHELL_RADII[shellIdx];
-        const p = fibonacciSpreadHalfSpace(i, uniqueImportedBy.length, radius, 1);
-        positions.set(id, { ...p, role: 'importedBy' });
-    });
-
-    // Place Calls (on negative X side with tighter radius)
-    uniqueCalls.forEach((id, i) => {
-        const p = fibonacciSpreadHalfSpace(i, uniqueCalls.length, 160, -1);
-        positions.set(id, { ...p, role: 'calls' });
-    });
-
-    // Indirect nodes further out (radius 340) on appropriate side
-    const indirectToNegativeX: string[] = [];
-    const indirectToPositiveX: string[] = [];
-    uniqueIndirect.forEach((id) => {
-        let negCount = 0;
-        let posCount = 0;
-        for (const e of edges) {
-            const f = typeof e.from === 'object' ? e.from.id : e.from;
-            const t = typeof e.to === 'object' ? e.to.id : e.to;
-            if (f === id) {
-                if (uniqueImports.includes(t)) negCount++;
-                if (uniqueImportedBy.includes(t)) posCount++;
-            } else if (t === id) {
-                if (uniqueImports.includes(f)) negCount++;
-                if (uniqueImportedBy.includes(f)) posCount++;
-            }
-        }
-        if (negCount > posCount) {
-            indirectToNegativeX.push(id);
-        } else if (posCount > negCount) {
-            indirectToPositiveX.push(id);
-        } else {
-            if (indirectToNegativeX.length <= indirectToPositiveX.length) {
-                indirectToNegativeX.push(id);
-            } else {
-                indirectToPositiveX.push(id);
-            }
-        }
-    });
-
-    indirectToNegativeX.forEach((id, i) => {
-        const p = fibonacciSpreadHalfSpace(i, indirectToNegativeX.length, 340, -1);
-        positions.set(id, { ...p, role: 'indirect' });
-    });
-
-    indirectToPositiveX.forEach((id, i) => {
-        const p = fibonacciSpreadHalfSpace(i, indirectToPositiveX.length, 340, 1);
-        positions.set(id, { ...p, role: 'indirect' });
-    });
-
-    // One-time deterministic relaxation so no two nodes are closer than 36 units
-    runDeterministicRelaxation(positions, selectedNodeId, 36, 40);
+    // Relaxation so no two cubes are closer than 44 units
+    runDeterministicRelaxation(positions, selectedNodeId, 44, 45);
 
     return positions;
+}
+
+function create3DLabelPill(
+    fileName: string,
+    folderName: string,
+    isSelected: boolean
+): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.Sprite();
+
+    const dpr = 2;
+    const fontTitle = `bold ${12 * dpr}px 'IBM Plex Mono', monospace`;
+    const fontFolder = `${10 * dpr}px 'IBM Plex Mono', monospace`;
+
+    ctx.font = fontTitle;
+    const titleW = ctx.measureText(fileName).width;
+
+    let folderW = 0;
+    if (folderName) {
+        ctx.font = fontFolder;
+        folderW = ctx.measureText(folderName).width;
+    }
+
+    const padX = 8 * dpr;
+    const padY = 5 * dpr;
+    const titleH = 14 * dpr;
+    const gap = 3 * dpr;
+    const folderH = folderName ? 11 * dpr : 0;
+
+    const contentW = Math.max(titleW, folderW);
+    const contentH = folderName ? (titleH + gap + folderH) : titleH;
+
+    const w = Math.ceil(contentW + padX * 2);
+    const h = Math.ceil(contentH + padY * 2);
+
+    canvas.width = w;
+    canvas.height = h;
+
+    // Dark translucent pill: rgba(16, 22, 26, 0.85)
+    ctx.fillStyle = 'rgba(16, 22, 26, 0.85)';
+    ctx.beginPath();
+    ctx.roundRect(0.5 * dpr, 0.5 * dpr, w - 1 * dpr, h - 1 * dpr, 5 * dpr);
+    ctx.fill();
+
+    // 1px hairline border: rgba(255, 255, 255, 0.15)
+    ctx.strokeStyle = isSelected ? 'rgba(79, 209, 181, 0.65)' : 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1 * dpr;
+    ctx.stroke();
+
+    // Line 1: file name (white text, mono 12px)
+    ctx.font = fontTitle;
+    ctx.fillStyle = isSelected ? '#FFFFFF' : '#E8EAE6';
+    ctx.textBaseline = 'top';
+    const titleX = padX + (contentW - titleW) / 2;
+    ctx.fillText(fileName, titleX, padY);
+
+    // Line 2: folder muted (mono 10px)
+    if (folderName) {
+        ctx.font = fontFolder;
+        ctx.fillStyle = '#8A918C';
+        const folderX = padX + (contentW - folderW) / 2;
+        ctx.fillText(folderName, folderX, padY + titleH + gap);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.minFilter = THREE.LinearFilter;
+    const spriteMat = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false
+    });
+    const sprite = new THREE.Sprite(spriteMat);
+
+    // Scale in 3D world units:
+    const aspect = w / h;
+    const worldHeight = folderName ? 7.2 : 5.0;
+    sprite.scale.set(worldHeight * aspect, worldHeight, 1);
+
+    (sprite as any).userData = {
+        boxWidth: Math.max(70, w / dpr),
+        boxHeight: Math.max(24, h / dpr)
+    };
+
+    return sprite;
 }
 
 function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
@@ -2354,7 +2430,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             } else if (role === 'imports') {
                 color = '#4FD1B5';
             } else if (role === 'importedBy') {
-                color = '#E3A04A';
+                color = '#F0B35F';
             } else if (role === 'calls') {
                 color = '#6F8F9A';
             } else if (role === 'indirect') {
@@ -2362,7 +2438,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             } else {
                 if (n.type === 'repository') color = '#E8EAE6';
                 else if (n.type === 'file') color = '#4FD1B5';
-                else if (n.type === 'class') color = '#E3A04A';
+                else if (n.type === 'class') color = '#F0B35F';
                 else color = '#8A918C';
             }
 
@@ -2420,7 +2496,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         color = '#4FD1B5';
                         edgeRole = 'imports';
                     } else if (e.to === selectedNodeId) {
-                        color = '#E3A04A';
+                        color = '#F0B35F';
                         edgeRole = 'importedBy';
                     } else {
                         color = '#8A918C';
@@ -2480,6 +2556,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return new Set(sorted.slice(0, 8).map(n => n.id));
     }, [graphData.nodes]);
 
+    // Precompute top 3 highest-risk direct nodes for 0.9 edge opacity
+    const top3RiskNodeIds = useMemo(() => {
+        if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
+        const directNodes = graphData.nodes.filter(n => n.role === 'imports' || n.role === 'importedBy' || n.role === 'calls');
+        const sorted = [...directNodes].sort((a, b) => (b.score || 0) - (a.score || 0) || (b.cubeSize || 0) - (a.cubeSize || 0));
+        return new Set(sorted.slice(0, 3).map(n => n.id));
+    }, [graphData.nodes]);
+
     // Center 3D camera on visible nodes bounding box (~75% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
@@ -2489,7 +2573,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
 
-    // Keep 3D sprite labels constant screen size (fixed 12px font) and hide overlapping ones (check every ~200ms)
+    // Hide overlapping lower-priority 3D sprite labels (check every ~150ms)
     useEffect(() => {
         if (viewMode !== '3D') return;
         const tmpVec = new THREE.Vector3();
@@ -2502,15 +2586,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 if (scene && camera) {
                     const w = dimensions.width || (typeof window !== 'undefined' ? window.innerWidth : 800);
                     const h = dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
-                    const screenPositions: Array<{ x: number; y: number; sprite: any; priority: number }> = [];
+                    const screenPositions: Array<{ x: number; y: number; sprite: any; priority: number; boxW: number; boxH: number }> = [];
 
                     scene.traverse((obj: any) => {
-                        if (obj.isSprite && obj.textHeight !== undefined && obj.userData?.priority !== undefined) {
-                            const dist = camera.position.distanceTo(obj.getWorldPosition(tmpVec));
-                            const fovRad = ((camera.fov || 45) * Math.PI) / 180;
-                            const targetHeight = 2 * dist * Math.tan(fovRad / 2) * (12 / Math.max(1, h));
-                            obj.textHeight = Math.max(0.1, targetHeight);
-
+                        if (obj.isSprite && obj.userData?.priority !== undefined) {
+                            obj.getWorldPosition(tmpVec);
                             const screenPos = tmpVec.clone().project(camera);
                             const screenX = (screenPos.x + 1) * w / 2;
                             const screenY = (-screenPos.y + 1) * h / 2;
@@ -2518,21 +2598,26 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                                 x: screenX,
                                 y: screenY,
                                 sprite: obj,
-                                priority: (obj.userData?.priority as number) || 1
+                                priority: (obj.userData?.priority as number) || 1,
+                                boxW: (obj.userData?.boxWidth as number) || 80,
+                                boxH: (obj.userData?.boxHeight as number) || 28
                             });
                         }
                     });
 
                     screenPositions.sort((a, b) => b.priority - a.priority);
 
-                    const drawn: Array<{ x: number; y: number }> = [];
+                    const drawn: Array<{ x: number; y: number; boxW: number; boxH: number }> = [];
                     for (const item of screenPositions) {
-                        const overlaps = drawn.some(d => Math.abs(d.x - item.x) < 80 && Math.abs(d.y - item.y) < 24);
+                        const overlaps = drawn.some(d =>
+                            Math.abs(d.x - item.x) < (d.boxW + item.boxW) * 0.48 &&
+                            Math.abs(d.y - item.y) < (d.boxH + item.boxH) * 0.48
+                        );
                         if (overlaps) {
                             item.sprite.visible = false;
                         } else {
                             item.sprite.visible = true;
-                            drawn.push({ x: item.x, y: item.y });
+                            drawn.push(item);
                         }
                     }
                 }
@@ -2540,7 +2625,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         };
 
         updateSprites();
-        const intervalId = setInterval(updateSprites, 200);
+        const intervalId = setInterval(updateSprites, 150);
         return () => clearInterval(intervalId);
     }, [viewMode, dimensions]);
 
@@ -2771,6 +2856,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     warmupTicks={0}
                     linkThreeObject={(link: any) => {
                         const isIndirect = link.edgeRole === 'indirect';
+                        const sourceId = link.source?.id || link.sourceId;
+                        const targetId = link.target?.id || link.targetId;
+                        const isTop3 = top3RiskNodeIds.has(sourceId) || top3RiskNodeIds.has(targetId);
                         const group = new THREE.Group();
 
                         // Line geometry between two points
@@ -2782,22 +2870,23 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const lineMat = new THREE.LineBasicMaterial({
                             color: colorHex,
                             transparent: true,
-                            opacity: isIndirect ? 0.40 : 0.75,
-                            linewidth: 1.5,
+                            opacity: isIndirect ? 0.40 : (isTop3 ? 0.90 : 0.60),
+                            linewidth: 2,
                             depthTest: true
                         });
                         const line = new THREE.Line(geom, lineMat);
                         group.add(line);
 
-                        // Arrowhead cone pointing towards target (imported end)
-                        // Direct links show arrow; indirect does not need cone or small cone
-                        const coneGeo = new THREE.ConeGeometry(3, 7, 8);
+                        // Arrowhead cone 10 units long pointing towards target (imported end)
+                        const coneLength = 10;
+                        const coneRadius = 3.5;
+                        const coneGeo = new THREE.ConeGeometry(coneRadius, coneLength, 8);
                         // Rotate cone so its tip points along +Z axis
                         coneGeo.rotateX(Math.PI / 2);
                         const coneMat = new THREE.MeshBasicMaterial({
                             color: colorHex,
                             transparent: true,
-                            opacity: isIndirect ? 0.40 : 0.85,
+                            opacity: isIndirect ? 0.40 : (isTop3 ? 0.90 : 0.60),
                             depthTest: true
                         });
                         const coneMesh = new THREE.Mesh(coneGeo, coneMat);
@@ -2821,32 +2910,52 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             group.visible = true;
                         }
 
-                        // Update line endpoints
-                        const positions = userData.geom.attributes.position.array;
-                        positions[0] = start.x;
-                        positions[1] = start.y;
-                        positions[2] = start.z;
-                        positions[3] = end.x;
-                        positions[4] = end.y;
-                        positions[5] = end.z;
-                        userData.geom.attributes.position.needsUpdate = true;
+                        // Edges start at cube border, not center, so lines do not merge into one blob at selected cube
+                        const sourceCubeSize = link.source?.cubeSize || (link.source?.role === 'center' ? 30 : 14);
+                        const targetCubeSize = link.target?.cubeSize || (link.target?.role === 'center' ? 30 : 14);
+                        const sourceBorderOffset = sourceCubeSize / 2;
+                        const targetBorderOffset = targetCubeSize / 2;
+                        const coneLength = 10;
 
-                        // Position arrowhead cone along edge towards target, stopping just outside target cube
-                        const targetCubeSize = link.target?.cubeSize || 14;
                         const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
                         const dist = dir.length();
+
                         if (dist > 0.001) {
                             dir.normalize();
-                            // Place cone tip slightly ahead of target surface
-                            const offsetFromTarget = (targetCubeSize / 2) + 4;
-                            const conePos = new THREE.Vector3(
-                                end.x - dir.x * offsetFromTarget,
-                                end.y - dir.y * offsetFromTarget,
-                                end.z - dir.z * offsetFromTarget
-                            );
-                            userData.coneMesh.position.copy(conePos);
-                            userData.coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-                            userData.coneMesh.visible = !isIndirect && dist > offsetFromTarget;
+
+                            // Start point at source cube border
+                            const startX = dist > sourceBorderOffset ? start.x + dir.x * sourceBorderOffset : start.x;
+                            const startY = dist > sourceBorderOffset ? start.y + dir.y * sourceBorderOffset : start.y;
+                            const startZ = dist > sourceBorderOffset ? start.z + dir.z * sourceBorderOffset : start.z;
+
+                            // End point of line: at cone base (or target border if no cone)
+                            const lineEndOffset = !isIndirect ? targetBorderOffset + coneLength : targetBorderOffset;
+                            const endX = dist > lineEndOffset ? end.x - dir.x * lineEndOffset : end.x;
+                            const endY = dist > lineEndOffset ? end.y - dir.y * lineEndOffset : end.y;
+                            const endZ = dist > lineEndOffset ? end.z - dir.z * lineEndOffset : end.z;
+
+                            const positions = userData.geom.attributes.position.array;
+                            positions[0] = startX;
+                            positions[1] = startY;
+                            positions[2] = startZ;
+                            positions[3] = endX;
+                            positions[4] = endY;
+                            positions[5] = endZ;
+                            userData.geom.attributes.position.needsUpdate = true;
+
+                            // Position cone so its tip touches target cube border: cone center is at targetBorderOffset + coneLength/2
+                            if (!isIndirect && dist > targetBorderOffset + coneLength) {
+                                const coneCenterDist = targetBorderOffset + coneLength / 2;
+                                userData.coneMesh.position.set(
+                                    end.x - dir.x * coneCenterDist,
+                                    end.y - dir.y * coneCenterDist,
+                                    end.z - dir.z * coneCenterDist
+                                );
+                                userData.coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+                                userData.coneMesh.visible = true;
+                            } else {
+                                userData.coneMesh.visible = false;
+                            }
                         }
 
                         return true;
@@ -2879,7 +2988,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.75)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
-                        const isSelected = node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
+                        const isSelected = !!(node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile)));
                         const isHovered = hovered3DNodeId === node.id;
                         const isIndirect = node.role === 'indirect';
                         const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
@@ -2889,11 +2998,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             ? node.cubeSize
                             : (isSelected ? 30 : isDirect ? 12 : 8);
 
-                        // Colours: selected #E8EAE6, Imports #4FD1B5, Imported by #E3A04A, Indirect #8A918C, Calls #6F8F9A
+                        // Colours: selected #E8EAE6, Imports #4FD1B5, Imported by #F0B35F, Indirect #8A918C, Calls #6F8F9A
                         let hexColor = 0x8A918C;
                         if (isSelected) hexColor = 0xE8EAE6;
                         else if (node.role === 'imports') hexColor = 0x4FD1B5;
-                        else if (node.role === 'importedBy') hexColor = 0xE3A04A;
+                        else if (node.role === 'importedBy') hexColor = 0xF0B35F;
                         else if (node.role === 'calls') hexColor = 0x6F8F9A;
                         else if (node.role === 'indirect') hexColor = 0x8A918C;
 
@@ -2933,7 +3042,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             group.add(glowSprite);
                         }
 
-                        // MeshStandardMaterial (metalness 0.2, roughness 0.5, emissive = same colour at 25%)
+                        // MeshStandardMaterial with polygonOffset to eliminate z-fighting
                         const threeColor = new THREE.Color(hexColor);
                         const emissiveColor = isSelected ? new THREE.Color(0x4FD1B5) : threeColor.clone();
                         const emissiveIntensity = isHovered ? 0.6 : (isSelected ? 0.45 : 0.25);
@@ -2948,50 +3057,67 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             transparent: true,
                             opacity,
                             polygonOffset: true,
-                            polygonOffsetFactor: 1,
-                            polygonOffsetUnits: 1
+                            polygonOffsetFactor: 1.5,
+                            polygonOffsetUnits: 1.5
                         });
                         const cubeMesh = new THREE.Mesh(cubeGeo, cubeMat);
                         (cubeMesh as any).userData = { isRotatableCube: true };
                         group.add(cubeMesh);
 
-                        // EdgesGeometry outline for sharp facet definition (polygonOffset avoids z-fighting with cube faces)
+                        // EdgesGeometry outline with inverse polygonOffset and slight scale
                         const edgesGeo = new THREE.EdgesGeometry(cubeGeo);
                         const edgesMat = new THREE.LineBasicMaterial({
                             color: isSelected ? 0x4FD1B5 : (isHovered ? 0xFFFFFF : hexColor),
                             transparent: true,
                             opacity: Math.max(0.4, opacity),
                             polygonOffset: true,
-                            polygonOffsetFactor: -1,
-                            polygonOffsetUnits: -1
+                            polygonOffsetFactor: -1.5,
+                            polygonOffsetUnits: -1.5
                         });
                         const edgesLines = new THREE.LineSegments(edgesGeo, edgesMat);
+                        edgesLines.scale.set(1.002, 1.002, 1.002);
                         group.add(edgesLines);
 
-                        // Labels: dark pill sprite offset above-right of the cube
+                        // Labels: dark translucent pill (rgba(16,22,26,.85), 1px hairline, white text, mono 12px), two lines
                         const isTop8Direct = top8DirectNodeIds.has(node.id);
                         const shouldShowLabel = isSelected || isHovered || (isDirect && isTop8Direct);
 
                         if (shouldShowLabel && (!isIndirect || isHovered)) {
-                            const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
-                            const baseName = node.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
+                            const rawPath = node.path || (node.type === 'file' ? node.id : '') || node.id || '';
+                            const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean);
+                            const fileName = parts.pop() || node.name || node.id;
+                            const folderName = parts.length > 0 ? parts.slice(-2).join('/') : '';
 
-                            const sprite = new SpriteText(baseName);
-                            sprite.fontFace = 'IBM Plex Mono';
-                            sprite.textHeight = 3.2;
-                            sprite.color = '#E8EAE6';
-                            sprite.backgroundColor = '#10161A';
-                            sprite.borderRadius = 3;
-                            sprite.padding = [4, 2];
-                            sprite.borderColor = 'rgba(255, 255, 255, 0.15)';
-                            sprite.borderWidth = 0.5;
-                            // Placed offset above-right of the cube
-                            sprite.position.x = cubeSize * 0.8 + 6;
-                            sprite.position.y = cubeSize * 0.8 + 5;
-                            sprite.position.z = 0;
+                            const sprite = create3DLabelPill(fileName, folderName, isSelected);
+
+                            // Placement:
+                            // Selected cube label goes BELOW the cube
+                            // Direct cubes: offset away from center so cube stays visible
+                            if (isSelected) {
+                                sprite.position.set(0, -(cubeSize / 2 + 8), 0);
+                            } else {
+                                const nx = typeof node.x === 'number' ? node.x : 0;
+                                const ny = typeof node.y === 'number' ? node.y : 0;
+                                const nz = typeof node.z === 'number' ? node.z : 0;
+                                const distFromOrigin = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                                const offsetDist = (cubeSize / 2) + 12;
+
+                                if (distFromOrigin > 0.01) {
+                                    const dirOutX = nx / distFromOrigin;
+                                    const dirOutY = ny / distFromOrigin;
+                                    const dirOutZ = nz / distFromOrigin;
+                                    sprite.position.set(
+                                        dirOutX * offsetDist,
+                                        dirOutY * offsetDist + 3,
+                                        dirOutZ * offsetDist
+                                    );
+                                } else {
+                                    sprite.position.set(cubeSize * 0.8 + 6, cubeSize * 0.8 + 5, 0);
+                                }
+                            }
+
                             sprite.renderOrder = 999;
-                            sprite.material.depthTest = false;
-                            if (opacity < 0.5) {
+                            if (opacity < 0.5 && sprite.material) {
                                 sprite.material.opacity = opacity;
                             }
 
@@ -3000,7 +3126,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                             if (isHovered) priority += 500000;
                             if (isSelected) priority += 1000000;
 
-                            (sprite as any).userData = { priority };
+                            (sprite as any).userData = {
+                                priority,
+                                boxWidth: (sprite as any).userData?.boxWidth || 80,
+                                boxHeight: (sprite as any).userData?.boxHeight || 28
+                            };
                             group.add(sprite);
                         }
 
@@ -3020,8 +3150,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 </div>
                 <div className="flex items-center gap-1.5">
                     <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                        <line x1="1" y1="4" x2="13" y2="4" stroke="#E3A04A" strokeWidth="1.5" />
-                        <polygon points="12,1.5 17,4 12,6.5" fill="#E3A04A" />
+                        <line x1="1" y1="4" x2="13" y2="4" stroke="#F0B35F" strokeWidth="1.5" />
+                        <polygon points="12,1.5 17,4 12,6.5" fill="#F0B35F" />
                     </svg>
                     <span className="text-[#E8EAE6]">Imported by</span>
                 </div>
