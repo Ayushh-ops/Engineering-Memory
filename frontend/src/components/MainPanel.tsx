@@ -1505,19 +1505,20 @@ function fibonacciSpreadHalfSpace(
     const yNorm = 1 - (index / Math.max(1, count - 1)) * 2;
     // z in [-0.8, 0.8]
     const zNorm = 0.8 * Math.sin(index * goldenAngle);
-    const planeRadiusSq = Math.max(0.04, 1 - yNorm * yNorm * 0.45 - zNorm * zNorm * 0.45);
+    // x in half space so x^2 + y^2 + z^2 ~ 1
+    const planeRadiusSq = Math.max(0.04, 1 - yNorm * yNorm - zNorm * zNorm);
     const xNorm = Math.sqrt(planeRadiusSq);
 
     const x = direction * radius * xNorm;
-    const y = radius * yNorm * 0.75;
-    const z = radius * zNorm * 0.75;
+    const y = radius * yNorm;
+    const z = radius * zNorm;
     return { x, y, z };
 }
 
 function runDeterministicRelaxation(
     positions: Map<string, Hub3DNodePos>,
     fixedId: string | null,
-    minDistance = 40,
+    minDistance = 36,
     iterations = 35
 ) {
     const ids = Array.from(positions.keys());
@@ -1715,8 +1716,8 @@ function compute3DHubLayout(
         positions.set(id, { ...p, role: 'indirect' });
     });
 
-    // One-time deterministic relaxation so no two nodes are closer than 40 units
-    runDeterministicRelaxation(positions, selectedNodeId, 40, 40);
+    // One-time deterministic relaxation so no two nodes are closer than 36 units
+    runDeterministicRelaxation(positions, selectedNodeId, 36, 40);
 
     return positions;
 }
@@ -1796,7 +1797,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setShowAllNodes(false);
         setResetTrigger(prev => prev + 1);
         if (viewMode === '3D' && fgInstanceRef.current) {
-            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.70);
+            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.75);
         }
     }, [setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
 
@@ -2072,7 +2073,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 });
             }
             if (viewMode === '3D' && fgInstanceRef.current) {
-                fitCameraToVisibleNodes(graphData.nodes, 0.70);
+                fitCameraToVisibleNodes(graphData.nodes, 0.75);
             }
         }, 100);
         return () => clearTimeout(timer);
@@ -2109,7 +2110,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
         if (viewMode === '3D' && fgInstanceRef.current) {
             setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.4);
+                fitCameraToVisibleNodes(graphData.nodes, 0.75);
             }, 100);
         }
     }, [selectedFile, setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
@@ -2128,7 +2129,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         handleSelectNode(node);
     }, [handleSelectNode]);
 
-    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.70) => {
+    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.75) => {
         const fg = fgInstanceRef.current;
         if (!fg || typeof fg.camera !== 'function') return;
 
@@ -2257,28 +2258,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     pointLight.position.set(0, 0, 0);
                     scene.add(pointLight);
 
-                    // Starfield: ~80 faint grey dots at radius 600-900
-                    const starCount = 80;
-                    const starPositions = new Float32Array(starCount * 3);
-                    for (let i = 0; i < starCount; i++) {
-                        const r = 600 + Math.random() * 300;
-                        const theta = Math.random() * Math.PI * 2;
-                        const phi = Math.acos(2 * Math.random() - 1);
-                        starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-                        starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-                        starPositions[i * 3 + 2] = r * Math.cos(phi);
+                    // Faint grid on ground plane
+                    const gridHelper = new THREE.GridHelper(800, 40, 0x1F292E, 0x10161A);
+                    gridHelper.position.y = -120;
+                    if (gridHelper.material instanceof THREE.Material) {
+                        gridHelper.material.transparent = true;
+                        gridHelper.material.opacity = 0.25;
                     }
-                    const starGeo = new THREE.BufferGeometry();
-                    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-                    const starMat = new THREE.PointsMaterial({
-                        color: 0x8A918C,
-                        size: 2.2,
-                        transparent: true,
-                        opacity: 0.35,
-                        depthWrite: false
-                    });
-                    const starPoints = new THREE.Points(starGeo, starMat);
-                    scene.add(starPoints);
+                    scene.add(gridHelper);
 
                     // Idle cube rotation loop (0.002 rad/frame, disabled if prefers-reduced-motion)
                     const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2303,7 +2290,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             }
 
             setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.70);
+                fitCameraToVisibleNodes(graphData.nodes, 0.75);
             }, 300);
         }
     }, [graphData.nodes, fitCameraToVisibleNodes]);
@@ -2332,6 +2319,32 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             }
         });
 
+        const nodeRiskMap = new Map<string, number>();
+        for (const n of visible3DNodes) {
+            let sc = 0;
+            if (graph) {
+                try {
+                    sc = computeRisk(n.id, graph).score || 0;
+                } catch {
+                    sc = 0;
+                }
+            }
+            if (sc === 0) {
+                sc = nodeConnMap.get(n.id) || 0;
+            }
+            nodeRiskMap.set(n.id, sc);
+        }
+
+        let maxDirectScore = 1;
+        for (const n of visible3DNodes) {
+            const pos = layoutPositions.get(n.id);
+            const role = pos?.role;
+            if (role === 'imports' || role === 'importedBy' || role === 'calls') {
+                const sc = nodeRiskMap.get(n.id) || 0;
+                if (sc > maxDirectScore) maxDirectScore = sc;
+            }
+        }
+
         const nodes = visible3DNodes.map((n: any) => {
             const pos = layoutPositions.get(n.id) || { x: 0, y: 0, z: 0, role: 'default' };
             const role = pos.role;
@@ -2357,6 +2370,18 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const baseName = n.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
 
+            const score = nodeRiskMap.get(n.id) || 0;
+            const isCenter = role === 'center';
+            const isDirect = role === 'imports' || role === 'importedBy' || role === 'calls';
+            const isIndirect = role === 'indirect';
+            const cubeSize = isCenter
+                ? 30
+                : isDirect
+                ? Math.max(8, Math.round(12 + 14 * (score / maxDirectScore)))
+                : isIndirect
+                ? 8
+                : Math.max(8, Math.round(12 + 14 * (score / maxDirectScore)));
+
             return {
                 id: n.id,
                 name: baseName,
@@ -2364,6 +2389,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 color,
                 role,
                 type: n.type,
+                score,
+                cubeSize,
                 x: pos.x,
                 y: pos.y,
                 z: pos.z,
@@ -2438,21 +2465,21 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             });
 
         setGraphData({ nodes, links });
-    }, [displayGraph, selectedFile]);
+    }, [displayGraph, selectedFile, graph]);
 
-    // Precompute top 10 direct nodes by degree for persistent 3D label display
-    const top10DirectNodeIds = useMemo(() => {
+    // Precompute top 8 direct nodes by size/score for persistent 3D label display
+    const top8DirectNodeIds = useMemo(() => {
         if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
         const directNodes = graphData.nodes.filter(n => n.role === 'imports' || n.role === 'importedBy' || n.role === 'calls');
-        const sorted = [...directNodes].sort((a, b) => (b.connections || 0) - (a.connections || 0));
-        return new Set(sorted.slice(0, 10).map(n => n.id));
+        const sorted = [...directNodes].sort((a, b) => (b.cubeSize || 0) - (a.cubeSize || 0) || (b.score || 0) - (a.score || 0));
+        return new Set(sorted.slice(0, 8).map(n => n.id));
     }, [graphData.nodes]);
 
-    // Center 3D camera on visible nodes bounding box (~55% of canvas) when selectedFile changes
+    // Center 3D camera on visible nodes bounding box (~75% of canvas) when selectedFile changes
     useEffect(() => {
         if (viewMode !== '3D' || !fgInstanceRef.current) return;
         const timer = setTimeout(() => {
-            fitCameraToVisibleNodes(graphData.nodes, 0.55);
+            fitCameraToVisibleNodes(graphData.nodes, 0.75);
         }, 150);
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
@@ -2737,7 +2764,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     enableNodeDrag={false}
                     cooldownTicks={0}
                     warmupTicks={0}
-                    linkDirectionalArrowLength={6}
+                    linkDirectionalArrowLength={(link: any) => {
+                        const isIndirect = link.edgeRole === 'indirect';
+                        if (isIndirect) {
+                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
+                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
+                            return isConnectedToHoveredOrSelected ? 6 : 0;
+                        }
+                        return 6;
+                    }}
                     linkDirectionalArrowRelPos={1}
                     linkDirectionalArrowColor={(link: any) => {
                         if (hovered3DNodeId) {
@@ -2747,6 +2782,12 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         return link.color || '#8A918C';
                     }}
                     linkColor={(link: any) => {
+                        const isIndirect = link.edgeRole === 'indirect';
+                        if (isIndirect) {
+                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
+                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
+                            return isConnectedToHoveredOrSelected ? 'rgba(138, 145, 140, 0.40)' : 'transparent';
+                        }
                         if (hovered3DNodeId) {
                             const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
                             return isConnected ? (link.color || '#E8EAE6') : 'rgba(138, 145, 140, 0.15)';
@@ -2754,16 +2795,27 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         return link.color || '#8A918C';
                     }}
                     linkWidth={(link: any) => {
+                        const isIndirect = link.edgeRole === 'indirect';
+                        if (isIndirect) {
+                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId)) ||
+                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.source === selectedFile || link.target === selectedFile));
+                            return isConnectedToHoveredOrSelected ? 1.5 : 0;
+                        }
                         if (hovered3DNodeId) {
                             const isConnected = link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.source === hovered3DNodeId || link.target === hovered3DNodeId;
-                            return isConnected ? 2.2 : 1.2;
+                            return isConnected ? 2.2 : 1.5;
                         }
-                        return 1.2;
+                        return 1.5;
                     }}
-                    linkOpacity={hovered3DNodeId ? 0.95 : 0.55}
-                    linkDirectionalParticles={(typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : 2}
-                    linkDirectionalParticleSpeed={0.003}
-                    linkDirectionalParticleWidth={1.8}
+                    linkOpacity={hovered3DNodeId ? 0.95 : 0.70}
+                    linkDirectionalParticles={(link: any) => {
+                        if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return 0;
+                        const isIndirect = link.edgeRole === 'indirect';
+                        if (isIndirect) return 0;
+                        return 2;
+                    }}
+                    linkDirectionalParticleSpeed={0.0018}
+                    linkDirectionalParticleWidth={2.0}
                     linkDirectionalParticleColor={(link: any) => link.color || '#4FD1B5'}
                     backgroundColor="#07090A"
                     onNodeHover={(node: any) => {
@@ -2790,7 +2842,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     }}
                     onNodeClick={handleNodeClick3D}
                     onBackgroundClick={() => handleSelectNode(null)}
-                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.70)}
+                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.75)}
                     nodeThreeObject={(node: any) => {
                         const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
                         const isSelected = node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile));
@@ -2798,8 +2850,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         const isIndirect = node.role === 'indirect';
                         const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
 
-                        // Sizes: selected 22, direct 12, indirect 7
-                        const cubeSize = isSelected ? 22 : isDirect ? 12 : 7;
+                        // Sizes by importance: selected 30; direct 12 + 14 * (score / maxScore); indirect 8 (minimum 8)
+                        const cubeSize = typeof node.cubeSize === 'number'
+                            ? node.cubeSize
+                            : (isSelected ? 30 : isDirect ? 12 : 8);
 
                         // Colours: selected #E8EAE6, Imports #4FD1B5, Imported by #E3A04A, Indirect #8A918C, Calls #6F8F9A
                         let hexColor = 0x8A918C;
@@ -2875,8 +2929,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         group.add(edgesLines);
 
                         // Labels: dark pill sprite offset above-right of the cube
-                        const isTop10Direct = top10DirectNodeIds.has(node.id);
-                        const shouldShowLabel = isSelected || isHovered || (isDirect && isTop10Direct);
+                        const isTop8Direct = top8DirectNodeIds.has(node.id);
+                        const shouldShowLabel = isSelected || isHovered || (isDirect && isTop8Direct);
 
                         if (shouldShowLabel && (!isIndirect || isHovered)) {
                             const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
