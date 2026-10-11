@@ -5,14 +5,14 @@ import { buildRepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
-import { buildPrompt, detectLang, getLanguageDirective } from "./prompt-builder";
-import { AiAnswerService, isGroundedQuestion } from "./answer-service";
+import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction } from "./prompt-builder";
+import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps } from "./answer-service";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
     createOpenAIConfigFromEnvironment
 } from "./config";
-import { OpenAIProvider } from "./openai-provider";
+import { OpenAIProvider, StreamDelimiterFilter } from "./openai-provider";
 import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter } from "../routes/ai";
 import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
@@ -860,6 +860,153 @@ async function main(): Promise<void> {
     assert.ok(
         riskInstructions?.some((inst) => inst.includes("For risk questions, explain using the computed risk score")),
         "Expected risk instruction in provider call"
+    );
+
+    // 1. Evidence & follow-up parsing and validation
+    const rawAiAnswer = [
+        "The auth function validates credentials.",
+        '<<<EVIDENCE>>>[{"path":"src/auth.ts","line":1,"snippet":"export function auth()"},{"path":"src/unknown.ts","line":99}]<<<END_EVIDENCE>>>',
+        '<<<FOLLOWUPS>>>["How to test auth?","Where is formatUser defined?","What is validate?","Extra question to drop"]<<<END_FOLLOWUPS>>>'
+    ].join("\n");
+
+    const parsedEvidenceAndFollowUps = parseAndValidateEvidenceAndFollowUps(
+        rawAiAnswer,
+        [{ path: "src/auth.ts" }],
+        "src/auth.ts",
+        new Map([["src/auth.ts", ["import { formatUser } from './user';", "export function auth() { return formatUser(); }"]]])
+    );
+
+    assert.equal(parsedEvidenceAndFollowUps.cleanAnswer, "The auth function validates credentials.");
+    assert.equal(parsedEvidenceAndFollowUps.evidence.length, 1);
+    assert.equal(parsedEvidenceAndFollowUps.evidence[0].path, "src/auth.ts");
+    assert.equal(parsedEvidenceAndFollowUps.evidence[0].line, 1);
+    assert.equal(parsedEvidenceAndFollowUps.followUps.length, 3);
+    assert.equal(parsedEvidenceAndFollowUps.followUps[0], "How to test auth?");
+    assert.equal(parsedEvidenceAndFollowUps.citations.length, 1);
+    assert.equal(parsedEvidenceAndFollowUps.citations[0].path, "src/auth.ts");
+
+    // 2. Stream delimiter withholding
+    const streamedTokens: string[] = [];
+    const filter = new StreamDelimiterFilter((token) => streamedTokens.push(token));
+    const chunks = [
+        "Auth ",
+        "service",
+        "<",
+        "<",
+        "<",
+        "EVIDENCE",
+        ">>>",
+        '[{"path":"src/auth.ts","line":1}]',
+        "<",
+        "<<END_EVIDENCE>>>",
+        " ready."
+    ];
+    for (const chunk of chunks) {
+        filter.feed(chunk);
+    }
+    filter.flush();
+    const emittedText = streamedTokens.join("");
+    assert.equal(emittedText, "Auth service ready.");
+    assert.ok(!emittedText.includes("<<<"));
+    assert.ok(!emittedText.includes("EVIDENCE"));
+
+    // 3. Provider fallback chain on 429
+    const originalFetchForFallback = globalThis.fetch;
+    const fetchCalls: string[] = [];
+    try {
+        globalThis.fetch = async (url: any, init: any) => {
+            const body = JSON.parse(init?.body || "{}");
+            fetchCalls.push(body.model);
+            if (body.model === "openai/gpt-oss-120b") {
+                return new Response(JSON.stringify({ error: { message: "Rate limit reached" } }), {
+                    status: 429,
+                    headers: { "retry-after": "5", "content-type": "application/json" }
+                });
+            }
+            if (body.model === "openai/gpt-oss-20b") {
+                return new Response(JSON.stringify({
+                    choices: [{ message: { content: "Fallback model answer." } }]
+                }), {
+                    status: 200,
+                    headers: { "content-type": "application/json" }
+                });
+            }
+            return new Response("Not found", { status: 404 });
+        };
+
+        OpenAIProvider.clearCooldowns();
+        const fallbackProvider = new OpenAIProvider({
+            apiKey: "test-groq-key",
+            model: "openai/gpt-oss-120b",
+            baseUrl: "https://api.groq.com/openai/v1"
+        });
+        const fallbackRes = await fallbackProvider.answer({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "What does auth do?",
+            facts: { files: [{ path: "src/auth.ts" }], commits: [] }
+        });
+
+        assert.equal(fallbackRes.status, "ok");
+        assert.equal(fallbackRes.answer, "Fallback model answer.");
+        assert.equal(fallbackRes.usedContext?.model, "openai/gpt-oss-20b");
+        assert.deepEqual(fetchCalls, ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]);
+    } finally {
+        globalThis.fetch = originalFetchForFallback;
+        OpenAIProvider.clearCooldowns();
+    }
+
+    // 4. Cache hit
+    const cachingProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "Cached response text.",
+        citations: [{ type: "file", path: "src/auth.ts" }],
+        confidence: "high"
+    });
+    const cachingService = new AiAnswerService(cachingProvider);
+    const req1 = {
+        repository: "example/repository",
+        target: { type: "file" as const, path: "src/auth.ts" },
+        question: "How does caching work?",
+        graph,
+        allowInsufficientContext: true
+    };
+    const res1 = await cachingService.answer(req1);
+    assert.equal(res1.status, "ok");
+    assert.equal(res1.usedContext?.cached, false);
+    assert.equal(cachingProvider.calls.length, 1);
+
+    const res2 = await cachingService.answer(req1);
+    assert.equal(res2.status, "ok");
+    assert.equal(res2.usedContext?.cached, true);
+    assert.equal(cachingProvider.calls.length, 1);
+
+    // 5. Mode prompt inclusion
+    assert.ok(getModeInstruction("short").includes("maximum 4 bullets"));
+    assert.ok(getModeInstruction("detailed").includes("short summary followed by bullets"));
+    assert.ok(getModeInstruction("steps").includes("numbered step-by-step"));
+    assert.ok(getModeInstruction("simple").includes("plain-language explanation for beginner"));
+    assert.ok(getModeInstruction("review").includes("list risks, bugs and suggestions"));
+
+    const shortProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "Short answer bullets.",
+        citations: [],
+        confidence: "medium"
+    });
+    const shortService = new AiAnswerService(shortProvider);
+    await shortService.answer({
+        repository: "example/repository",
+        target: { type: "file" as const, path: "src/auth.ts" },
+        question: "Explain in short",
+        graph,
+        mode: "short",
+        allowInsufficientContext: true
+    });
+    const shortInstructions = shortProvider.calls[0]?.instructions;
+    assert.ok(
+        shortInstructions?.some((inst) => inst.includes("maximum 4 bullets")),
+        "Expected mode instruction for 'short' mode"
     );
 
     console.log("AI fixtures passed");

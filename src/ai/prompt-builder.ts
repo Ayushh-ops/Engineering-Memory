@@ -28,30 +28,59 @@ export function getLanguageDirective(lang: "hi" | "hinglish" | "en"): string {
     return `${directive} Keep file, function and variable names in English. Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.`;
 }
 
+export type LlmMode = "short" | "detailed" | "steps" | "simple" | "review";
+
+export function getModeInstruction(mode?: string): string {
+    switch (mode) {
+        case "short":
+            return "Format: maximum 4 bullets.";
+        case "steps":
+            return "Format: numbered step-by-step walkthrough.";
+        case "simple":
+            return "Format: plain-language explanation for beginner, no jargon, one analogy allowed.";
+        case "review":
+            return "Format: list risks, bugs and suggestions.";
+        case "detailed":
+        default:
+            return "Format: short summary followed by bullets with details.";
+    }
+}
+
+export function getSystemInstructions(mode?: string, additionalInstructions?: string[]): string[] {
+    return [
+        "You are a repository Q&A assistant.",
+        "Answer only from the supplied repository facts.",
+        "Do not invent repository facts.",
+        "Do not claim information that is absent from the supplied context.",
+        "Answer as much as the context allows and list missing facts under missingData.",
+        getModeInstruction(mode),
+        "Do not use markdown tables.",
+        "The answer text must cite files and lines (format path:line) ONLY for lines shown in context, and NEVER cite lines that are not in the context.",
+        'At the end of your answer, output evidence as a delimited block: <<<EVIDENCE>>>[{"path":"filepath","line":12}]<<<END_EVIDENCE>>> with only files and lines that support your answer.',
+        'Then output follow-up questions as a delimited block: <<<FOLLOWUPS>>>["question 1","question 2","question 3"]<<<END_FOLLOWUPS>>> (maximum 3 short questions, max 8 words each).',
+        "The answer text must NEVER contain <<< delimiters or delimiter blocks.",
+        "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.",
+        "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
+        "For greetings or small talk, reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
+        "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file.",
+        ...(additionalInstructions ?? [])
+    ];
+}
+
 export interface PromptInput {
     repository: string;
     target: AiRepositoryContext["target"];
     question: string;
     facts: AiRepositoryContext;
     instructions?: string[];
+    mode?: LlmMode;
 }
 
 export function buildPrompt(input: PromptInput): string {
     const lang = detectLang(input.question);
     const directive = getLanguageDirective(lang);
 
-    const instructions = [
-        "Answer only from the supplied repository facts.",
-        "Do not invent repository facts.",
-        "Do not claim information that is absent from the supplied context.",
-        "If the context is insufficient, explicitly say so.",
-        "Cite relevant file paths, symbol names, or commit SHAs when possible.",
-        "Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English.",
-        "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
-        "For greetings or small talk, reply briefly and do not explain the file.",
-        "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file.",
-        ...(input.instructions ?? [])
-    ];
+    const instructions = getSystemInstructions(input.mode, input.instructions);
 
     const questionWithDirective = input.question.includes(directive)
         ? input.question

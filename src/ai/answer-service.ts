@@ -1,11 +1,12 @@
+import crypto from "node:crypto";
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES, type AiRepositoryContext } from "./context";
 import { validateRepositoryContextConsistency } from "./consistency-validator";
-import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
+import type { LlmCitation, LlmEvidence, LlmMode, LlmProvider, LlmRequest, LlmResponse, LlmScope, LlmUsedContext } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
-import { detectLang, getLanguageDirective } from "./prompt-builder";
+import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
 
 export { detectLang, getLanguageDirective };
 
@@ -34,6 +35,10 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     dependents?: string[];
     recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>;
     owners?: any;
+    mode?: LlmMode;
+    scope?: LlmScope;
+    dependentFiles?: Array<{ path: string; content: string }>;
+    repoSha?: string;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -50,7 +55,6 @@ export function isGroundedQuestion(question: string, target: { type: string; pat
         target.sha
     ].filter((value): value is string => typeof value === "string" && value.length > 0);
 
-    // Treat "this", "ye", "yeh", "is file" as the currently selected file
     const filePronouns = [/\bthis\b/, /\bye\b/, /\byeh\b/, /\bis file\b/];
     const hasFilePronoun = filePronouns.some((re) => re.test(normalized));
 
@@ -103,27 +107,21 @@ export function isGroundedQuestion(question: string, target: { type: string; pat
 export function getGreetingOrSmallTalkResponse(question: string): string | null {
     const q = question.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
 
-    // English greetings
     if (/^(hi+|hello+|hey+|howdy|greetings|good\s+(morning|afternoon|evening|day))$/.test(q)) {
         return "Hello! How can I help you explore this codebase today?";
     }
-    // Hinglish greetings
     if (/^(namaste|namaskar|kya\s+haal(\s+hai)?|kaise\s+ho(\s+bhai)?|kya\s+chal\s+raha\s+hai|(hello|hi)\s+bhai)$/.test(q)) {
         return "Namaste! Main is codebase ko samajhne me aapki kya madad kar sakta hoon?";
     }
-    // Devanagari greetings
     if (/^(नमस्ते|नमस्कार|हेलो|हाय)$/.test(q)) {
         return "नमस्ते! मैं इस कोडबेस को समझने में आपकी क्या मदद कर सकता हूँ?";
     }
-    // English thanks
     if (/^(thanks?|thank\s+you|thx|ty|many\s+thanks|thanks\s+a\s+lot)$/.test(q)) {
         return "You're welcome! Let me know if you need anything else.";
     }
-    // Hinglish thanks
     if (/^(dhanyawad|dhanyavaad|shukriya|bahut\s+shukriya|shukriyaa)$/.test(q)) {
         return "Aapka swagat hai! Agar kuch aur puchhna ho toh zaroor batayein.";
     }
-    // Devanagari thanks
     if (/^(धन्यवाद|शुक्रिया)$/.test(q)) {
         return "आपका स्वागत है! यदि आपको कुछ और जानना हो तो बताएं।";
     }
@@ -134,7 +132,6 @@ export function getGreetingOrSmallTalkResponse(question: string): string | null 
 export function getCapabilityResponse(question: string): string | null {
     const q = question.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
 
-    // Hinglish capability questions: "tum kya kya kar sakte ho", "tum kya kar sakte ho", "aap kya kar sakte ho", etc.
     const isHinglishCap =
         /\b(tum|aap)?\s*(kya\s+kya|kya)\s*(kar\s+sakte\s+ho|kar\s+sakti\s+ho|kar\s+sakte\s+hain|kr\s+sakte\s+ho|kar\s+skte\s+ho|krskte\s+ho)\b/i.test(q) ||
         /\b(tum|aap)\s+(kya\s+karega|kya\s+karte\s+ho|kya\s+kar\s+rahe\s+ho)\b/i.test(q) ||
@@ -151,7 +148,6 @@ export function getCapabilityResponse(question: string): string | null {
         ].join("\n");
     }
 
-    // Devanagari capability questions
     const isDevanagariCap =
         /(\u0924\u0941\u092e|\u0906\u092a)?\s*(\u0915\u094d\u094f\u092f\u093e\s+\u0915\u094d\u094f\u092f\u093e|\u0915\u094d\u094f\u092f\u093e)\s*(\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u094b|\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u0948\u0902|\u0915\u0930\s+\u0938\u0915\u0924\u0940\s+\u0939\u094b)/i.test(q);
 
@@ -166,7 +162,6 @@ export function getCapabilityResponse(question: string): string | null {
         ].join("\n");
     }
 
-    // English capability questions: "what can you do", "what are your capabilities", "how can you help"
     const isEnglishCap =
         /^(what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|what\s+can\s+this\s+assistant\s+do|how\s+can\s+you\s+help(\s+me)?|what\s+are\s+you\s+able\s+to\s+do)\b/i.test(q) ||
         /\bwhat\s+(can\s+you\s+do|are\s+your\s+capabilities)\b/i.test(q);
@@ -185,8 +180,173 @@ export function getCapabilityResponse(question: string): string | null {
     return null;
 }
 
+export function parseAndValidateEvidenceAndFollowUps(
+    rawAnswer: string,
+    contextFiles: Array<{ path: string }>,
+    targetPath?: string,
+    fileLinesMap?: Map<string, string[]>
+): {
+    cleanAnswer: string;
+    evidence: LlmEvidence[];
+    followUps: string[];
+    citations: LlmCitation[];
+} {
+    let parsedEvidenceRaw: any[] = [];
+    let parsedFollowUpsRaw: any[] = [];
+
+    const evidenceMatch = rawAnswer.match(/<<<EVIDENCE>>>([\s\S]*?)<<<END_EVIDENCE>>>/);
+    if (evidenceMatch && evidenceMatch[1]) {
+        try {
+            const json = JSON.parse(evidenceMatch[1].trim());
+            if (Array.isArray(json)) parsedEvidenceRaw = json;
+        } catch {
+            // Malformed evidence JSON ignored
+        }
+    }
+
+    const followUpsMatch = rawAnswer.match(/<<<FOLLOWUPS>>>([\s\S]*?)<<<END_FOLLOWUPS>>>/);
+    if (followUpsMatch && followUpsMatch[1]) {
+        try {
+            const json = JSON.parse(followUpsMatch[1].trim());
+            if (Array.isArray(json)) parsedFollowUpsRaw = json;
+        } catch {
+            // Malformed followups JSON ignored
+        }
+    }
+
+    const cleanAnswer = rawAnswer
+        .replace(/<<<EVIDENCE>>>[\s\S]*?<<<END_EVIDENCE>>>/g, "")
+        .replace(/<<<FOLLOWUPS>>>[\s\S]*?<<<END_FOLLOWUPS>>>/g, "")
+        .replace(/<<<[\s\S]*?>>>/g, "")
+        .trim();
+
+    const knownPaths = new Map<string, string>();
+    const normalizePath = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+
+    for (const f of contextFiles) {
+        if (f.path) knownPaths.set(normalizePath(f.path), f.path);
+    }
+    if (targetPath) {
+        knownPaths.set(normalizePath(targetPath), targetPath);
+    }
+
+    const validEvidence: LlmEvidence[] = [];
+    const seenEvidence = new Set<string>();
+
+    for (const item of parsedEvidenceRaw) {
+        if (!item || typeof item.path !== "string") continue;
+        const normItemPath = normalizePath(item.path);
+        const canonicalPath = knownPaths.get(normItemPath);
+        if (!canonicalPath) continue;
+
+        let lineNum: number | undefined = undefined;
+        let snippet = typeof item.snippet === "string" ? item.snippet.trim().slice(0, 160) : undefined;
+
+        if (typeof item.line === "number" && item.line > 0) {
+            lineNum = Math.floor(item.line);
+            const lines = fileLinesMap?.get(normItemPath);
+            if (lines) {
+                if (lineNum > lines.length) {
+                    lineNum = undefined;
+                } else if (!snippet) {
+                    const lineText = lines[lineNum - 1] ?? "";
+                    snippet = lineText.trim().slice(0, 160);
+                }
+            }
+        }
+
+        const dedupKey = `${canonicalPath}:${lineNum ?? 0}:${item.endLine ?? 0}`;
+        if (seenEvidence.has(dedupKey)) continue;
+        seenEvidence.add(dedupKey);
+
+        validEvidence.push({
+            path: canonicalPath,
+            ...(lineNum !== undefined ? { line: lineNum } : {}),
+            ...(typeof item.endLine === "number" ? { endLine: item.endLine } : {}),
+            ...(snippet ? { snippet } : {})
+        });
+
+        if (validEvidence.length >= 6) break;
+    }
+
+    const followUps: string[] = [];
+    for (const q of parsedFollowUpsRaw) {
+        if (typeof q !== "string") continue;
+        const trimmed = q.trim();
+        if (!trimmed) continue;
+        const words = trimmed.split(/\s+/).slice(0, 8).join(" ");
+        followUps.push(words);
+        if (followUps.length >= 3) break;
+    }
+
+    const citations: LlmCitation[] = Array.from(new Set(validEvidence.map((e) => e.path))).map((p) => ({
+        type: "file" as const,
+        path: p
+    }));
+
+    return {
+        cleanAnswer,
+        evidence: validEvidence,
+        followUps,
+        citations
+    };
+}
+
+export class LruAnswerCache {
+    private cache = new Map<string, { result: AiAnswerResult; expiresAt: number }>();
+    private readonly maxSize = 200;
+    private readonly ttlMs = 10 * 60 * 1000;
+
+    public get(key: string): AiAnswerResult | null {
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() > entry.expiresAt) {
+            this.cache.delete(key);
+            return null;
+        }
+        this.cache.delete(key);
+        this.cache.set(key, entry);
+
+        const cloned: AiAnswerResult = JSON.parse(JSON.stringify(entry.result));
+        if (cloned.usedContext) {
+            cloned.usedContext.cached = true;
+        }
+        return cloned;
+    }
+
+    public set(key: string, result: AiAnswerResult): void {
+        if (this.cache.size >= this.maxSize) {
+            const oldestKey = this.cache.keys().next().value;
+            if (oldestKey) this.cache.delete(oldestKey);
+        }
+        this.cache.set(key, {
+            result: JSON.parse(JSON.stringify(result)),
+            expiresAt: Date.now() + this.ttlMs
+        });
+    }
+
+    public clear(): void {
+        this.cache.clear();
+    }
+}
+
 export class AiAnswerService {
+    public readonly cache = new LruAnswerCache();
+
     constructor(private readonly provider: LlmProvider) {}
+
+    private buildCacheKey(request: AiAnswerRequest, targetPath?: string): string {
+        const mode = request.mode || "detailed";
+        const scope = request.scope || "file";
+        const lang = detectLang(request.question);
+        const directive = getLanguageDirective(lang);
+        const normQ = request.question.trim().toLowerCase();
+        const repo = request.repoSha || request.repository;
+        return crypto
+            .createHash("sha256")
+            .update([repo, targetPath || "", normQ, mode, scope, directive].join("|"))
+            .digest("hex");
+    }
 
     async answer(request: AiAnswerRequest): Promise<AiAnswerResult> {
         if (!request || typeof request.question !== "string" || request.question.trim().length === 0) {
@@ -208,7 +368,9 @@ export class AiAnswerService {
                 status: "ok",
                 answer: greetingReply,
                 citations: [],
-                confidence: "high"
+                confidence: "high",
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -218,8 +380,27 @@ export class AiAnswerService {
                 status: "ok",
                 answer: capabilityReply,
                 citations: [],
-                confidence: "high"
+                confidence: "high",
+                followUps: [],
+                evidence: []
             };
+        }
+
+        const targetPath = request.target.type === "file"
+            ? request.target.path
+            : request.target.type === "symbol"
+                ? request.target.symbol.path
+                : undefined;
+
+        const cleanHistory = sanitizeHistory(request.history);
+        const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
+        const cacheKey = this.buildCacheKey(request, targetPath);
+
+        if (isHistoryEmpty) {
+            const cached = this.cache.get(cacheKey);
+            if (cached) {
+                return cached;
+            }
         }
 
         const result = assembleRepositoryContext(request.graph, { target: request.target, limits: request.limits });
@@ -233,7 +414,9 @@ export class AiAnswerService {
                     code: "invalid_graph",
                     message: "The requested context target was not found or is ambiguous."
                 },
-                missingData: [result.status === "missing" ? "target_missing" : "target_ambiguous"]
+                missingData: [result.status === "missing" ? "target_missing" : "target_ambiguous"],
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -252,7 +435,9 @@ export class AiAnswerService {
                     code: "invalid_graph",
                     message: "Impact paths or source evidence do not match the repository graph."
                 },
-                missingData: consistency.missingData ?? ["inconsistent_context"]
+                missingData: consistency.missingData ?? ["inconsistent_context"],
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -266,13 +451,18 @@ export class AiAnswerService {
             request.risk,
             request.dependents,
             request.recentCommits,
-            request.owners
+            request.owners,
+            {
+                question: request.question,
+                scope: request.scope,
+                dependentFiles: request.dependentFiles
+            }
         );
+
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
-            // Trim fileContent or evidence to fit within MAX_AI_CONTEXT_BYTES instead of refusing
-            if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
-                const trimBudget = 8000;
+            if (aiContext.fileContent && aiContext.fileContent.length > 6000) {
+                const trimBudget = 6000;
                 aiContext = {
                     ...aiContext,
                     fileContent: aiContext.fileContent.slice(0, trimBudget),
@@ -290,26 +480,21 @@ export class AiAnswerService {
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
                 citations: [],
                 confidence: "low",
-                missingData: ["question_requires_unavailable_repository_context"]
+                missingData: ["question_requires_unavailable_repository_context"],
+                followUps: [],
+                evidence: []
             };
         }
 
-        const cleanHistory = sanitizeHistory(request.history);
         const lang = detectLang(request.question);
         const directive = getLanguageDirective(lang);
         const promptQuestion = request.question.includes(directive)
             ? request.question
             : `${request.question}\n${directive}`;
 
-        const instructions = [
-            "Answer only from the supplied repository facts.",
-            "If the context is insufficient, say so explicitly.",
-            "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
-            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
-            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
-            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
+        const instructions = getSystemInstructions(request.mode, [
             directive
-        ];
+        ]);
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
@@ -320,7 +505,9 @@ export class AiAnswerService {
                 ...(cleanHistory && cleanHistory.length > 0 ? { history: cleanHistory } : {})
             },
             instructions,
-            history: cleanHistory
+            history: cleanHistory,
+            mode: request.mode,
+            scope: request.scope
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
@@ -331,7 +518,9 @@ export class AiAnswerService {
                     status: "ok",
                     answer: providerResponse.answer || "Based on the selected file context.",
                     citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
-                    confidence: "medium"
+                    confidence: "medium",
+                    followUps: [],
+                    evidence: []
                 };
             }
             return {
@@ -340,7 +529,9 @@ export class AiAnswerService {
                 citations: providerResponse.citations ?? [],
                 confidence: providerResponse.confidence ?? "low",
                 missingData: providerResponse.missingData,
-                error: providerResponse.error
+                error: providerResponse.error,
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -351,11 +542,34 @@ export class AiAnswerService {
                 citations: providerResponse.citations ?? [],
                 confidence: providerResponse.confidence ?? "low",
                 error: providerResponse.error,
-                missingData: providerResponse.missingData
+                missingData: providerResponse.missingData,
+                retryAfterSeconds: providerResponse.retryAfterSeconds,
+                followUps: [],
+                evidence: []
             };
         }
 
-        let finalAnswer = providerResponse.answer;
+        const fileLinesMap = new Map<string, string[]>();
+        const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+        if (request.fileContent && targetPath) {
+            fileLinesMap.set(norm(targetPath), request.fileContent.split("\n"));
+        }
+        if (request.dependentFiles) {
+            for (const dep of request.dependentFiles) {
+                if (dep.path && dep.content) {
+                    fileLinesMap.set(norm(dep.path), dep.content.split("\n"));
+                }
+            }
+        }
+
+        const parsed = parseAndValidateEvidenceAndFollowUps(
+            providerResponse.answer,
+            aiContext.files,
+            targetPath,
+            fileLinesMap
+        );
+
+        let finalAnswer = parsed.cleanAnswer;
         if (aiContext.fileTruncated) {
             const linesCount = aiContext.fileTruncatedLines ?? 150;
             const truncationNotice = `Based on the outline and first ${linesCount} lines.`;
@@ -366,13 +580,32 @@ export class AiAnswerService {
             }
         }
 
-        return {
+        const finalCitations = parsed.citations.length > 0
+            ? parsed.citations
+            : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
+
+        const finalResult: AiAnswerResult = {
             status: "ok",
             answer: finalAnswer,
-            citations: providerResponse.citations,
+            citations: finalCitations,
             confidence: providerResponse.confidence,
-            missingData: providerResponse.missingData
+            missingData: providerResponse.missingData,
+            followUps: parsed.followUps,
+            evidence: parsed.evidence,
+            usedContext: providerResponse.usedContext ?? {
+                files: aiContext.files.length,
+                commits: aiContext.commits.length,
+                provider: "groq",
+                model: "openai/gpt-oss-120b",
+                cached: false
+            }
         };
+
+        if (isHistoryEmpty) {
+            this.cache.set(cacheKey, finalResult);
+        }
+
+        return finalResult;
     }
 
     async streamAnswer(
@@ -403,7 +636,9 @@ export class AiAnswerService {
                 status: "ok",
                 answer: greetingReply,
                 citations: [],
-                confidence: "high"
+                confidence: "high",
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -414,8 +649,28 @@ export class AiAnswerService {
                 status: "ok",
                 answer: capabilityReply,
                 citations: [],
-                confidence: "high"
+                confidence: "high",
+                followUps: [],
+                evidence: []
             };
+        }
+
+        const targetPath = request.target.type === "file"
+            ? request.target.path
+            : request.target.type === "symbol"
+                ? request.target.symbol.path
+                : undefined;
+
+        const cleanHistory = sanitizeHistory(request.history);
+        const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
+        const cacheKey = this.buildCacheKey(request, targetPath);
+
+        if (isHistoryEmpty) {
+            const cached = this.cache.get(cacheKey);
+            if (cached) {
+                onToken(cached.answer);
+                return cached;
+            }
         }
 
         const result = assembleRepositoryContext(request.graph, { target: request.target, limits: request.limits });
@@ -429,7 +684,9 @@ export class AiAnswerService {
                     code: "invalid_graph",
                     message: "The requested context target was not found or is ambiguous."
                 },
-                missingData: [result.status === "missing" ? "target_missing" : "target_ambiguous"]
+                missingData: [result.status === "missing" ? "target_missing" : "target_ambiguous"],
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -448,7 +705,9 @@ export class AiAnswerService {
                     code: "invalid_graph",
                     message: "Impact paths or source evidence do not match the repository graph."
                 },
-                missingData: consistency.missingData ?? ["inconsistent_context"]
+                missingData: consistency.missingData ?? ["inconsistent_context"],
+                followUps: [],
+                evidence: []
             };
         }
 
@@ -462,12 +721,18 @@ export class AiAnswerService {
             request.risk,
             request.dependents,
             request.recentCommits,
-            request.owners
+            request.owners,
+            {
+                question: request.question,
+                scope: request.scope,
+                dependentFiles: request.dependentFiles
+            }
         );
+
         let serializedContext = JSON.stringify(aiContext);
         if (serializedContext.length > MAX_AI_CONTEXT_BYTES) {
-            if (aiContext.fileContent && aiContext.fileContent.length > 8000) {
-                const trimBudget = 8000;
+            if (aiContext.fileContent && aiContext.fileContent.length > 6000) {
+                const trimBudget = 6000;
                 aiContext = {
                     ...aiContext,
                     fileContent: aiContext.fileContent.slice(0, trimBudget),
@@ -485,26 +750,21 @@ export class AiAnswerService {
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
                 citations: [],
                 confidence: "low",
-                missingData: ["question_requires_unavailable_repository_context"]
+                missingData: ["question_requires_unavailable_repository_context"],
+                followUps: [],
+                evidence: []
             };
         }
 
-        const cleanHistory = sanitizeHistory(request.history);
         const lang = detectLang(request.question);
         const directive = getLanguageDirective(lang);
         const promptQuestion = request.question.includes(directive)
             ? request.question
             : `${request.question}\n${directive}`;
 
-        const instructions = [
-            "Answer only from the supplied repository facts.",
-            "If the context is insufficient, say so explicitly.",
-            "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged.",
-            "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
-            "If the user message is a greeting or small talk (e.g. 'hi', 'hii', 'hello', 'thanks', 'namaste', 'kaise ho'), reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
-            'At the very end of your answer, provide exactly 3 short follow-up questions (maximum 6 words each) in the user\'s language as a JSON array of strings in a delimited block: <<<FOLLOWUPS>>>["question 1", "question 2", "question 3"]<<<END_FOLLOWUPS>>>. Never output placeholders. If the user message is a greeting or small talk, do not output this block.',
+        const instructions = getSystemInstructions(request.mode, [
             directive
-        ];
+        ]);
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
@@ -515,7 +775,9 @@ export class AiAnswerService {
                 ...(cleanHistory && cleanHistory.length > 0 ? { history: cleanHistory } : {})
             },
             instructions,
-            history: cleanHistory
+            history: cleanHistory,
+            mode: request.mode,
+            scope: request.scope
         };
 
         try {
@@ -527,7 +789,9 @@ export class AiAnswerService {
                         status: "ok",
                         answer: providerResponse.answer || "Based on the selected file context.",
                         citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
-                        confidence: "medium"
+                        confidence: "medium",
+                        followUps: [],
+                        evidence: []
                     };
                 }
                 return {
@@ -536,7 +800,9 @@ export class AiAnswerService {
                     citations: providerResponse.citations ?? [],
                     confidence: providerResponse.confidence ?? "low",
                     missingData: providerResponse.missingData,
-                    error: providerResponse.error
+                    error: providerResponse.error,
+                    followUps: [],
+                    evidence: []
                 };
             }
 
@@ -547,11 +813,34 @@ export class AiAnswerService {
                     citations: providerResponse.citations ?? [],
                     confidence: providerResponse.confidence ?? "low",
                     error: providerResponse.error,
-                    missingData: providerResponse.missingData
+                    missingData: providerResponse.missingData,
+                    retryAfterSeconds: providerResponse.retryAfterSeconds,
+                    followUps: [],
+                    evidence: []
                 };
             }
 
-            let finalAnswer = providerResponse.answer;
+            const fileLinesMap = new Map<string, string[]>();
+            const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+            if (request.fileContent && targetPath) {
+                fileLinesMap.set(norm(targetPath), request.fileContent.split("\n"));
+            }
+            if (request.dependentFiles) {
+                for (const dep of request.dependentFiles) {
+                    if (dep.path && dep.content) {
+                        fileLinesMap.set(norm(dep.path), dep.content.split("\n"));
+                    }
+                }
+            }
+
+            const parsed = parseAndValidateEvidenceAndFollowUps(
+                providerResponse.answer,
+                aiContext.files,
+                targetPath,
+                fileLinesMap
+            );
+
+            let finalAnswer = parsed.cleanAnswer;
             if (aiContext.fileTruncated) {
                 const linesCount = aiContext.fileTruncatedLines ?? 150;
                 const truncationNotice = `Based on the outline and first ${linesCount} lines.`;
@@ -562,15 +851,33 @@ export class AiAnswerService {
                 }
             }
 
-            return {
+            const finalCitations = parsed.citations.length > 0
+                ? parsed.citations
+                : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
+
+            const finalResult: AiAnswerResult = {
                 status: "ok",
                 answer: finalAnswer,
-                citations: providerResponse.citations,
+                citations: finalCitations,
                 confidence: providerResponse.confidence,
-                missingData: providerResponse.missingData
+                missingData: providerResponse.missingData,
+                followUps: parsed.followUps,
+                evidence: parsed.evidence,
+                usedContext: providerResponse.usedContext ?? {
+                    files: aiContext.files.length,
+                    commits: aiContext.commits.length,
+                    provider: "groq",
+                    model: "openai/gpt-oss-120b",
+                    cached: false
+                }
             };
+
+            if (isHistoryEmpty) {
+                this.cache.set(cacheKey, finalResult);
+            }
+
+            return finalResult;
         } catch {
-            // Fall back to non-streaming path if streaming fails
             return this.answer(request);
         }
     }

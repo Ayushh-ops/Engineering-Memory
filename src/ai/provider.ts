@@ -9,6 +9,23 @@ export interface LlmCitation {
 
 export type LlmStatus = "ok" | "insufficient_context" | "error";
 export type LlmConfidence = "low" | "medium" | "high";
+export type LlmMode = "short" | "detailed" | "steps" | "simple" | "review";
+export type LlmScope = "file" | "dependents" | "repo";
+
+export interface LlmEvidence {
+    path: string;
+    line?: number;
+    endLine?: number;
+    snippet?: string;
+}
+
+export interface LlmUsedContext {
+    files: number;
+    commits: number;
+    provider: string;
+    model: string;
+    cached: boolean;
+}
 
 export interface LlmProviderError {
     code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context";
@@ -22,6 +39,10 @@ export interface LlmResponse {
     confidence: LlmConfidence;
     missingData?: string[];
     error?: LlmProviderError;
+    followUps?: string[];
+    evidence?: LlmEvidence[];
+    usedContext?: LlmUsedContext;
+    retryAfterSeconds?: number;
 }
 
 export interface LlmRequest {
@@ -41,6 +62,8 @@ export interface LlmRequest {
         temperature?: number;
         maxTokens?: number;
     };
+    mode?: LlmMode;
+    scope?: LlmScope;
 }
 
 export interface LlmProvider {

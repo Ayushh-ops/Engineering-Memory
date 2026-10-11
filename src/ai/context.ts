@@ -75,7 +75,20 @@ export interface AiRepositoryContext {
  * boundary for the whole context object; `buildAiContext` keeps the compact
  * impact projection inside it and `AiAnswerService` re-checks the result.
  */
-export const MAX_AI_CONTEXT_BYTES = 24000;
+export const MAX_AI_CONTEXT_BYTES = 12000;
+
+export interface BuildAiContextOptions {
+    question?: string;
+    scope?: "file" | "dependents" | "repo";
+    dependentFiles?: Array<{ path: string; content: string }>;
+}
+
+export function extractKeywords(question?: string): string[] {
+    if (!question) return [];
+    const tokens = question.match(/[a-zA-Z_$][a-zA-Z0-9_$]{3,}/g) || [];
+    const stopWords = new Set(["what", "does", "this", "file", "with", "from", "that", "have", "here", "explain", "describe", "show", "tell", "which", "when", "where", "about", "code", "karta", "karti", "samjhao"]);
+    return Array.from(new Set(tokens.map((t) => t.toLowerCase()))).filter((t) => !stopWords.has(t));
+}
 
 /** Reserved for the `"impact"` property wrapper around the compact projection. */
 const AI_CONTEXT_IMPACT_WRAPPER_CHARS = 32;
@@ -223,8 +236,10 @@ export function buildAiContext(
     providedRisk?: any,
     providedDependents?: string[],
     recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>,
-    owners?: any
+    owners?: any,
+    options?: BuildAiContextOptions
 ): AiRepositoryContext {
+    const isRepoScope = options?.scope === "repo";
     const files = context.files.map((file) => {
         const fileSymbols = context.symbols.filter((symbol) => symbol.path === file.path);
         const imports = context.imports
@@ -264,7 +279,7 @@ export function buildAiContext(
         }))
         : undefined;
 
-    const commits = (context.commits.length > 0)
+    const rawCommits = (context.commits.length > 0)
         ? context.commits.map((commit) => ({
             sha: commit.sha,
             message: commit.message,
@@ -279,6 +294,7 @@ export function buildAiContext(
                 authorDate: c.date
             }))
             : []);
+    const commits = rawCommits.slice(0, 5);
 
     const symbolChanges = context.symbolChanges.map((change) => ({
         type: change.changeType,
@@ -299,7 +315,7 @@ export function buildAiContext(
             .filter((edge) => (decodeGraphFileId(edge.from) ?? edge.from) === targetPath)
             .map((edge) => decodeGraphFileId(edge.to) ?? edge.to)
             .filter((p, idx, arr) => arr.indexOf(p) === idx)
-            .slice(0, 10)
+            .slice(0, 15)
         : [];
 
     const directDependentPaths = targetPath
@@ -307,22 +323,80 @@ export function buildAiContext(
             .filter((edge) => (decodeGraphFileId(edge.to) ?? edge.to) === targetPath)
             .map((edge) => decodeGraphFileId(edge.from) ?? edge.from)
             .filter((p, idx, arr) => arr.indexOf(p) === idx)
-            .slice(0, 10)
+            .slice(0, 15)
         : [];
 
     let cappedContent: string | undefined = undefined;
     let fileTruncated: boolean | undefined = undefined;
     let fileTruncatedLines: number | undefined = undefined;
 
-    if (fileContent) {
+    if (fileContent && !isRepoScope) {
         const lines = fileContent.split("\n");
         const totalLines = lines.length;
         const snippetLineCount = Math.min(150, totalLines);
-        const snippet = lines.slice(0, snippetLineCount).join("\n");
+        const prefixedSnippet = lines.slice(0, snippetLineCount).map((l, idx) => `L${idx + 1}: ${l}`).join("\n");
+        let snippetText = `First ${snippetLineCount} lines:\n${prefixedSnippet}`;
         const isTruncated = totalLines > 150;
         if (isTruncated) {
             fileTruncated = true;
             fileTruncatedLines = snippetLineCount;
+        }
+
+        if (options?.question) {
+            const keywords = extractKeywords(options.question);
+            if (keywords.length > 0) {
+                const matchedRanges: Array<[number, number]> = [];
+                for (let i = 0; i < lines.length; i++) {
+                    const lineLower = lines[i].toLowerCase();
+                    if (keywords.some((kw) => lineLower.includes(kw))) {
+                        matchedRanges.push([Math.max(0, i - 12), Math.min(lines.length - 1, i + 12)]);
+                    }
+                }
+                if (matchedRanges.length > 0) {
+                    matchedRanges.sort((a, b) => a[0] - b[0]);
+                    const merged: Array<[number, number]> = [];
+                    for (const range of matchedRanges) {
+                        if (merged.length === 0) {
+                            merged.push(range);
+                        } else {
+                            const last = merged[merged.length - 1];
+                            if (range[0] <= last[1] + 1) {
+                                last[1] = Math.max(last[1], range[1]);
+                            } else {
+                                merged.push(range);
+                            }
+                        }
+                    }
+                    let linesCovered = merged.reduce((acc, [start, end]) => acc + (end - start + 1), 0);
+                    if (linesCovered < 100) {
+                        merged.unshift([0, Math.min(lines.length - 1, 99)]);
+                        merged.sort((a, b) => a[0] - b[0]);
+                        const remerged: Array<[number, number]> = [];
+                        for (const range of merged) {
+                            if (remerged.length === 0) {
+                                remerged.push(range);
+                            } else {
+                                const last = remerged[remerged.length - 1];
+                                if (range[0] <= last[1] + 1) {
+                                    last[1] = Math.max(last[1], range[1]);
+                                } else {
+                                    remerged.push(range);
+                                }
+                            }
+                        }
+                        merged.length = 0;
+                        merged.push(...remerged);
+                    }
+                    const chunks = merged.map(([start, end]) => {
+                        const block: string[] = [];
+                        for (let idx = start; idx <= end; idx++) {
+                            block.push(`L${idx + 1}: ${lines[idx]}`);
+                        }
+                        return block.join("\n");
+                    });
+                    snippetText = `Focused lines (±12 window around matches):\n${chunks.join("\n\n--- ... ---\n\n")}`;
+                }
+            }
         }
 
         // Outline: imports, exported symbols and function signatures with line numbers
@@ -345,21 +419,22 @@ export function buildAiContext(
                 /^(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>/.test(trimmed) ||
                 /^(?:public|private|protected|static|async)?\s*(?:function\s+)?\w+\s*\([^)]*\)\s*(?::\s*[^;{]+)?\s*[{;]/.test(trimmed)
             ) {
-                // Shorten line if too long
                 const truncatedLine = trimmed.length > 120 ? trimmed.slice(0, 117) + "..." : trimmed;
                 outlineEntries.push(`L${lineNum}: ${truncatedLine}`);
             }
         }
 
-        // Outline section: cap outline entries so snippet also fits
         const outlineText = outlineEntries.length > 0 ? `Outline:\n${outlineEntries.join("\n")}` : "";
         const importsText = directImportPaths.length > 0 ? `Direct imports: ${directImportPaths.join(", ")}` : "";
         const dependentsText = directDependentPaths.length > 0 ? `Direct dependents: ${directDependentPaths.join(", ")}` : "";
-        const snippetText = `First ${snippetLineCount} lines:\n${snippet}`;
+
+        if (snippetText.length > 6000) {
+            snippetText = snippetText.slice(0, 6000);
+            fileTruncated = true;
+        }
 
         const otherSections = [importsText, dependentsText, snippetText].filter(Boolean).join("\n\n");
-        // Remaining budget for outline from 8000 chars
-        const outlineBudget = Math.max(0, 8000 - otherSections.length - 4);
+        const outlineBudget = Math.max(1500, 8000 - otherSections.length - 4);
         const cappedOutline = outlineText.length > outlineBudget ? outlineText.slice(0, outlineBudget) : outlineText;
 
         const sections: string[] = [];
@@ -408,8 +483,32 @@ export function buildAiContext(
     }
 
     const effectiveDirectDependents = (providedDependents && providedDependents.length > 0)
-        ? providedDependents.slice(0, 30)
-        : directDependentPaths;
+        ? providedDependents.slice(0, 15)
+        : directDependentPaths.slice(0, 15);
+
+    const cappedOwners = owners
+        ? (Array.isArray(owners)
+            ? owners.slice(0, 3)
+            : (Array.isArray(owners.owners)
+                ? { ...owners, owners: owners.owners.slice(0, 3) }
+                : owners))
+        : undefined;
+
+    const dependentsSnippets = (options?.scope === "dependents" && options?.dependentFiles)
+        ? options.dependentFiles.slice(0, 3).map((dep) => {
+            const depLines = dep.content.split("\n").slice(0, 40).map((l, idx) => `L${idx + 1}: ${l}`).join("\n");
+            return { path: dep.path, snippet: depLines };
+        })
+        : undefined;
+
+    const repoSummary = isRepoScope
+        ? {
+            fileCount: files.length,
+            symbolCount: symbols.length,
+            topRiskFiles: files.slice(0, 5).map((f) => ({ path: f.path, score: (risk && f.path === targetPath ? risk.score : 0) })),
+            health: "healthy"
+        }
+        : undefined;
 
     const base: AiRepositoryContext = {
         repository,
@@ -428,12 +527,14 @@ export function buildAiContext(
         ...(risk ? { risk } : {}),
         ...(effectiveDirectDependents.length > 0 ? { directDependents: effectiveDirectDependents } : {}),
         ...(normalizedRecentCommits ? { recentCommits: normalizedRecentCommits } : {}),
-        ...(owners ? { owners } : {}),
-        ...(fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
-        ...(evidence.length > 0 ? { evidence } : {}),
+        ...(cappedOwners ? { owners: cappedOwners } : {}),
+        ...(!isRepoScope && fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
+        ...(!isRepoScope && evidence.length > 0 ? { evidence } : {}),
         ...(cappedContent !== undefined ? { fileContent: cappedContent } : {}),
         ...(fileTruncated !== undefined ? { fileTruncated } : {}),
-        ...(fileTruncatedLines !== undefined ? { fileTruncatedLines } : {})
+        ...(fileTruncatedLines !== undefined ? { fileTruncatedLines } : {}),
+        ...(dependentsSnippets ? { dependentsSnippets } : {}),
+        ...(repoSummary ? { repoSummary } : {})
     };
 
     if (!impact) return base;
