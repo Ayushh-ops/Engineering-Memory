@@ -37,7 +37,8 @@ export interface AppState {
     setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI' | 'ChangeSet') => void;
 
     codeHighlightLine: number | null;
-    setCodeHighlightLine: (line: number | null) => void;
+    codeHighlightEndLine: number | null;
+    setCodeHighlightLine: (line: number | null, endLine?: number | null) => void;
 
     selectedHistoryCommit: any | null;
     setSelectedHistoryCommit: (commit: any | null) => void;
@@ -122,7 +123,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     setActiveTab: (tab) => set({ activeTab: tab }),
 
     codeHighlightLine: null,
-    setCodeHighlightLine: (line) => set({ codeHighlightLine: line }),
+    codeHighlightEndLine: null,
+    setCodeHighlightLine: (line, endLine) => set({
+        codeHighlightLine: line,
+        codeHighlightEndLine: endLine !== undefined ? endLine : line
+    }),
 
     selectedHistoryCommit: null,
     setSelectedHistoryCommit: (commit) => set({ selectedHistoryCommit: commit }),

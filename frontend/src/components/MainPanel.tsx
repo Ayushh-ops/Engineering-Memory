@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2 } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import Graph3D, { G3Node } from './Graph3D';
@@ -37,6 +37,7 @@ interface ComponentToolbarProps {
     reanalyzeLabel?: string;
     onExport?: () => void;
     extraMenuItems?: { label: string; onClick: () => void }[];
+    customMenu?: (close: () => void) => React.ReactNode;
 }
 
 function ComponentToolbar({
@@ -51,6 +52,7 @@ function ComponentToolbar({
     reanalyzeLabel,
     onExport,
     extraMenuItems = [],
+    customMenu,
 }: ComponentToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -110,67 +112,73 @@ function ComponentToolbar({
 
                     {menuOpen && (
                         <div className="absolute right-0 top-full mt-1.5 w-52 glass-surface bg-[rgba(16,20,21,0.95)] backdrop-blur-md border border-white/10 rounded-lg p-1.5 shadow-2xl z-50 text-xs font-mono space-y-0.5">
-                            {onDownloadReport && (
-                                <button
-                                    onClick={() => {
-                                        onDownloadReport();
-                                        setMenuOpen(false);
-                                    }}
-                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                >
-                                    <Download size={13} className="text-[#4FD1B5]" />
-                                    <span>Download report</span>
-                                </button>
-                            )}
+                            {customMenu ? (
+                                customMenu(() => setMenuOpen(false))
+                            ) : (
+                                <>
+                                    {onDownloadReport && (
+                                        <button
+                                            onClick={() => {
+                                                onDownloadReport();
+                                                setMenuOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                        >
+                                            <Download size={13} className="text-[#4FD1B5]" />
+                                            <span>Download report</span>
+                                        </button>
+                                    )}
 
-                            {onCopyPRComment && (
-                                <button
-                                    onClick={handleCopy}
-                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                >
-                                    {copied ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} className="text-[#4FD1B5]" />}
-                                    <span>{copied ? "Copied comment" : "Copy as PR comment"}</span>
-                                </button>
-                            )}
+                                    {onCopyPRComment && (
+                                        <button
+                                            onClick={handleCopy}
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                        >
+                                            {copied ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} className="text-[#4FD1B5]" />}
+                                            <span>{copied ? "Copied comment" : "Copy as PR comment"}</span>
+                                        </button>
+                                    )}
 
-                            {onReanalyze && (
-                                <button
-                                    onClick={() => {
-                                        onReanalyze();
-                                        setMenuOpen(false);
-                                    }}
-                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                >
-                                    <RefreshCw size={13} className="text-[#4FD1B5]" />
-                                    <span>{reanalyzeLabel || "Re-analyze"}</span>
-                                </button>
-                            )}
+                                    {onReanalyze && (
+                                        <button
+                                            onClick={() => {
+                                                onReanalyze();
+                                                setMenuOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                        >
+                                            <RefreshCw size={13} className="text-[#4FD1B5]" />
+                                            <span>{reanalyzeLabel || "Re-analyze"}</span>
+                                        </button>
+                                    )}
 
-                            {onExport && (
-                                <button
-                                    onClick={() => {
-                                        onExport();
-                                        setMenuOpen(false);
-                                    }}
-                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                >
-                                    <Layers size={13} className="text-[#4FD1B5]" />
-                                    <span>Export</span>
-                                </button>
-                            )}
+                                    {onExport && (
+                                        <button
+                                            onClick={() => {
+                                                onExport();
+                                                setMenuOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                        >
+                                            <Layers size={13} className="text-[#4FD1B5]" />
+                                            <span>Export</span>
+                                        </button>
+                                    )}
 
-                            {extraMenuItems.map((item, idx) => (
-                                <button
-                                    key={idx}
-                                    onClick={() => {
-                                        item.onClick();
-                                        setMenuOpen(false);
-                                    }}
-                                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                >
-                                    <span>{item.label}</span>
-                                </button>
-                            ))}
+                                    {extraMenuItems.map((item, idx) => (
+                                        <button
+                                            key={idx}
+                                            onClick={() => {
+                                                item.onClick();
+                                                setMenuOpen(false);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                        >
+                                            <span>{item.label}</span>
+                                        </button>
+                                    ))}
+                                </>
+                            )}
                         </div>
                     )}
                 </div>
@@ -2466,7 +2474,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [askScope, setAskScope] = useState<import('../api').AskScope>('file');
     const [isChatExpanded, setIsChatExpanded] = useState(false);
     const [expandedEvidenceOpen, setExpandedEvidenceOpen] = useState(true);
-    const [chatMessages, setChatMessages] = useState<Array<{
+    type AskChatMessage = {
         role: 'user' | 'assistant';
         content: string;
         followups?: string[];
@@ -2478,7 +2486,26 @@ export function MainPanel({ className }: { className?: string }) {
         retryAfterSeconds?: number;
         stopped?: boolean;
         isThinking?: boolean;
-    }>>([]);
+    };
+
+    type AskChat = {
+        id: string;
+        title: string;
+        file: string;
+        createdAt: number;
+        updatedAt: number;
+        messages: AskChatMessage[];
+    };
+
+    const [chatMessages, setChatMessages] = useState<AskChatMessage[]>([]);
+    const [chats, setChats] = useState<AskChat[]>([]);
+    const [activeChatId, setActiveChatId] = useState<string | null>(null);
+    const [chatSearchQuery, setChatSearchQuery] = useState('');
+    const [normalChatsOpen, setNormalChatsOpen] = useState(false);
+    const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
+    const normalChatsDropdownRef = useRef<HTMLDivElement | null>(null);
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const lastActiveChatByFile = useRef<Record<string, string>>({});
 
     const latestAssistantEvidence = useMemo(() => {
         const lastWithEvidence = [...chatMessages].reverse().find(m => m.role === 'assistant' && m.evidence && m.evidence.length > 0);
@@ -2492,15 +2519,43 @@ export function MainPanel({ className }: { className?: string }) {
     }, [latestAssistantEvidence.length]);
 
     useEffect(() => {
-        if (!isChatExpanded) return;
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') {
-                setIsChatExpanded(false);
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                if (activeTab === 'AskAI') {
+                    e.preventDefault();
+                    textareaRef.current?.focus();
+                }
+            } else if (e.key === '/' && activeTab === 'AskAI') {
+                const activeEl = document.activeElement;
+                const isInput = activeEl?.tagName === 'INPUT' || activeEl?.tagName === 'TEXTAREA' || (activeEl as HTMLElement)?.isContentEditable;
+                if (!isInput) {
+                    e.preventDefault();
+                    textareaRef.current?.focus();
+                }
+            } else if (e.key === 'Escape') {
+                if (abortControllerRef.current) {
+                    abortControllerRef.current.abort();
+                    abortControllerRef.current = null;
+                    setIsStreaming(false);
+                } else if (isChatExpanded) {
+                    setIsChatExpanded(false);
+                }
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isChatExpanded]);
+    }, [isChatExpanded, activeTab]);
+
+    useEffect(() => {
+        if (!normalChatsOpen) return;
+        const handleClickOutside = (e: MouseEvent) => {
+            if (normalChatsDropdownRef.current && !normalChatsDropdownRef.current.contains(e.target as Node)) {
+                setNormalChatsOpen(false);
+            }
+        };
+        window.addEventListener('mousedown', handleClickOutside);
+        return () => window.removeEventListener('mousedown', handleClickOutside);
+    }, [normalChatsOpen]);
 
     useEffect(() => {
         if (isChatExpanded) {
@@ -2573,28 +2628,83 @@ export function MainPanel({ className }: { className?: string }) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    // Save chat per repo+commit in localStorage (last 30 messages)
-    const chatStorageKey = (repoUrl && selectedSha) ? `ask-chat:${repoUrl}:${selectedSha}` : null;
+    // Save chat per repo+commit in localStorage (max 50 chats, max 30 msgs per chat)
+    const chatsStorageKey = repoUrl ? `em_ask_chats:${repoUrl}:${selectedSha || 'HEAD'}` : null;
 
     useEffect(() => {
-        if (!chatStorageKey) {
+        if (!chatsStorageKey) {
+            setChats([]);
+            setActiveChatId(null);
             setChatMessages([]);
             return;
         }
         try {
-            const raw = localStorage.getItem(chatStorageKey);
+            const raw = localStorage.getItem(chatsStorageKey);
             if (raw) {
                 const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed)) {
-                    setChatMessages(parsed.slice(-30));
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    const loadedChats: AskChat[] = parsed.slice(0, 50);
+                    setChats(loadedChats);
+
+                    if (selectedFile) {
+                        const rememberedId = lastActiveChatByFile.current[selectedFile];
+                        const match = (rememberedId ? loadedChats.find(c => c.id === rememberedId && c.file === selectedFile) : null) ||
+                            loadedChats.find(c => c.file === selectedFile);
+                        if (match) {
+                            setActiveChatId(match.id);
+                            setChatMessages(match.messages.slice(-30));
+                            lastActiveChatByFile.current[selectedFile] = match.id;
+                            return;
+                        }
+                    }
+                    const first = loadedChats[0];
+                    setActiveChatId(first.id);
+                    setChatMessages(first.messages.slice(-30));
                     return;
                 }
             }
-        } catch {
-            // ignore
+        } catch (e) {
+            console.error('Failed to parse chats', e);
         }
+        setChats([]);
+        setActiveChatId(null);
         setChatMessages([]);
-    }, [chatStorageKey]);
+    }, [chatsStorageKey]);
+
+    useEffect(() => {
+        if (!selectedFile) return;
+
+        const cur = chats.find(c => c.id === activeChatId);
+        if (cur && cur.file === selectedFile) {
+            return;
+        }
+
+        const rememberedId = lastActiveChatByFile.current[selectedFile];
+        if (rememberedId) {
+            const remembered = chats.find(c => c.id === rememberedId && c.file === selectedFile);
+            if (remembered) {
+                setActiveChatId(remembered.id);
+                setChatMessages(remembered.messages.slice(-30));
+                setAiError(null);
+                return;
+            }
+        }
+
+        const matching = chats.find(c => c.file === selectedFile);
+        if (matching) {
+            setActiveChatId(matching.id);
+            setChatMessages(matching.messages.slice(-30));
+            lastActiveChatByFile.current[selectedFile] = matching.id;
+            setAiError(null);
+            return;
+        }
+
+        const newId = 'chat_' + Date.now();
+        setActiveChatId(newId);
+        setChatMessages([]);
+        setAiError(null);
+        lastActiveChatByFile.current[selectedFile] = newId;
+    }, [selectedFile, chats, activeChatId]);
 
     // Keep aiEvidence in sync with the latest assistant message
     useEffect(() => {
@@ -2608,44 +2718,154 @@ export function MainPanel({ className }: { className?: string }) {
         }
     }, [chatMessages, setAiEvidence, setAiCitations]);
 
-    const saveChatMessages = useCallback((msgs: Array<{
-        role: 'user' | 'assistant';
-        content: string;
-        followups?: string[];
-        evidence?: import('../api').AskEvidenceItem[];
-        usedContext?: import('../api').AskUsedContext;
-        missingData?: string[];
-        status?: string;
-        error?: any;
-        retryAfterSeconds?: number;
-        stopped?: boolean;
-        isThinking?: boolean;
-    }>) => {
-        const toSave = msgs.filter(m => !m.isThinking).slice(-30);
+    const saveChatMessages = useCallback((msgs: AskChatMessage[]) => {
         setChatMessages(msgs);
-        if (chatStorageKey) {
-            try {
-                localStorage.setItem(chatStorageKey, JSON.stringify(toSave));
-            } catch {
-                // ignore
+        if (!selectedFile || !chatsStorageKey) return;
+
+        const cleanMsgs = msgs.filter(m => !m.isThinking).slice(-30);
+        const now = Date.now();
+        const firstUserQ = cleanMsgs.find(m => m.role === 'user')?.content.trim() || '';
+        const generatedTitle = firstUserQ ? firstUserQ.slice(0, 40) : 'New chat';
+
+        setChats(prevChats => {
+            let updated: AskChat[];
+            const existingIdx = prevChats.findIndex(c => c.id === activeChatId);
+            if (existingIdx !== -1) {
+                const existing = prevChats[existingIdx];
+                const newTitle = (existing.title && existing.title !== 'New chat') ? existing.title : (generatedTitle || existing.title);
+                const updatedChat: AskChat = {
+                    ...existing,
+                    title: newTitle,
+                    updatedAt: now,
+                    messages: cleanMsgs
+                };
+                updated = [updatedChat, ...prevChats.filter((_, i) => i !== existingIdx)];
+            } else {
+                const newChat: AskChat = {
+                    id: activeChatId || ('chat_' + now),
+                    title: generatedTitle || 'New chat',
+                    file: selectedFile,
+                    createdAt: now,
+                    updatedAt: now,
+                    messages: cleanMsgs
+                };
+                updated = [newChat, ...prevChats];
             }
-        }
-    }, [chatStorageKey]);
+
+            const trimmed = updated.slice(0, 50);
+            try {
+                localStorage.setItem(chatsStorageKey, JSON.stringify(trimmed));
+            } catch (e) {
+                console.error('Failed to persist chats', e);
+            }
+            return trimmed;
+        });
+    }, [activeChatId, selectedFile, chatsStorageKey]);
 
     const handleNewChat = useCallback(() => {
+        if (!selectedFile) return;
+        const newId = 'chat_' + Date.now();
+        setActiveChatId(newId);
         setChatMessages([]);
         setAiCitations([]);
         setAiEvidence([]);
         setAiError(null);
         setAskQ('');
-        if (chatStorageKey) {
-            try {
-                localStorage.removeItem(chatStorageKey);
-            } catch {
-                // ignore
+        lastActiveChatByFile.current[selectedFile] = newId;
+    }, [selectedFile, setAiCitations, setAiEvidence]);
+
+    const handleDeleteChat = useCallback((chatId: string) => {
+        if (!window.confirm("Delete this chat?")) return;
+        setChats(prevChats => {
+            const remaining = prevChats.filter(c => c.id !== chatId);
+            if (chatsStorageKey) {
+                try {
+                    localStorage.setItem(chatsStorageKey, JSON.stringify(remaining));
+                } catch (e) {
+                    console.error('Failed to update chats storage', e);
+                }
             }
+            if (activeChatId === chatId) {
+                const nextChat = remaining.find(c => c.file === selectedFile);
+                if (nextChat) {
+                    setActiveChatId(nextChat.id);
+                    setChatMessages(nextChat.messages || []);
+                    if (selectedFile) {
+                        lastActiveChatByFile.current[selectedFile] = nextChat.id;
+                    }
+                } else {
+                    const newId = 'chat_' + Date.now();
+                    setActiveChatId(newId);
+                    setChatMessages([]);
+                    if (selectedFile) {
+                        lastActiveChatByFile.current[selectedFile] = newId;
+                    }
+                }
+            }
+            return remaining;
+        });
+    }, [chatsStorageKey, activeChatId, selectedFile]);
+
+    const handleRenameChat = useCallback((chatId: string, currentTitle: string) => {
+        const newTitle = window.prompt("Rename chat:", currentTitle);
+        if (!newTitle || !newTitle.trim()) return;
+        setChats(prevChats => {
+            const updated = prevChats.map(c => c.id === chatId ? { ...c, title: newTitle.trim().slice(0, 40), updatedAt: Date.now() } : c);
+            if (chatsStorageKey) {
+                try {
+                    localStorage.setItem(chatsStorageKey, JSON.stringify(updated));
+                } catch (e) {
+                    console.error('Failed to update chats storage', e);
+                }
+            }
+            return updated;
+        });
+    }, [chatsStorageKey]);
+
+    const handleClearMessages = useCallback(() => {
+        setChatMessages([]);
+        setAiCitations([]);
+        setAiEvidence([]);
+        setAiError(null);
+        if (activeChatId) {
+            setChats(prevChats => {
+                const updated = prevChats.map(c => c.id === activeChatId ? { ...c, messages: [], updatedAt: Date.now() } : c);
+                if (chatsStorageKey) {
+                    try {
+                        localStorage.setItem(chatsStorageKey, JSON.stringify(updated));
+                    } catch (e) {
+                        console.error('Failed to update chats storage', e);
+                    }
+                }
+                return updated;
+            });
         }
-    }, [chatStorageKey, setAiCitations, setAiEvidence]);
+    }, [activeChatId, chatsStorageKey, setAiCitations, setAiEvidence]);
+
+    const filteredChats = useMemo(() => {
+        if (!chatSearchQuery.trim()) return chats;
+        const q = chatSearchQuery.toLowerCase();
+        return chats.filter(c =>
+            c.title.toLowerCase().includes(q) ||
+            c.file.toLowerCase().includes(q) ||
+            c.messages.some(m => m.content.toLowerCase().includes(q))
+        );
+    }, [chats, chatSearchQuery]);
+
+    const chatsGroupedByFile = useMemo(() => {
+        const groups: Record<string, AskChat[]> = {};
+        for (const chat of filteredChats) {
+            if (!groups[chat.file]) groups[chat.file] = [];
+            groups[chat.file].push(chat);
+        }
+        return groups;
+    }, [filteredChats]);
+
+    useEffect(() => {
+        if (!askQ && textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+        }
+    }, [askQ]);
 
     const buildMarkdownReport = useCallback(async (): Promise<string> => {
         const fileName = selectedFile ? selectedFile.split('/').pop() : (selectedSymbol?.name || 'unknown');
@@ -2882,18 +3102,33 @@ ${(historyData || []).slice(0, 5).map((c: any) => `- \`${c.sha?.substring(0, 7)}
         }
     };
 
-    const handleDownloadChatReport = () => {
-        const md = `# Ask AI Conversation: ${selectedFile || 'file'}
+    const handleExportChatMarkdown = () => {
+        const curChat = chats.find(c => c.id === activeChatId);
+        const title = curChat?.title || selectedFile?.split('/').pop() || 'chat';
+        const md = `# Ask AI: ${title}
+File: \`${selectedFile || 'unknown'}\`
+Date: ${new Date().toLocaleString()}
 
-${chatMessages.map(m => `### ${m.role === 'user' ? 'User' : 'AI'}\n${m.content}\n`).join('\n')}
+${chatMessages.map(m => `### ${m.role === 'user' ? 'User' : 'AI'}\n${m.content}\n${m.evidence && m.evidence.length > 0 ? `\n**Evidence:**\n${m.evidence.map(e => `- \`${e.path}${e.line !== undefined ? `:${e.line}${e.endLine && e.endLine !== e.line ? `-${e.endLine}` : ''}` : ''}\``).join('\n')}\n` : ''}`).join('\n')}
 `;
-        downloadTextFile(`chat-${selectedFile?.split('/').pop() || 'file'}.md`, md);
+        downloadTextFile(`ask-ai-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`, md);
+    };
+
+    const handleCopyLastAnswer = async () => {
+        const lastAssistant = [...chatMessages].reverse().find(m => m.role === 'assistant' && !m.isThinking);
+        if (lastAssistant && navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(lastAssistant.content);
+        }
     };
 
     const handleCopyChatPRComment = async () => {
-        const lastAssistant = [...chatMessages].reverse().find(m => m.role === 'assistant');
-        const md = `### 🤖 Ask AI Summary
-${lastAssistant?.content || 'No response recorded.'}
+        const lastAssistant = [...chatMessages].reverse().find(m => m.role === 'assistant' && !m.isThinking);
+        if (!lastAssistant) return;
+        const evidenceList = lastAssistant.evidence && lastAssistant.evidence.length > 0
+            ? `\n\n#### Evidence\n${lastAssistant.evidence.map(e => `- \`${e.path}${e.line !== undefined ? `:${e.line}${e.endLine && e.endLine !== e.line ? `-${e.endLine}` : ''}` : ''}\``).join('\n')}`
+            : '';
+        const md = `### AI Analysis
+${lastAssistant.content}${evidenceList}
 `;
         if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(md);
@@ -3019,7 +3254,12 @@ ${lastAssistant?.content || 'No response recorded.'}
         });
     }, []);
 
-    const askAI = async (questionToAsk?: string, requestedMode?: import('../api').AskMode, requestedScope?: import('../api').AskScope) => {
+    const askAI = async (
+        questionToAsk?: string,
+        requestedMode?: import('../api').AskMode,
+        requestedScope?: import('../api').AskScope,
+        baseMessages?: AskChatMessage[]
+    ) => {
         const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
         if (!q || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
@@ -3029,8 +3269,9 @@ ${lastAssistant?.content || 'No response recorded.'}
         const currentMode = requestedMode || askMode;
         const currentScope = requestedScope || askScope;
 
+        const pool = baseMessages !== undefined ? baseMessages : chatMessages;
         const newMessages = [
-            ...chatMessages.filter(m => !m.isThinking),
+            ...pool.filter(m => !m.isThinking),
             { role: 'user' as const, content: q },
             { role: 'assistant' as const, content: '', isThinking: true }
         ];
@@ -3044,7 +3285,7 @@ ${lastAssistant?.content || 'No response recorded.'}
         abortControllerRef.current = controller;
         setIsStreaming(true);
 
-        const historyToSend = chatMessages
+        const historyToSend = pool
             .filter(m => !m.isThinking && m.content.trim().length > 0)
             .slice(-4)
             .map(m => ({
@@ -3215,17 +3456,30 @@ ${lastAssistant?.content || 'No response recorded.'}
         }
     }, [chatMessages, askMode, askScope]);
 
-    const handleRegenerate = useCallback(() => {
-        const lastUser = [...chatMessages].reverse().find(m => m.role === 'user');
-        if (!lastUser) return;
-        setChatMessages(prev => {
-            const copy = [...prev];
-            if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
-                copy.pop();
+    const handleRegenerate = useCallback((questionOverride?: string) => {
+        if (isStreaming) return;
+        const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user');
+        if (lastUserIdx === -1) return;
+        const qToRun = questionOverride || chatMessages[lastUserIdx].content;
+        const baseHistory = chatMessages.slice(0, lastUserIdx);
+        askAI(qToRun, askMode, askScope, baseHistory);
+    }, [chatMessages, isStreaming, askMode, askScope]);
+
+    const handleRegenerateTurn = useCallback((msgIndex: number) => {
+        if (isStreaming) return;
+        let userQ = '';
+        let userIdx = -1;
+        for (let i = msgIndex - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'user') {
+                userQ = chatMessages[i].content;
+                userIdx = i;
+                break;
             }
-            return copy;
-        });
-    }, [chatMessages, askMode, askScope]);
+        }
+        if (!userQ || userIdx === -1) return;
+        const baseHistory = chatMessages.slice(0, userIdx);
+        askAI(userQ, askMode, askScope, baseHistory);
+    }, [chatMessages, isStreaming, askMode, askScope]);
 
     const reanalyze = useCallback(async () => {
         if (!graph || !selectedFile) return;
@@ -3452,6 +3706,106 @@ ${lastAssistant?.content || 'No response recorded.'}
             author: topAuthor
         };
     }, [drawerFile, commits]);
+
+    const renderChatsList = useCallback((isSidebar: boolean) => (
+        <div className="flex flex-col h-full overflow-hidden">
+            <div className="p-2.5 border-b border-white/10 shrink-0 space-y-2">
+                <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5 font-mono">
+                        <MessageSquare size={13} className="text-[#4FD1B5]" />
+                        <span>Chats ({chats.length})</span>
+                    </span>
+                    <button
+                        onClick={handleNewChat}
+                        className="px-2 py-1 rounded text-[11px] font-mono border border-white/10 bg-white/[0.03] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer flex items-center gap-1"
+                        title="New chat for current file"
+                    >
+                        <Plus size={11} />
+                        <span>New chat</span>
+                    </button>
+                </div>
+                <div className="relative">
+                    <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#8A918C]" />
+                    <input
+                        value={chatSearchQuery}
+                        onChange={e => setChatSearchQuery(e.target.value)}
+                        placeholder="Search chats..."
+                        className="w-full bg-black/40 border border-white/10 rounded-md pl-7 pr-2.5 py-1 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/50 outline-none font-mono"
+                    />
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-custom p-2 space-y-3">
+                {Object.keys(chatsGroupedByFile).length === 0 ? (
+                    <div className="p-4 text-center text-xs text-[#8A918C]/60 font-mono">
+                        {chatSearchQuery ? "No matching chats" : "No chats yet"}
+                    </div>
+                ) : (
+                    Object.entries(chatsGroupedByFile).map(([filePath, fileChats]) => {
+                        const fileName = filePath.split('/').pop() || filePath;
+                        return (
+                            <div key={filePath} className="space-y-1">
+                                <div className="text-[10px] font-mono text-[#8A918C] uppercase tracking-wider px-2 py-0.5 truncate flex items-center gap-1" title={filePath}>
+                                    <FileCode size={10} className="shrink-0 text-[#8A918C]/60" />
+                                    <span className="truncate">{fileName}</span>
+                                </div>
+                                {fileChats.map(chat => {
+                                    const isActive = chat.id === activeChatId;
+                                    return (
+                                        <div
+                                            key={chat.id}
+                                            onClick={() => {
+                                                setActiveChatId(chat.id);
+                                                setChatMessages(chat.messages || []);
+                                                setAiError(null);
+                                                if (chat.file !== selectedFile) {
+                                                    selectFile(chat.file);
+                                                }
+                                                lastActiveChatByFile.current[chat.file] = chat.id;
+                                                if (!isSidebar) setNormalChatsOpen(false);
+                                            }}
+                                            className={cn(
+                                                "group flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-mono transition-colors cursor-pointer",
+                                                isActive
+                                                    ? "bg-[#4FD1B5]/15 text-[#4FD1B5] border border-[#4FD1B5]/30 font-semibold"
+                                                    : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] border border-transparent"
+                                            )}
+                                        >
+                                            <span className="truncate flex-1 pr-2 text-[11px] font-sans" title={chat.title}>
+                                                {chat.title || 'Untitled chat'}
+                                            </span>
+                                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleRenameChat(chat.id, chat.title);
+                                                    }}
+                                                    className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08]"
+                                                    title="Rename chat"
+                                                >
+                                                    <FileText size={11} />
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleDeleteChat(chat.id);
+                                                    }}
+                                                    className="p-1 rounded text-[#8A918C] hover:text-red-400 hover:bg-red-500/10"
+                                                    title="Delete chat"
+                                                >
+                                                    <Trash2 size={11} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })
+                )}
+            </div>
+        </div>
+    ), [chats, chatSearchQuery, chatsGroupedByFile, activeChatId, selectedFile, selectFile, handleNewChat, handleRenameChat, handleDeleteChat]);
 
     const isCode = selectedFile ? isCodeFile(selectedFile) : false;
     const isRepoLevelTab = activeTab === 'Overview' || activeTab === 'ChangeSet' || activeTab === 'Health';
@@ -4566,81 +4920,180 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     : "flex-1 flex min-h-0 glass-surface border-white/10 rounded-xl"
                             )}>
                                 <div className="p-3 bg-white/[0.02] border-b border-white/10 shrink-0">
-                                    <ComponentToolbar
-                                        title={
-                                            <div className="flex items-center gap-2 font-mono">
-                                                <FileCode size={13} className="text-[#4FD1B5]" />
-                                                <span className="text-[#E8EAE6] truncate max-w-[280px]">
-                                                    {selectedSymbol?.name ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
-                                                </span>
-                                            </div>
-                                        }
-                                        middle={
-                                            <div className="flex items-center gap-1.5">
-                                                <select
-                                                    value={askMode}
-                                                    onChange={e => setAskMode(e.target.value as import('../api').AskMode)}
-                                                    className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
-                                                    title="Answer mode"
-                                                >
-                                                    <option value="detailed">Detailed</option>
-                                                    <option value="short">Short</option>
-                                                    <option value="steps">Steps</option>
-                                                    <option value="simple">Simple</option>
-                                                    <option value="review">Review</option>
-                                                </select>
-                                                <select
-                                                    value={askScope}
-                                                    onChange={e => setAskScope(e.target.value as import('../api').AskScope)}
-                                                    className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
-                                                    title="Analysis scope"
-                                                >
-                                                    <option value="file">File</option>
-                                                    <option value="dependents">Dependents</option>
-                                                    <option value="repo">Repo</option>
-                                                </select>
-                                                {isChatExpanded && latestAssistantEvidence.length > 0 && (
-                                                    <button
-                                                        onClick={() => setExpandedEvidenceOpen(!expandedEvidenceOpen)}
-                                                        className={cn(
-                                                            "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
-                                                            expandedEvidenceOpen
-                                                                ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
-                                                                : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6]"
+                                            <ComponentToolbar
+                                                title={
+                                                    <div className="flex items-center gap-2 font-mono">
+                                                        <FileCode size={13} className="text-[#4FD1B5]" />
+                                                        <span className="text-[#E8EAE6] truncate max-w-[280px]">
+                                                            {selectedSymbol?.name ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
+                                                        </span>
+                                                    </div>
+                                                }
+                                                middle={
+                                                    <div className="flex items-center gap-1.5">
+                                                        <select
+                                                            value={askMode}
+                                                            onChange={e => setAskMode(e.target.value as import('../api').AskMode)}
+                                                            className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                            title="Answer mode"
+                                                        >
+                                                            <option value="detailed">Detailed</option>
+                                                            <option value="short">Short</option>
+                                                            <option value="steps">Steps</option>
+                                                            <option value="simple">Simple</option>
+                                                            <option value="review">Review</option>
+                                                        </select>
+                                                        <select
+                                                            value={askScope}
+                                                            onChange={e => setAskScope(e.target.value as import('../api').AskScope)}
+                                                            className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                            title="Analysis scope"
+                                                        >
+                                                            <option value="file">File</option>
+                                                            <option value="dependents">Dependents</option>
+                                                            <option value="repo">Repo</option>
+                                                        </select>
+                                                        {!isChatExpanded && (
+                                                            <div className="relative" ref={normalChatsDropdownRef}>
+                                                                <button
+                                                                    onClick={() => setNormalChatsOpen(!normalChatsOpen)}
+                                                                    className={cn(
+                                                                        "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
+                                                                        normalChatsOpen
+                                                                            ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                                                            : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6]"
+                                                                    )}
+                                                                    title="Open chats"
+                                                                >
+                                                                    <MessageSquare size={11} />
+                                                                    <span>Chats ({chats.length})</span>
+                                                                    <ChevronDown size={10} className={cn("transition-transform", normalChatsOpen && "rotate-180")} />
+                                                                </button>
+                                                                {normalChatsOpen && (
+                                                                    <div className="absolute left-0 top-full mt-1.5 w-72 max-h-96 glass-surface bg-[rgba(16,20,21,0.98)] backdrop-blur-md border border-white/10 rounded-lg shadow-2xl z-50 flex flex-col overflow-hidden">
+                                                                        {renderChatsList(false)}
+                                                                    </div>
+                                                                )}
+                                                            </div>
                                                         )}
-                                                        title="Toggle evidence panel"
-                                                    >
-                                                        <span>Evidence ({latestAssistantEvidence.length})</span>
-                                                    </button>
+                                                        {isChatExpanded && latestAssistantEvidence.length > 0 && (
+                                                            <button
+                                                                onClick={() => setExpandedEvidenceOpen(!expandedEvidenceOpen)}
+                                                                className={cn(
+                                                                    "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
+                                                                    expandedEvidenceOpen
+                                                                        ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                                                        : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6]"
+                                                                )}
+                                                                title="Toggle evidence panel"
+                                                            >
+                                                                <span>Evidence ({latestAssistantEvidence.length})</span>
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                }
+                                                primaryAction={
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button
+                                                            onClick={() => setIsChatExpanded(!isChatExpanded)}
+                                                            className="p-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center justify-center border border-white/10 w-7 h-7"
+                                                            title={isChatExpanded ? "Collapse chat (Esc)" : "Expand chat"}
+                                                        >
+                                                            {isChatExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                                                        </button>
+                                                        <button
+                                                            onClick={handleNewChat}
+                                                            className="px-2.5 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
+                                                            title="Start a new chat"
+                                                        >
+                                                            <Plus size={12} />
+                                                            <span>New chat</span>
+                                                        </button>
+                                                    </div>
+                                                }
+                                                customMenu={(close) => (
+                                                    <div className="space-y-0.5">
+                                                        <button
+                                                            onClick={() => {
+                                                                handleCopyLastAnswer();
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                                        >
+                                                            <Copy size={13} className="text-[#4FD1B5]" />
+                                                            <span>Copy last answer</span>
+                                                        </button>
+
+                                                        <button
+                                                            onClick={() => {
+                                                                handleCopyChatPRComment();
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                                        >
+                                                            <Share2 size={13} className="text-[#4FD1B5]" />
+                                                            <span>Copy as PR comment</span>
+                                                        </button>
+
+                                                        <button
+                                                            onClick={() => {
+                                                                handleExportChatMarkdown();
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                                        >
+                                                            <Download size={13} className="text-[#4FD1B5]" />
+                                                            <span>Export chat as Markdown</span>
+                                                        </button>
+
+                                                        <button
+                                                            onClick={() => {
+                                                                if (activeChatId) {
+                                                                    const cur = chats.find(c => c.id === activeChatId);
+                                                                    handleRenameChat(activeChatId, cur?.title || 'New chat');
+                                                                }
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                                        >
+                                                            <FileText size={13} className="text-[#4FD1B5]" />
+                                                            <span>Rename chat</span>
+                                                        </button>
+
+                                                        <button
+                                                            onClick={() => {
+                                                                handleClearMessages();
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                                        >
+                                                            <RefreshCw size={13} className="text-[#4FD1B5]" />
+                                                            <span>Clear messages</span>
+                                                        </button>
+
+                                                        <button
+                                                            onClick={() => {
+                                                                if (activeChatId) {
+                                                                    handleDeleteChat(activeChatId);
+                                                                }
+                                                                close();
+                                                            }}
+                                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-red-500/10 text-red-400 transition-colors cursor-pointer border-t border-white/[0.06] pt-1.5 mt-1"
+                                                        >
+                                                            <Trash2 size={13} />
+                                                            <span>Delete chat</span>
+                                                        </button>
+                                                    </div>
                                                 )}
-                                            </div>
-                                        }
-                                        primaryAction={
-                                            <div className="flex items-center gap-1.5">
-                                                <button
-                                                    onClick={() => setIsChatExpanded(!isChatExpanded)}
-                                                    className="p-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center justify-center border border-white/10 w-7 h-7"
-                                                    title={isChatExpanded ? "Collapse chat (Esc)" : "Expand chat"}
-                                                >
-                                                    {isChatExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-                                                </button>
-                                                <button
-                                                    onClick={handleNewChat}
-                                                    className="px-2.5 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
-                                                    title="Clear conversation"
-                                                >
-                                                    <Plus size={12} />
-                                                    <span>New chat</span>
-                                                </button>
-                                            </div>
-                                        }
-                                        onDownloadReport={handleDownloadChatReport}
-                                        onCopyPRComment={handleCopyChatPRComment}
-                                        onExport={() => downloadTextFile('chat-history.json', JSON.stringify(chatMessages, null, 2), 'application/json')}
-                                    />
-                                </div>
+                                            />
+                                        </div>
 
                                 <div className="flex-1 min-h-0 flex overflow-hidden">
+                                    {isChatExpanded && (
+                                        <div className="w-[260px] shrink-0 border-r border-white/10 flex flex-col bg-[#0B0E10] overflow-hidden">
+                                            {renderChatsList(true)}
+                                        </div>
+                                    )}
                                     <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                                         {/* Chat Messages */}
                                         <div className="flex-1 p-4 overflow-y-auto scrollbar-custom min-h-0">
@@ -4744,7 +5197,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                                                     if (!isAnalyzed) return;
                                                                                                     selectFile(fullPath);
                                                                                                     if (item.line !== undefined) {
-                                                                                                        setCodeHighlightLine(item.line);
+                                                                                                        setCodeHighlightLine(item.line, item.endLine);
                                                                                                     }
                                                                                                     setActiveTab('Code');
                                                                                                 }}
@@ -4807,19 +5260,65 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                                 </div>
                                                                             )}
 
-                                                                            {/* Regenerate under the last answer */}
-                                                                            {idx === chatMessages.length - 1 && !isStreaming && (
-                                                                                <div className="pt-2 flex items-center gap-2">
+                                                                            {/* Per-answer actions row */}
+                                                                            <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.04]">
+                                                                                <div className="flex items-center gap-1.5">
                                                                                     <button
-                                                                                        onClick={handleRegenerate}
-                                                                                        className="text-[11px] font-sans px-2 py-0.5 rounded border border-white/10 hover:border-white/20 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer flex items-center gap-1.5"
-                                                                                        title="Regenerate with last question"
+                                                                                        onClick={() => {
+                                                                                            navigator.clipboard.writeText(msg.content);
+                                                                                            setCopiedMsgIdx(idx);
+                                                                                            setTimeout(() => setCopiedMsgIdx(null), 1500);
+                                                                                        }}
+                                                                                        className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer"
+                                                                                        title="Copy answer"
                                                                                     >
-                                                                                        <RefreshCw size={11} />
-                                                                                        <span>Regenerate</span>
+                                                                                        {copiedMsgIdx === idx ? <Check size={12} className="text-[#4FD1B5]" /> : <Copy size={12} />}
+                                                                                    </button>
+
+                                                                                    <button
+                                                                                        onClick={() => handleRegenerateTurn(idx)}
+                                                                                        disabled={isStreaming}
+                                                                                        className={cn(
+                                                                                            "p-1 rounded transition-colors",
+                                                                                            isStreaming ? "text-[#8A918C]/40 cursor-not-allowed" : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] cursor-pointer"
+                                                                                        )}
+                                                                                        title="Regenerate this answer"
+                                                                                    >
+                                                                                        <RefreshCw size={12} />
                                                                                     </button>
                                                                                 </div>
-                                                                            )}
+
+                                                                                {(() => {
+                                                                                    const citedFiles = Array.from(new Set([
+                                                                                        ...(msg.evidence?.map(e => e.path) || []),
+                                                                                        ...(selectedFile ? [selectedFile] : [])
+                                                                                    ])).filter(Boolean);
+                                                                                    if (citedFiles.length === 0) return null;
+                                                                                    const allInPlan = citedFiles.every(f => changeSet.includes(f));
+
+                                                                                    return (
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                if (allInPlan) {
+                                                                                                    citedFiles.forEach(f => removeFromChangeSet(f));
+                                                                                                } else {
+                                                                                                    citedFiles.forEach(f => addToChangeSet(f));
+                                                                                                }
+                                                                                            }}
+                                                                                            className={cn(
+                                                                                                "text-[10px] font-mono px-2 py-0.5 rounded border transition-colors flex items-center gap-1 cursor-pointer",
+                                                                                                allInPlan
+                                                                                                    ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                                                                                    : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.05]"
+                                                                                            )}
+                                                                                            title={allInPlan ? "Remove cited files from plan" : "Add cited files to change set plan"}
+                                                                                        >
+                                                                                            {allInPlan ? <Check size={10} className="text-[#4FD1B5]" /> : <Plus size={10} />}
+                                                                                            <span>{allInPlan ? 'In plan' : 'Add to plan'}</span>
+                                                                                        </button>
+                                                                                    );
+                                                                                })()}
+                                                                            </div>
                                                                         </>
                                                                     )}
                                                                 </div>
@@ -4831,23 +5330,56 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             </div>
                                         </div>
 
-                                        {/* Suggested Prompts */}
+                                        {/* Suggested Prompts / Follow-ups */}
                                         <div className="px-3.5 py-2 border-t border-white/[0.06] bg-white/[0.01] shrink-0">
                                             <div className={cn("flex items-center gap-1.5 flex-wrap", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
                                                 {(() => {
+                                                    const lastAssistantMsg = [...chatMessages].reverse().find(m => m.role === 'assistant' && !m.isThinking);
+                                                    if (chatMessages.length > 0 && lastAssistantMsg?.followups && lastAssistantMsg.followups.length > 0) {
+                                                        return lastAssistantMsg.followups.slice(0, 3).map((f, fIdx) => (
+                                                            <button
+                                                                key={fIdx}
+                                                                onClick={() => {
+                                                                    setAskQ('');
+                                                                    askAI(f);
+                                                                }}
+                                                                className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
+                                                            >
+                                                                {f}
+                                                            </button>
+                                                        ));
+                                                    }
+
                                                     const userMessages = chatMessages.filter(m => m.role === 'user');
                                                     const lastUserText = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : askQ;
                                                     const isHinglish = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi|isko|tum|aap)\b/i.test(lastUserText);
 
-                                                    const suggestions = isHinglish
-                                                        ? (selectedFile
-                                                            ? ['Is file ko samjhao', 'Isko kaun call karta hai?', 'Changes ka summary do']
-                                                            : ['Kaunsi files sabse risky hain?', 'Repo ka structure kaisa hai?', 'Kahan se padhna shuru karein?'])
-                                                        : (selectedFile
-                                                            ? ['Explain this file', 'Who calls this?', 'Summarize changes']
-                                                            : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']);
+                                                    const lowerFile = (selectedFile || '').toLowerCase();
+                                                    const fileName = lowerFile.split('/').pop() || '';
+                                                    const isTest = isTestFile(selectedFile || '') || /\.(test|spec)\.[a-z0-9]+$/i.test(fileName) || /tests?\/|__tests?__\//i.test(lowerFile);
+                                                    const isConfig = /\.(json|ya?ml|toml|ini|env|xml|config|rc|properties)$/i.test(fileName) || /config|\.config\./i.test(fileName);
+                                                    const isApiClient = /api|client|endpoint|router|service|controller|route/i.test(lowerFile);
 
-                                                    return suggestions.map((suggestion, sIdx) => (
+                                                    let starters: string[];
+                                                    if (isTest) {
+                                                        starters = isHinglish
+                                                            ? ['Yeh kya test karta hai samjhao', 'Cover na huye edge cases dhundo', 'Test case kaise add karein?', 'Yeh test run karne ka command']
+                                                            : ['Explain what this tests', 'Find edge cases not covered', 'How to add a test case?', 'Run command for this test'];
+                                                    } else if (isConfig) {
+                                                        starters = isHinglish
+                                                            ? ['Configuration samjhao', 'Environment dependencies kya hain?', 'Kuch deprecated hai kya?', 'Safe changes checklist']
+                                                            : ['Explain this configuration', 'What are the environment dependencies?', 'Is anything deprecated?', 'Safe changes checklist'];
+                                                    } else if (isApiClient) {
+                                                        starters = isHinglish
+                                                            ? ['Exposed endpoints samjhao', 'Auth yahan kaise kaam karta hai?', 'Error handling patterns', 'Backward compatibility risks']
+                                                            : ['Explain endpoints exposed', 'How does auth work here?', 'Error handling patterns', 'Backward compatibility risks'];
+                                                    } else {
+                                                        starters = isHinglish
+                                                            ? ['Yeh file kya karti hai samjhao', 'Isko kaun call karta hai?', 'Recent changes ka summary do', 'Risk analysis']
+                                                            : ['Explain what this file does', 'Who calls this file?', 'Summarize recent changes', 'Risk analysis'];
+                                                    }
+
+                                                    return starters.map((suggestion, sIdx) => (
                                                         <button
                                                             key={sIdx}
                                                             onClick={() => {
@@ -4866,26 +5398,42 @@ ${lastAssistant?.content || 'No response recorded.'}
                                         {/* Composer - pinned at bottom */}
                                         <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
                                             <div className={cn(isChatExpanded && "max-w-[920px] mx-auto w-full")}>
-                                                <div className="flex items-center gap-2 glass-surface p-1 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
-                                                    <input
+                                                <div className="flex items-end gap-2 glass-surface p-1.5 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
+                                                    <textarea
+                                                        ref={textareaRef}
+                                                        rows={1}
                                                         value={askQ}
-                                                        onChange={e => setAskQ(e.target.value)}
+                                                        onChange={e => {
+                                                            setAskQ(e.target.value);
+                                                            e.target.style.height = 'auto';
+                                                            e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                                                        }}
                                                         onKeyDown={e => {
                                                             if (e.key === 'Enter') {
+                                                                if (e.shiftKey) {
+                                                                    return;
+                                                                }
                                                                 e.preventDefault();
-                                                                if (!isStreaming) {
+                                                                if (!isStreaming && askQ.trim()) {
                                                                     askAI();
+                                                                }
+                                                            } else if (e.key === 'Escape') {
+                                                                e.preventDefault();
+                                                                if (isStreaming) {
+                                                                    handleStopAi();
+                                                                } else if (isChatExpanded) {
+                                                                    setIsChatExpanded(false);
                                                                 }
                                                             }
                                                         }}
                                                         placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
-                                                        className="flex-1 bg-transparent px-3 py-1.5 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans"
+                                                        className="flex-1 bg-transparent px-3 py-1 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans resize-none max-h-[120px] scrollbar-custom leading-relaxed"
                                                     />
                                                     {isStreaming ? (
                                                         <button
                                                             type="button"
                                                             onClick={handleStopAi}
-                                                            className="px-3 py-1 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors"
+                                                            className="px-3 py-1.5 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors mb-0.5"
                                                             title="Stop generating"
                                                         >
                                                             <Square size={12} className="fill-current" />
@@ -4894,7 +5442,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     ) : (
                                                         <Button
                                                             onClick={() => askAI()}
-                                                            className="px-3 py-1 text-xs shrink-0"
+                                                            className="px-3 py-1.5 text-xs shrink-0 mb-0.5"
                                                             disabled={!askQ.trim() || isStreaming}
                                                         >
                                                             Send
@@ -4931,8 +5479,8 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 {latestAssistantEvidence.map((item, idx) => {
                                                     const filePath = item.path;
                                                     const fileName = filePath?.split('/').pop() || filePath;
-                                                    const lineRange = item.line !== undefined
-                                                        ? (item.endLine && item.endLine !== item.line ? `${item.line}-${item.endLine}` : `${item.line}`)
+                                                    const rangeLabel = item.line !== undefined
+                                                        ? (item.endLine && item.endLine !== item.line ? `L${item.line}-L${item.endLine}` : `L${item.line}`)
                                                         : '';
                                                     const isAnalyzed = analyzedPaths.has(filePath) ||
                                                         analyzedPaths.has(filePath.replace(/^\.\//, '')) ||
@@ -4944,22 +5492,22 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             onClick={() => {
                                                                 selectFile(filePath);
                                                                 if (item.line !== undefined) {
-                                                                    setCodeHighlightLine(item.line);
+                                                                    setCodeHighlightLine(item.line, item.endLine);
                                                                 }
                                                                 setIsChatExpanded(false);
                                                                 setActiveTab('Code');
-                              }}
-                              className={cn(
+                                                            }}
+                                                            className={cn(
                                                                 "w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer space-y-1 block",
                                                                 isAnalyzed
                                                                     ? "border-white/10 bg-white/[0.02] hover:border-[#4FD1B5]/40 hover:bg-white/[0.05]"
                                                                     : "border-white/5 bg-white/[0.01] opacity-70"
                                                             )}
-                                                            title={`Open ${filePath}${lineRange ? `:${lineRange}` : ''} in Code viewer`}
+                                                            title={`Open ${filePath}${rangeLabel ? `:${rangeLabel}` : ''} in Code viewer`}
                                                         >
                                                             <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
                                                                 <span className="font-semibold truncate">{fileName}</span>
-                                                                {lineRange && <span className="text-[10px] text-[#8A918C] font-normal">{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
+                                                                {rangeLabel && <span className="text-[10px] text-[#8A918C] font-normal">{rangeLabel}</span>}
                                                             </div>
                                                             <div className="text-[10px] text-[#8A918C] font-mono truncate">
                                                                 {filePath}

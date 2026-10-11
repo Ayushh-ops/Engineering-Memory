@@ -54,6 +54,7 @@ export function getSystemInstructions(mode?: string, additionalInstructions?: st
         "Do not claim information that is absent from the supplied context.",
         "Answer as much as the context allows and list missing facts under missingData.",
         getModeInstruction(mode),
+        "Be concise. For a plain question give a 2-3 sentence summary first, then at most 8 bullets. Never enumerate more than 8 similar items; summarise the rest as 'and N more'. In mode 'detailed' you may add one short extra section.",
         "Do not use markdown tables.",
         "The answer text must cite files and lines (format path:line) ONLY for lines shown in context, and NEVER cite lines that are not in the context.",
         'At the end of your answer, output evidence as a delimited block: <<<EVIDENCE>>>[{"path":"filepath","line":12}]<<<END_EVIDENCE>>> with only files and lines that support your answer.',

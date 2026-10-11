@@ -964,6 +964,35 @@ async function main(): Promise<void> {
     assert.equal(parsedFallback.evidence[1].line, 48);
     assert.equal(parsedFallback.evidence[1].snippet, "function helper() { return true; }");
 
+    // 1e. First appearance ordering (L48 appears before L14-L29)
+    const reversedOrderAnswer = "Helper defined at L48. The facade implementation (L14-L29) wraps the gulp pipeline.";
+    const parsedReversed = parseAndValidateEvidenceAndFollowUps(
+        reversedOrderAnswer,
+        [{ path: "build/lib/gulp/facade.ts" }],
+        "build/lib/gulp/facade.ts",
+        new Map([["build/lib/gulp/facade.ts", mockFacadeLines]])
+    );
+    assert.equal(parsedReversed.evidence.length, 2);
+    assert.equal(parsedReversed.evidence[0].line, 48);
+    assert.equal(parsedReversed.evidence[1].line, 14);
+    assert.equal(parsedReversed.evidence[1].endLine, 29);
+
+    // 1f. Overlapping & adjacent range merging (gap <= 1 line)
+    mockFacadeLines[9] = "export function partOne() {";
+    const mergedRangeAnswer = "Implementation parts: lines 10-15 and (L16-L20) and lines 22-25. Also helper at L48.";
+    const parsedMerged = parseAndValidateEvidenceAndFollowUps(
+        mergedRangeAnswer,
+        [{ path: "build/lib/gulp/facade.ts" }],
+        "build/lib/gulp/facade.ts",
+        new Map([["build/lib/gulp/facade.ts", mockFacadeLines]])
+    );
+    assert.equal(parsedMerged.evidence.length, 2);
+    assert.equal(parsedMerged.evidence[0].line, 10);
+    assert.equal(parsedMerged.evidence[0].endLine, 25);
+    assert.equal(parsedMerged.evidence[0].snippet, "export function partOne() {");
+    assert.equal(parsedMerged.evidence[1].line, 48);
+    assert.equal(parsedMerged.evidence[1].endLine, 48);
+
     // 2. Stream delimiter withholding
     const streamedTokens: string[] = [];
     const filter = new StreamDelimiterFilter((token) => streamedTokens.push(token));

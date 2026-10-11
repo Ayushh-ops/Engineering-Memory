@@ -171,9 +171,11 @@ function EvidenceList({ className }: { className?: string }) {
                 {evidence.length > 0 ? (
                     evidence.map((item, idx) => {
                         const filePath = item.path;
-                        const fileName = filePath?.split('/').pop() || filePath;
-                        const lineRange = item.line !== undefined
-                            ? (item.endLine && item.endLine !== item.line ? `${item.line}-${item.endLine}` : `${item.line}`)
+                        const lastSlash = filePath.lastIndexOf('/');
+                        const fileName = lastSlash !== -1 ? filePath.slice(lastSlash + 1) : filePath;
+                        const folder = lastSlash !== -1 ? filePath.slice(0, lastSlash + 1) : '';
+                        const rangeLabel = item.line !== undefined
+                            ? (item.endLine && item.endLine !== item.line ? `L${item.line}-L${item.endLine}` : `L${item.line}`)
                             : '';
 
                         return (
@@ -184,19 +186,23 @@ function EvidenceList({ className }: { className?: string }) {
                                         selectFile(filePath);
                                     }
                                     if (item.line !== undefined) {
-                                        setCodeHighlightLine(item.line);
+                                        setCodeHighlightLine(item.line, item.endLine);
                                     }
                                     setActiveTab('Code');
                                 }}
-                                className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1 block"
-                                title={`Open ${filePath}${lineRange ? `:${lineRange}` : ''} in Code viewer`}
+                                className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1.5 block group"
+                                title={`Open ${filePath}${rangeLabel ? ` at ${rangeLabel}` : ''} in Code viewer`}
                             >
-                                <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
-                                    <span className="truncate">{fileName}</span>
-                                    {lineRange && <span>{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
-                                </div>
-                                <div className="text-[10px] text-[#8A918C] font-mono truncate">
-                                    {filePath}
+                                <div className="flex justify-between items-center font-mono text-[11px]">
+                                    <div className="truncate mr-2">
+                                        {folder && <span className="text-[#8A918C] font-normal">{folder}</span>}
+                                        <span className="font-bold text-[#E8EAE6] group-hover:text-[#4FD1B5] transition-colors">{fileName}</span>
+                                    </div>
+                                    {rangeLabel && (
+                                        <span className="text-[#4FD1B5] font-semibold shrink-0 text-[10px] bg-[#4FD1B5]/10 px-1.5 py-0.5 rounded border border-[#4FD1B5]/20">
+                                            {rangeLabel}
+                                        </span>
+                                    )}
                                 </div>
                                 {item.snippet && (
                                     <div className="text-[10px] text-[#8A918C]/80 font-mono line-clamp-3 bg-white/[0.02] p-1.5 rounded border border-white/[0.05]">

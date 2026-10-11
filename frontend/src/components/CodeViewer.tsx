@@ -52,7 +52,7 @@ function highlightCodeLine(line: string): React.ReactNode {
 }
 
 export function CodeViewer() {
-    const { repoUrl, selectedSha, selectedFile, codeHighlightLine, setCodeHighlightLine } = useAppStore();
+    const { repoUrl, selectedSha, selectedFile, codeHighlightLine, codeHighlightEndLine, setCodeHighlightLine } = useAppStore();
     const [content, setContent] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -99,11 +99,11 @@ export function CodeViewer() {
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             }
             const timer = setTimeout(() => {
-                setCodeHighlightLine(null);
-            }, 2000);
+                setCodeHighlightLine(null, null);
+            }, 3000);
             return () => clearTimeout(timer);
         }
-    }, [codeHighlightLine, content, loading, setCodeHighlightLine]);
+    }, [codeHighlightLine, codeHighlightEndLine, content, loading, setCodeHighlightLine]);
 
     const handleCopy = () => {
         if (!content) return;
@@ -174,7 +174,11 @@ export function CodeViewer() {
                 <div className="min-w-full inline-block py-2">
                     {lines.map((line, index) => {
                         const lineNum = index + 1;
-                        const isHighlighted = codeHighlightLine === lineNum;
+                        const isHighlighted = codeHighlightLine !== null && (
+                            codeHighlightEndLine !== null
+                                ? (lineNum >= codeHighlightLine && lineNum <= codeHighlightEndLine)
+                                : lineNum === codeHighlightLine
+                        );
 
                         return (
                             <div

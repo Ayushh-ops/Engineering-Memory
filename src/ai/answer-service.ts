@@ -414,87 +414,179 @@ export function parseAndValidateEvidenceAndFollowUps(
             ...(snippet ? { snippet } : {})
         });
 
-        if (validEvidence.length >= 6) break;
+        if (validEvidence.length >= 8) break;
     }
 
     // Fallback evidence: extract line references directly from cleanAnswer if still empty
     if (validEvidence.length === 0) {
-        const fallbackCandidates: Array<{ path: string; line: number; endLine?: number }> = [];
+        interface RawLineRef {
+            index: number;
+            endIndex: number;
+            path: string;
+            startLine: number;
+            endLine: number;
+        }
+
+        const rawRefs: RawLineRef[] = [];
+        const matchedSpans: Array<[number, number]> = [];
         const targetCanonical = targetPath ? knownPaths.get(normalizePath(targetPath)) : undefined;
 
-        // 1. Path-qualified references in cleanAnswer
+        // 1. Path-qualified references in cleanAnswer: e.g. <path>:14-29, <path> lines 14-29, <path>:L12, <path>:14
         const pathRefRegex = /([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)(?:[ \t]+lines?[ \t]+(\d+)(?:[ \t]*-[ \t]*(\d+))?|:L?(\d+)(?:[ \t]*-[ \t]*(?:L?)(\d+))?)/gi;
         let mPathRef: RegExpExecArray | null;
         while ((mPathRef = pathRefRegex.exec(cleanAnswer)) !== null) {
             const rawPath = mPathRef[1];
             const canonical = knownPaths.get(normalizePath(rawPath));
+            const startIdx = mPathRef.index;
+            const endIdx = mPathRef.index + mPathRef[0].length;
+            matchedSpans.push([startIdx, endIdx]);
+
             if (!canonical) continue;
-            const line = mPathRef[2] ? parseInt(mPathRef[2], 10) : (mPathRef[4] ? parseInt(mPathRef[4], 10) : undefined);
-            const endLine = mPathRef[3] ? parseInt(mPathRef[3], 10) : (mPathRef[5] ? parseInt(mPathRef[5], 10) : undefined);
-            if (line && line > 0) {
-                fallbackCandidates.push({ path: canonical, line, endLine });
+            const start = mPathRef[2] ? parseInt(mPathRef[2], 10) : (mPathRef[4] ? parseInt(mPathRef[4], 10) : undefined);
+            const end = mPathRef[3] ? parseInt(mPathRef[3], 10) : (mPathRef[5] ? parseInt(mPathRef[5], 10) : undefined);
+            if (start && start > 0) {
+                const startLine = Math.min(start, end ?? start);
+                const endLine = Math.max(start, end ?? start);
+                rawRefs.push({ index: startIdx, endIndex: endIdx, path: canonical, startLine, endLine });
             }
         }
 
-        // 2. Bare L-numbers and line numbers against target file
+        const isInsideMatchedSpan = (idx: number, end: number) => {
+            return matchedSpans.some(([s, e]) => idx >= s && end <= e);
+        };
+
+        // 2. Bare L-numbers against target file (e.g. (L14-L29), L48, L31-L46, L14)
         if (targetCanonical) {
             const lNumRegex = /(?:\(L(\d+)(?:[ \t]*-[ \t]*L?(\d+))?\)|(?<![a-zA-Z0-9_./\\-])L(\d+)(?:[ \t]*-[ \t]*L?(\d+))?)/g;
             let mLNum: RegExpExecArray | null;
             while ((mLNum = lNumRegex.exec(cleanAnswer)) !== null) {
+                const startIdx = mLNum.index;
+                const endIdx = mLNum.index + mLNum[0].length;
+                if (isInsideMatchedSpan(startIdx, endIdx)) continue;
+                matchedSpans.push([startIdx, endIdx]);
+
                 const startStr = mLNum[1] || mLNum[3];
                 const endStr = mLNum[2] || mLNum[4];
                 if (startStr) {
-                    const line = parseInt(startStr, 10);
-                    const endLine = endStr ? parseInt(endStr, 10) : undefined;
-                    if (line > 0) {
-                        fallbackCandidates.push({ path: targetCanonical, line, endLine });
+                    const start = parseInt(startStr, 10);
+                    const end = endStr ? parseInt(endStr, 10) : undefined;
+                    if (start > 0) {
+                        const startLine = Math.min(start, end ?? start);
+                        const endLine = Math.max(start, end ?? start);
+                        rawRefs.push({ index: startIdx, endIndex: endIdx, path: targetCanonical, startLine, endLine });
                     }
                 }
             }
 
+            // 3. Bare "lines X-Y" or "line X" against target file
             const linesRegex = /(?<![a-zA-Z0-9_./\\-])lines?[ \t]+(\d+)(?:[ \t]*-[ \t]*(\d+))?/gi;
             let mLines: RegExpExecArray | null;
             while ((mLines = linesRegex.exec(cleanAnswer)) !== null) {
-                const line = parseInt(mLines[1], 10);
-                const endLine = mLines[2] ? parseInt(mLines[2], 10) : undefined;
-                if (line > 0) {
-                    fallbackCandidates.push({ path: targetCanonical, line, endLine });
+                const startIdx = mLines.index;
+                const endIdx = mLines.index + mLines[0].length;
+                if (isInsideMatchedSpan(startIdx, endIdx)) continue;
+                matchedSpans.push([startIdx, endIdx]);
+
+                const start = parseInt(mLines[1], 10);
+                const end = mLines[2] ? parseInt(mLines[2], 10) : undefined;
+                if (start > 0) {
+                    const startLine = Math.min(start, end ?? start);
+                    const endLine = Math.max(start, end ?? start);
+                    rawRefs.push({ index: startIdx, endIndex: endIdx, path: targetCanonical, startLine, endLine });
                 }
             }
         }
 
-        fallbackCandidates.sort((a, b) => a.line - b.line);
+        // Build ranges in order of FIRST APPEARANCE in the answer (not sorted by line)
+        rawRefs.sort((a, b) => a.index - b.index);
 
-        for (const cand of fallbackCandidates) {
-            const normP = normalizePath(cand.path);
+        interface MergedRange {
+            path: string;
+            startLine: number;
+            endLine: number;
+            firstAppearanceIndex: number;
+        }
+
+        const canMerge = (r1: MergedRange, r2: MergedRange): boolean => {
+            if (r1.path !== r2.path) return false;
+            const minStart = Math.min(r1.startLine, r2.startLine);
+            const minEnd = r1.startLine <= r2.startLine ? r1.endLine : r2.endLine;
+            const maxStart = Math.max(r1.startLine, r2.startLine);
+            // Overlapping or adjacent (gap <= 1 line): maxStart <= minEnd + 2
+            return maxStart <= minEnd + 2;
+        };
+
+        const mergedRanges: MergedRange[] = [];
+        for (const ref of rawRefs) {
+            let merged = false;
+            for (let i = 0; i < mergedRanges.length; i++) {
+                const existing = mergedRanges[i];
+                if (canMerge(existing, { path: ref.path, startLine: ref.startLine, endLine: ref.endLine, firstAppearanceIndex: ref.index })) {
+                    mergedRanges[i] = {
+                        path: existing.path,
+                        startLine: Math.min(existing.startLine, ref.startLine),
+                        endLine: Math.max(existing.endLine, ref.endLine),
+                        firstAppearanceIndex: Math.min(existing.firstAppearanceIndex, ref.index)
+                    };
+                    merged = true;
+                    // Merge any subsequent ranges that now connect
+                    for (let j = mergedRanges.length - 1; j > i; j--) {
+                        if (canMerge(mergedRanges[i], mergedRanges[j])) {
+                            mergedRanges[i] = {
+                                path: mergedRanges[i].path,
+                                startLine: Math.min(mergedRanges[i].startLine, mergedRanges[j].startLine),
+                                endLine: Math.max(mergedRanges[i].endLine, mergedRanges[j].endLine),
+                                firstAppearanceIndex: Math.min(mergedRanges[i].firstAppearanceIndex, mergedRanges[j].firstAppearanceIndex)
+                            };
+                            mergedRanges.splice(j, 1);
+                        }
+                    }
+                    break;
+                }
+            }
+            if (!merged) {
+                mergedRanges.push({
+                    path: ref.path,
+                    startLine: ref.startLine,
+                    endLine: ref.endLine,
+                    firstAppearanceIndex: ref.index
+                });
+            }
+        }
+
+        mergedRanges.sort((a, b) => a.firstAppearanceIndex - b.firstAppearanceIndex);
+
+        for (const r of mergedRanges) {
+            const normP = normalizePath(r.path);
             const lines = fileLinesMap?.get(normP);
-            let lineNum = cand.line;
-            let endLineNum = cand.endLine;
+            let lineNum = r.startLine;
+            let endLineNum = r.endLine;
             let snippet: string | undefined = undefined;
 
             if (lines) {
                 if (lineNum > lines.length) {
                     continue;
                 }
-                if (endLineNum !== undefined && endLineNum > lines.length) {
+                if (endLineNum > lines.length) {
                     endLineNum = lines.length;
                 }
+                // Snippet = first line of the range (max 160 chars)
                 const lineText = lines[lineNum - 1] ?? "";
                 snippet = lineText.trim().slice(0, 160);
             }
 
-            const dedupKey = `${cand.path}:${lineNum}:${endLineNum ?? 0}`;
+            const dedupKey = `${r.path}:${lineNum}:${endLineNum}`;
             if (seenEvidence.has(dedupKey)) continue;
             seenEvidence.add(dedupKey);
 
             validEvidence.push({
-                path: cand.path,
+                path: r.path,
                 line: lineNum,
-                ...(endLineNum !== undefined ? { endLine: endLineNum } : {}),
+                endLine: endLineNum,
                 ...(snippet ? { snippet } : {})
             });
 
-            if (validEvidence.length >= 6) break;
+            if (validEvidence.length >= 8) break;
         }
     }
 
