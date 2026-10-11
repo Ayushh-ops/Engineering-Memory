@@ -22,7 +22,21 @@ const fib = (i: number, n: number) => {
   return new THREE.Vector3(Math.cos(t) * r, y, Math.sin(t) * r);
 };
 
-type Item = { id: string; mesh: THREE.Mesh; lbl: CSS2DObject; pri: number; always: boolean; hover: boolean; below: boolean };
+type Item = {
+  id: string;
+  mesh: THREE.Mesh;
+  lbl: CSS2DObject;
+  el: HTMLElement;
+  pri: number;
+  always: boolean;
+  hover: boolean;
+  below: boolean;
+  shown: boolean;
+  hold: number;
+  passes: number;
+  bw: number;
+  bh: number;
+};
 
 export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -65,7 +79,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const makeLabel = (name: string, folder: string, color: string, below: boolean, isCenter = false) => {
       const wrap = document.createElement('div');
       const d = document.createElement('div');
-      d.style.cssText = `transform:translateY(${below ? '125%' : '-125%'});background:rgba(16,22,26,.9);border:1px solid ${color};border-radius:6px;padding:3px 9px;font:500 12px/1.3 'IBM Plex Mono',monospace;color:#fff;white-space:nowrap;text-align:center`;
+      d.style.cssText = `transform:translateY(${below ? '125%' : '-125%'});background:rgba(16,22,26,.9);border:1px solid ${color};border-radius:6px;padding:3px 9px;font:500 12px/1.3 'IBM Plex Mono',monospace;color:#fff;white-space:nowrap;text-align:center;transition:opacity .18s ease;pointer-events:none;opacity:0;`;
       const a = document.createElement('div');
       a.textContent = name;
       a.style.fontWeight = isCenter ? '700' : '600';
@@ -75,7 +89,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       b.style.cssText = `font-size:${isCenter ? '11px' : '10.5px'};color:#8A918C`;
       d.append(a, b);
       wrap.append(d);
-      return new CSS2DObject(wrap);
+      return { obj: new CSS2DObject(wrap), el: d };
     };
 
     const addCube = (
@@ -98,21 +112,43 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
         transparent: true,
         opacity: 1.0,
         polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1,
+        polygonOffsetFactor: 2,
+        polygonOffsetUnits: 2,
       });
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), mat);
       mesh.position.copy(pos);
       mesh.userData = { id: n.id, size };
-      mesh.add(new THREE.LineSegments(
-        new THREE.EdgesGeometry(mesh.geometry),
-        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
-      ));
-      const lbl = makeLabel(n.name, n.folder, color, below, isCenter);
+
+      const outlineMat = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.35,
+        depthWrite: false,
+      });
+      const outline = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), outlineMat);
+      outline.renderOrder = 2;
+      outline.scale.setScalar(1.003);
+      mesh.add(outline);
+
+      const { obj: lbl, el: labelEl } = makeLabel(n.name, n.folder, color, below, isCenter);
       mesh.add(lbl);
       group.add(mesh);
       meshes.push(mesh);
-      items.push({ id: n.id, mesh, lbl, pri, always, hover: false, below });
+      items.push({
+        id: n.id,
+        mesh,
+        lbl,
+        el: labelEl,
+        pri,
+        always,
+        hover: false,
+        below,
+        shown: isCenter || always,
+        hold: isCenter || always ? 20 : 0,
+        passes: isCenter || always ? 2 : 0,
+        bw: 0,
+        bh: 0,
+      });
       return mesh;
     };
 
@@ -184,6 +220,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
         map: tex,
         transparent: true,
         depthWrite: false,
+        depthTest: true,
       });
       const sp = new THREE.Sprite(sMat);
       sp.scale.set(420, 420, 1);
@@ -294,16 +331,13 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       const count = children.length;
 
       children.forEach((n, k) => {
-        // dir = normalize(parent.pos + fib(k, count) * 0.9)
         const dir = parentPos.clone().add(fib(k, count).multiplyScalar(0.9)).normalize();
         const pos = parentPos.clone().addScaledVector(dir, 200);
 
         const isTop8Ind = top8IndirectIds.has(n.id);
         const pri = isTop8Ind ? 0.01 + (n.risk / 10000) : 0;
 
-        // Cube size 24, colour #9AA5B1, emissive #9AA5B1 with emissiveIntensity 0.35, opacity 1
         addCube(n, pos, 24, '#9AA5B1', 0.35, pri, isTop8Ind);
-        // dashed link to the parent stays (colour #9AA5B1, opacity 0.7)
         link(parentPos, pos, parentInfo.size / 2, 12, '#9AA5B1', true, false, 0.7);
       });
     });
@@ -317,6 +351,10 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
 
       addCube(n, pos, 24, '#9AA5B1', 0.35, pri, isTop8Ind);
     });
+
+    // Sort labels by priority only once on build
+    items.sort((a, b) => b.pri - a.pri);
+    let orderedItems = [...items];
 
     // Camera initial position & fit
     const camDir = new THREE.Vector3(0.55, 0.4, 1).normalize();
@@ -351,12 +389,86 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       const hit = ray.intersectObjects(meshes, false)[0];
       return hit ? (hit.object as THREE.Mesh) : null;
     };
+
+    // Label collision & visibility hysteresis computation
+    const v = new THREE.Vector3();
+    const computeOverlaps = () => {
+      const w = W(), h = H();
+      const placed: { x: number; y: number; w: number; h: number }[] = [];
+
+      orderedItems.forEach((it) => {
+        // Measure label sizes once after mount and cache them
+        if (!it.bw) {
+          it.bw = (it.el.offsetWidth || 110) + 6;
+          it.bh = (it.el.offsetHeight || 34) + 4;
+        }
+
+        v.copy(it.mesh.position).project(cam);
+        const sx = (v.x * 0.5 + 0.5) * w;
+        const sy = (-v.y * 0.5 + 0.5) * h + (it.below ? (it.id === center.id ? 80 : 46) : -46);
+        const box = { x: sx - it.bw / 2, y: sy - it.bh / 2, w: it.bw, h: it.bh };
+
+        const want = it.always || it.hover || it.id === center.id;
+        const clash = want && it.id !== center.id && !it.hover && placed.some((p) =>
+          box.x < p.x + p.w && box.x + box.w > p.x && box.y < p.y + p.h && box.y + box.h > p.y
+        );
+
+        const candidate = want && !clash;
+
+        if (it.hover || it.id === center.id) {
+          it.shown = true;
+          it.hold = 20;
+          it.passes = 2;
+          placed.push(box);
+        } else if (it.shown) {
+          if (candidate) {
+            it.hold = Math.max(it.hold, 20);
+            it.passes = 2;
+            placed.push(box);
+          } else {
+            if (it.hold > 0) {
+              placed.push(box);
+            } else {
+              it.shown = false;
+              it.passes = 0;
+            }
+          }
+        } else {
+          if (candidate) {
+            it.passes++;
+            if (it.passes >= 2) {
+              it.shown = true;
+              it.hold = 20;
+              placed.push(box);
+            }
+          } else {
+            it.passes = 0;
+          }
+        }
+
+        it.el.style.opacity = it.shown ? '1' : '0';
+      });
+    };
+
+    let lastHoverMesh: THREE.Mesh | null = null;
     const onMove = (e: PointerEvent) => {
       const h = pick(e);
-      items.forEach((it) => { it.hover = it.mesh === h; it.mesh.scale.setScalar(it.mesh === h ? 1.12 : 1); });
-      gl.domElement.style.cursor = h ? 'pointer' : 'grab';
+      if (h !== lastHoverMesh) {
+        lastHoverMesh = h;
+        items.forEach((it) => {
+          it.hover = it.mesh === h;
+          it.mesh.scale.setScalar(it.mesh === h ? 1.12 : 1);
+        });
+        gl.domElement.style.cursor = h ? 'pointer' : 'grab';
+        const hovered = items.find((it) => it.hover);
+        orderedItems = hovered ? [hovered, ...items.filter((it) => it !== hovered)] : [...items];
+        computeOverlaps();
+      }
     };
+
+    let interacted = false;
     const onDown = (e: PointerEvent) => {
+      interacted = true;
       controls.autoRotate = false;
       down = { x: e.clientX, y: e.clientY };
     };
@@ -369,41 +481,42 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     gl.domElement.addEventListener('pointerdown', onDown);
     gl.domElement.addEventListener('pointerup', onUp);
 
-    // Label collision
-    const v = new THREE.Vector3();
-    const updateLabels = () => {
-      const w = W(), h = H();
-      const placed: { x: number; y: number; w: number; h: number }[] = [];
-      [...items].sort((a, b) => (b.hover ? 999 : b.pri) - (a.hover ? 999 : a.pri)).forEach((it) => {
-        const want = it.always || it.hover;
-        if (!want) { it.lbl.visible = false; return; }
-        v.copy(it.mesh.position).project(cam);
-        const sx = (v.x * 0.5 + 0.5) * w;
-        const sy = (-v.y * 0.5 + 0.5) * h + (it.below ? (it.id === center.id ? 80 : 46) : -46);
-        const inner = it.lbl.element.firstElementChild as HTMLElement | null;
-        const bw = (inner?.offsetWidth || 110) + 6, bh = (inner?.offsetHeight || 34) + 4;
-        const box = { x: sx - bw / 2, y: sy - bh / 2, w: bw, h: bh };
-        const clash = !it.hover && it.id !== center.id && placed.some((p) => box.x < p.x + p.w && box.x + box.w > p.x && box.y < p.y + p.h && box.y + box.h > p.y);
-        it.lbl.visible = !clash;
-        if (!clash) placed.push(box);
-      });
-    };
-
     let raf = 0;
+    let frameCount = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
       controls.update();
-      updateLabels();
+
+      frameCount++;
+      // Decrement hold frame count
+      items.forEach((it) => {
+        if (it.hold > 0) it.hold--;
+      });
+
+      // Run overlap check every 12th frame
+      if (frameCount % 12 === 0) {
+        computeOverlaps();
+      }
+
       gl.render(scene, cam);
       lr.render(scene, cam);
     };
     loop();
 
+    let lastW = W(), lastH = H();
     const ro = new ResizeObserver(() => {
-      cam.aspect = W() / H();
-      gl.setSize(W(), H());
-      lr.setSize(W(), H());
-      fit();
+      const w = W(), h = H();
+      if (Math.abs(w - lastW) > 2 || Math.abs(h - lastH) > 2) {
+        lastW = w;
+        lastH = h;
+        cam.aspect = w / h;
+        cam.updateProjectionMatrix();
+        gl.setSize(w, h);
+        lr.setSize(w, h);
+        if (!interacted) {
+          fit();
+        }
+      }
     });
     ro.observe(el);
 
