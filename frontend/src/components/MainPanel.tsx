@@ -414,110 +414,6 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
     );
 }
 
-export function cleanAnswerMarkers(text: string): string {
-    if (!text) return '';
-    return text
-        // Clean 【file:path:14-46】 or 【path:14-46】 or 【file:path】 or 【path】 markers
-        .replace(/【(?:file:)?([^】]+)】/g, '')
-        // Clean (file:path:14-46) or (file:path) markers
-        .replace(/\(file:[^\)]+\)/gi, '')
-        // Clean [file:path:14-46] or [file:path] markers
-        .replace(/\[file:[^\]]+\]/gi, '')
-        // Strip any ```json block
-        .replace(/```[ \t]*json\b[\s\S]*?(?:```|$)/gi, '')
-        // Strip any stray `json` text
-        .replace(/`json`/gi, '')
-        // Strip <<<FOLLOWUPS>>> markers
-        .replace(/<<<FOLLOWUPS>>>[\s\S]*?(?:<<<END_FOLLOWUPS>>>|$)/gi, '')
-        .replace(/<<<END_FOLLOWUPS>>>/gi, '')
-        .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[\s\S]*$/gim, '')
-        // Clean any extra spaces before punctuation or duplicate spaces
-        .replace(/[ \t]+([.,;?!])/g, '$1')
-        .replace(/[ \t]{2,}/g, ' ')
-        .trim();
-}
-
-export function extractValidEvidence(text: string, analyzedPaths: Set<string>): string[] {
-    if (!text) return [];
-
-    const pathToFirstLine = new Map<string, string | undefined>();
-    const orderedPaths: string[] = [];
-
-    const registerPath = (rawPath: string, lineStr?: string) => {
-        if (!rawPath) return;
-        // Never treat URLs or host:port as evidence
-        if (
-            rawPath.includes("http") ||
-            rawPath.includes("localhost") ||
-            rawPath.includes("127.0.0.1") ||
-            rawPath.includes("://")
-        ) {
-            return;
-        }
-
-        const cleanPath = rawPath.replace(/^file:/i, "").replace(/^\.\//, "").trim();
-        let matchedPath: string | null = null;
-
-        if (analyzedPaths.has(cleanPath)) {
-            matchedPath = cleanPath;
-        } else if (analyzedPaths.has(rawPath)) {
-            matchedPath = rawPath;
-        } else if (analyzedPaths.size > 0) {
-            for (const ap of analyzedPaths) {
-                if (ap.endsWith("/" + cleanPath) || ap === cleanPath) {
-                    matchedPath = ap;
-                    break;
-                }
-            }
-        } else if (/\.[a-zA-Z0-9]+$/.test(cleanPath)) {
-            matchedPath = cleanPath;
-        }
-
-        if (matchedPath) {
-            const cleanLine = lineStr ? lineStr.replace(/^L/i, "").trim() : undefined;
-            if (!pathToFirstLine.has(matchedPath)) {
-                pathToFirstLine.set(matchedPath, cleanLine || undefined);
-                orderedPaths.push(matchedPath);
-            } else if (!pathToFirstLine.get(matchedPath) && cleanLine) {
-                pathToFirstLine.set(matchedPath, cleanLine);
-            }
-        }
-    };
-
-    // 1. Chinese/Japanese brackets: 【file:path:14-46】 or 【path:14-46】
-    const marker1Regex = /【(?:file:)?([^】:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?】/gi;
-    let m1: RegExpExecArray | null;
-    while ((m1 = marker1Regex.exec(text)) !== null) {
-        registerPath(m1[1], m1[2]);
-    }
-
-    // 2. Parentheses with file prefix: (file:path:14-46) or (file:path)
-    const marker2Regex = /\(file:([^\)\s:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?\)/gi;
-    let m2: RegExpExecArray | null;
-    while ((m2 = marker2Regex.exec(text)) !== null) {
-        registerPath(m2[1], m2[2]);
-    }
-
-    // 3. Square brackets with file prefix: [file:path:14-46] or [file:path]
-    const marker3Regex = /\[file:([^\]\s:]+?)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?\]/gi;
-    let m3: RegExpExecArray | null;
-    while ((m3 = marker3Regex.exec(text)) !== null) {
-        registerPath(m3[1], m3[2]);
-    }
-
-    // 4. Standard path:line tokens e.g. src/auth.ts:14-46 or auth.ts:14
-    const tokenRegex = /(?:^|[\s`(\[<"'])((?:[a-zA-Z0-9_.-]+\/)*[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+)(?::(?:line\s*|L)?(\d+(?:-\d+)?))?(?:$|[\s`\)\]>"',;:?.])/g;
-    let match: RegExpExecArray | null;
-    while ((match = tokenRegex.exec(text)) !== null) {
-        registerPath(match[1], match[2]);
-    }
-
-    return orderedPaths.map(p => {
-        const line = pathToFirstLine.get(p);
-        return line ? `${p}:${line}` : p;
-    });
-}
-
 function renderInlineMarkdown(text: string): React.ReactNode[] {
     if (!text) return [];
 
@@ -2363,7 +2259,7 @@ export function MainPanel({ className }: { className?: string }) {
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
         changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
         treeFiles, setTreeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
-        setAiCitations, meta
+        setAiCitations, setAiEvidence, meta
     } = useAppStore();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
@@ -2564,8 +2460,45 @@ export function MainPanel({ className }: { className?: string }) {
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
     const [askQ, setAskQ] = useState('');
-    const [aiError, setAiError] = useState<{ message: string; rawCode?: string } | null>(null);
-    const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>>([]);
+    const [aiError, setAiError] = useState<{ message: string; code?: string; retryAfterSeconds?: number } | null>(null);
+    const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
+    const [askMode, setAskMode] = useState<import('../api').AskMode>('detailed');
+    const [askScope, setAskScope] = useState<import('../api').AskScope>('file');
+    const [chatMessages, setChatMessages] = useState<Array<{
+        role: 'user' | 'assistant';
+        content: string;
+        followups?: string[];
+        evidence?: import('../api').AskEvidenceItem[];
+        usedContext?: import('../api').AskUsedContext;
+        missingData?: string[];
+        status?: string;
+        error?: any;
+        retryAfterSeconds?: number;
+        stopped?: boolean;
+        isThinking?: boolean;
+    }>>([]);
+
+    useEffect(() => {
+        if (aiError?.code === 'rate_limited' && (aiError.retryAfterSeconds ?? 0) > 0) {
+            setRateLimitCountdown(aiError.retryAfterSeconds!);
+        } else {
+            setRateLimitCountdown(0);
+        }
+    }, [aiError]);
+
+    useEffect(() => {
+        if (rateLimitCountdown <= 0) return;
+        const interval = setInterval(() => {
+            setRateLimitCountdown(prev => {
+                if (prev <= 1) {
+                    clearInterval(interval);
+                    return 0;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [rateLimitCountdown]);
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [healthData, setHealthData] = useState<import('../api').HealthSummaryResult | null>(null);
     const [healthLoading, setHealthLoading] = useState(false);
@@ -2629,18 +2562,31 @@ export function MainPanel({ className }: { className?: string }) {
         setChatMessages([]);
     }, [chatStorageKey]);
 
-    // Keep aiCitations in sync with the latest assistant message
+    // Keep aiEvidence in sync with the latest assistant message
     useEffect(() => {
         const lastAssistant = chatMessages.slice().reverse().find(m => m.role === 'assistant' && !m.isThinking);
-        if (lastAssistant && lastAssistant.content) {
-            const chips = extractValidEvidence(lastAssistant.content, analyzedPaths);
-            setAiCitations(chips);
+        if (lastAssistant && lastAssistant.evidence) {
+            setAiEvidence(lastAssistant.evidence);
+            setAiCitations(lastAssistant.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
         } else {
+            setAiEvidence([]);
             setAiCitations([]);
         }
-    }, [chatMessages, analyzedPaths, setAiCitations]);
+    }, [chatMessages, setAiEvidence, setAiCitations]);
 
-    const saveChatMessages = useCallback((msgs: Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }>) => {
+    const saveChatMessages = useCallback((msgs: Array<{
+        role: 'user' | 'assistant';
+        content: string;
+        followups?: string[];
+        evidence?: import('../api').AskEvidenceItem[];
+        usedContext?: import('../api').AskUsedContext;
+        missingData?: string[];
+        status?: string;
+        error?: any;
+        retryAfterSeconds?: number;
+        stopped?: boolean;
+        isThinking?: boolean;
+    }>) => {
         const toSave = msgs.filter(m => !m.isThinking).slice(-30);
         setChatMessages(msgs);
         if (chatStorageKey) {
@@ -2655,6 +2601,7 @@ export function MainPanel({ className }: { className?: string }) {
     const handleNewChat = useCallback(() => {
         setChatMessages([]);
         setAiCitations([]);
+        setAiEvidence([]);
         setAiError(null);
         setAskQ('');
         if (chatStorageKey) {
@@ -2664,7 +2611,7 @@ export function MainPanel({ className }: { className?: string }) {
                 // ignore
             }
         }
-    }, [chatStorageKey, setAiCitations]);
+    }, [chatStorageKey, setAiCitations, setAiEvidence]);
 
     const buildMarkdownReport = useCallback(async (): Promise<string> => {
         const fileName = selectedFile ? selectedFile.split('/').pop() : (selectedSymbol?.name || 'unknown');
@@ -2978,156 +2925,44 @@ ${lastAssistant?.content || 'No response recorded.'}
         setAskQ('');
     }, [selectedFile]);
 
-    const formatAiError = (err: any): { message: string; rawCode?: string } => {
-        const rawMsg = err instanceof Error ? err.message : (typeof err === 'object' ? JSON.stringify(err) : String(err));
-        if (rawMsg.includes('bad_request')) {
-            return { message: "The AI request was rejected. Check the server logs.", rawCode: 'bad_request' };
+    const formatAiError = (err: any): { message: string; code?: string; retryAfterSeconds?: number } => {
+        const rawCode = String(err?.code || (err?.data && err.data.code) || '').toLowerCase();
+        const rawMsg = err instanceof Error ? err.message : (typeof err === 'object' ? (err.message || '') : String(err));
+        const combined = `${rawCode} ${rawMsg}`.toLowerCase();
+        const retryAfter = typeof err?.retryAfterSeconds === 'number'
+            ? err.retryAfterSeconds
+            : (typeof err?.data?.retryAfterSeconds === 'number' ? err.data.retryAfterSeconds : undefined);
+
+        if (combined.includes('rate_limited') || combined.includes('rate_limit')) {
+            const sec = retryAfter && retryAfter > 0 ? retryAfter : 30;
+            return {
+                code: 'rate_limited',
+                message: `Rate limit reached. You can try again in ${sec}s.`,
+                retryAfterSeconds: sec
+            };
         }
-        if (rawMsg.includes('invalid_api_key')) {
-            return { message: "API key is invalid. Check your .env.", rawCode: 'invalid_api_key' };
+        if (combined.includes('invalid_api_key') || combined.includes('missing_api_key')) {
+            return { message: "API key is missing or invalid. Check your .env file.", code: 'invalid_api_key' };
         }
-        if (rawMsg.includes('rate_limited') || rawMsg.includes('rate_limit')) {
-            return { message: "Rate limit reached. Try again in a minute.", rawCode: 'rate_limited' };
+        if (combined.includes('model_not_found')) {
+            return { message: "The configured model is not available. Check LLM_MODEL in .env.", code: 'model_not_found' };
         }
-        if (rawMsg.includes('model_not_found')) {
-            return { message: "The model name isn't available. Check LLM_MODEL.", rawCode: 'model_not_found' };
+        if (combined.includes('provider_unavailable') || combined.includes('timeout')) {
+            return { message: "AI service unreachable. Please retry.", code: 'provider_unavailable' };
         }
-        if (rawMsg.includes('provider_unavailable') || rawMsg.includes('timeout')) {
-            return { message: "AI service unreachable. Retry.", rawCode: 'provider_unavailable' };
+        if (combined.includes('insufficient_context')) {
+            return { message: "The supplied repository context is insufficient to answer this question.", code: 'insufficient_context' };
         }
-        if (rawMsg.includes('insufficient_context')) {
-            return { message: "The supplied repository context is insufficient to answer this question.", rawCode: 'insufficient_context' };
+        if (combined.includes('oversized_context')) {
+            return { message: "Context is too large for this model. Try asking about a single file.", code: 'oversized_context' };
         }
-        return { message: rawMsg };
-    };
-
-    const parseAnswerFollowups = (rawAnswer: string): { cleanAnswer: string; followups: string[] } => {
-        if (!rawAnswer) return { cleanAnswer: '', followups: [] };
-
-        let cleanAnswer = rawAnswer;
-        let followups: string[] = [];
-
-        const isPlaceholder = (text: string) => {
-            const lower = text.toLowerCase().trim();
-            if (lower.length < 5) return true;
-            if (/^q\s*\d+$/i.test(lower)) return true;
-            if (/^question\s*\d*$/i.test(lower)) return true;
-            if (/^<question\s*\d*>$/i.test(lower)) return true;
-            if (/^<q\d+>$/i.test(lower)) return true;
-            if (/^\[question\s*\d*\]$/i.test(lower)) return true;
-            if (lower === 'q1' || lower === 'q2' || lower === 'q3') return true;
-            if (lower.includes('(short questions)') || lower.includes('(3 real') || lower.includes('(generate 3')) return true;
-            return false;
-        };
-
-        const tryExtractJsonArray = (text: string): string[] => {
-            const jsonArrayRegex = /\[\s*"[\s\S]*?"\s*\]/;
-            const match = text.match(jsonArrayRegex);
-            if (match) {
-                try {
-                    const parsed = JSON.parse(match[0]);
-                    if (Array.isArray(parsed)) {
-                        return parsed
-                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
-                            .map(item => item.trim())
-                            .slice(0, 3);
-                    }
-                } catch {
-                    // ignore
-                }
-            }
-            return [];
-        };
-
-        const delimitedRegex = /<<<FOLLOWUPS>>>([\s\S]*?)(?:<<<END_FOLLOWUPS>>>|$)/i;
-        const delimitedMatch = rawAnswer.match(delimitedRegex);
-
-        if (delimitedMatch && delimitedMatch.index !== undefined) {
-            cleanAnswer = rawAnswer.slice(0, delimitedMatch.index).trim();
-            let rawBlock = (delimitedMatch[1] || '').trim();
-            if (rawBlock.startsWith('```')) {
-                rawBlock = rawBlock.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
-            }
-            try {
-                const parsed = JSON.parse(rawBlock);
-                if (Array.isArray(parsed)) {
-                    followups = parsed
-                        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
-                        .map(item => item.trim())
-                        .slice(0, 3);
-                }
-            } catch {
-                followups = tryExtractJsonArray(rawBlock);
-            }
-        } else {
-            const legacyRegex = /(?:^|\r?\n)\s*FOLLOWUPS:\s*([\s\S]*)$/i;
-            const legacyMatch = rawAnswer.match(legacyRegex);
-            if (legacyMatch && legacyMatch.index !== undefined) {
-                cleanAnswer = rawAnswer.slice(0, legacyMatch.index).trim();
-                const trailing = (legacyMatch[1] || '').trim();
-                try {
-                    const parsed = JSON.parse(trailing);
-                    if (Array.isArray(parsed)) {
-                        followups = parsed
-                            .filter((item): item is string => typeof item === 'string' && item.trim().length > 0 && !isPlaceholder(item))
-                            .map(item => item.trim())
-                            .slice(0, 3);
-                    }
-                } catch {
-                    followups = tryExtractJsonArray(trailing);
-                }
-            }
+        if (combined.includes('bad_request') || combined.includes('invalid_question') || combined.includes('invalid_graph')) {
+            return { message: "The AI request could not be processed. Check the server logs.", code: 'bad_request' };
         }
-
-        // Try extracting from any ```json block if not yet found
-        if (followups.length === 0) {
-            const jsonFenceRegex = /```[ \t]*json\b\s*([\s\S]*?)```/gi;
-            let fenceMatch: RegExpExecArray | null;
-            while ((fenceMatch = jsonFenceRegex.exec(rawAnswer)) !== null) {
-                const candidates = tryExtractJsonArray(fenceMatch[1]);
-                if (candidates.length > 0) {
-                    followups = candidates;
-                    break;
-                }
-            }
+        if (rawMsg && !rawMsg.startsWith('{') && !rawMsg.includes('JSON')) {
+            return { message: rawMsg, code: 'unknown' };
         }
-
-        // Strip any "Follow-up questions:" / "FOLLOWUPS:" line and trailing question list from the rendered answer
-        const followUpHeaderRegex = /(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|suggested\s*questions?|recommended\s*questions?|next\s*questions?|followups)[ \t]*[:：]?[ \t]*([\s\S]*)$/i;
-        const headerMatch = cleanAnswer.match(followUpHeaderRegex);
-        if (headerMatch && headerMatch.index !== undefined) {
-            const trailing = (headerMatch[1] || '').trim();
-            cleanAnswer = cleanAnswer.slice(0, headerMatch.index).trim();
-
-            if (followups.length === 0 && trailing) {
-                const candidates = tryExtractJsonArray(trailing);
-                if (candidates.length > 0) {
-                    followups = candidates;
-                } else {
-                    const lines = trailing
-                        .split(/\r?\n/)
-                        .map(l => l.replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]*/, '').trim())
-                        .filter(l => l.length > 0 && !isPlaceholder(l));
-                    if (lines.length > 0) {
-                        followups = lines.slice(0, 3);
-                    }
-                }
-            }
-        }
-
-        // Strip any ```json block, "`json`" text and the FOLLOWUPS marker from the rendered answer
-        cleanAnswer = cleanAnswer
-            .replace(/```[ \t]*json\b[\s\S]*?(?:```|$)/gi, '')
-            .replace(/`json`/gi, '')
-            .replace(/<<<FOLLOWUPS>>>[\s\S]*?(?:<<<END_FOLLOWUPS>>>|$)/gi, '')
-            .replace(/<<<END_FOLLOWUPS>>>/gi, '')
-            .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*)?(?:follow-?ups?|follow-?up\s*questions?|followups)[ \t]*[:：]?[\s\S]*$/gim, '')
-            .trim();
-
-        return {
-            cleanAnswer,
-            followups
-        };
+        return { message: "An unexpected error occurred while communicating with the AI service.", code: 'unknown' };
     };
 
     const handleStopAi = useCallback(() => {
@@ -3137,25 +2972,33 @@ ${lastAssistant?.content || 'No response recorded.'}
         }
         setIsStreaming(false);
         setChatMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === 'assistant' && last.isThinking) {
-                return prev.slice(0, -1);
+            const copy = [...prev];
+            const last = copy[copy.length - 1];
+            if (last && last.role === 'assistant') {
+                copy[copy.length - 1] = {
+                    ...last,
+                    isThinking: false,
+                    stopped: true
+                };
             }
-            return prev;
+            return copy;
         });
     }, []);
 
-    const askAI = async (questionToAsk?: string) => {
+    const askAI = async (questionToAsk?: string, requestedMode?: import('../api').AskMode, requestedScope?: import('../api').AskScope) => {
         const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
         if (!q || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
         setAskQ('');
         setAiError(null);
 
-        const newMessages: Array<{ role: 'user' | 'assistant'; content: string; followups?: string[]; isThinking?: boolean }> = [
+        const currentMode = requestedMode || askMode;
+        const currentScope = requestedScope || askScope;
+
+        const newMessages = [
             ...chatMessages.filter(m => !m.isThinking),
-            { role: 'user', content: q },
-            { role: 'assistant', content: '', isThinking: true }
+            { role: 'user' as const, content: q },
+            { role: 'assistant' as const, content: '', isThinking: true }
         ];
         setChatMessages(newMessages);
 
@@ -3242,7 +3085,9 @@ ${lastAssistant?.content || 'No response recorded.'}
             risk: currentRisk,
             dependents: currentDependents,
             recentCommits: recentCommitsForFile,
-            owners: fileOwners
+            owners: fileOwners,
+            mode: currentMode,
+            scope: currentScope
         };
 
         let accumulatedStreamedText = '';
@@ -3261,10 +3106,10 @@ ${lastAssistant?.content || 'No response recorded.'}
                         const copy = [...prev];
                         const lastIdx = copy.length - 1;
                         if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
-                            const { cleanAnswer } = parseAnswerFollowups(accumulatedStreamedText);
                             copy[lastIdx] = {
+                                ...copy[lastIdx],
                                 role: 'assistant',
-                                content: cleanAnswer,
+                                content: accumulatedStreamedText,
                                 isThinking: false
                             };
                         }
@@ -3272,28 +3117,41 @@ ${lastAssistant?.content || 'No response recorded.'}
                     });
                 },
                 controller.signal,
-                extraContext
+                extraContext,
+                currentMode,
+                currentScope
             );
 
             if (res.status === 'error' && res.error) {
                 setChatMessages(prev => prev.filter(m => !m.isThinking && m.content.length > 0));
-                setAiError(formatAiError(res.error.code || res.error.message || res.error));
+                setAiError(formatAiError(res.error));
             } else {
-                const { cleanAnswer, followups } = parseAnswerFollowups(res.answer || accumulatedStreamedText);
                 const updated = [
                     ...newMessages.slice(0, -1),
-                    { role: 'assistant' as const, content: cleanAnswer, followups }
+                    {
+                        role: 'assistant' as const,
+                        content: res.answer || accumulatedStreamedText,
+                        followups: res.followUps,
+                        evidence: res.evidence,
+                        usedContext: res.usedContext,
+                        missingData: res.missingData,
+                        status: res.status,
+                        error: res.error,
+                        retryAfterSeconds: res.retryAfterSeconds
+                    }
                 ];
                 saveChatMessages(updated);
             }
         } catch (e: any) {
             if (controller.signal.aborted) {
-                // Stopped by user: preserve accumulated text if any
                 if (accumulatedStreamedText) {
-                    const { cleanAnswer, followups } = parseAnswerFollowups(accumulatedStreamedText);
                     const updated = [
                         ...newMessages.slice(0, -1),
-                        { role: 'assistant' as const, content: cleanAnswer, followups }
+                        {
+                            role: 'assistant' as const,
+                            content: accumulatedStreamedText,
+                            stopped: true
+                        }
                     ];
                     saveChatMessages(updated);
                 } else {
@@ -3314,6 +3172,26 @@ ${lastAssistant?.content || 'No response recorded.'}
             }, 180);
         }
     };
+
+    const handleRetry = useCallback(() => {
+        setAiError(null);
+        const lastUser = [...chatMessages].reverse().find(m => m.role === 'user');
+        if (lastUser) {
+            askAI(lastUser.content, askMode, askScope);
+        }
+    }, [chatMessages, askMode, askScope]);
+
+    const handleRegenerate = useCallback(() => {
+        const lastUser = [...chatMessages].reverse().find(m => m.role === 'user');
+        if (!lastUser) return;
+        setChatMessages(prev => {
+            const copy = [...prev];
+            if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
+                copy.pop();
+            }
+            return copy;
+        });
+    }, [chatMessages, askMode, askScope]);
 
     const reanalyze = useCallback(async () => {
         if (!graph || !selectedFile) return;
@@ -4658,6 +4536,32 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 </span>
                                             </div>
                                         }
+                                        middle={
+                                            <div className="flex items-center gap-1.5">
+                                                <select
+                                                    value={askMode}
+                                                    onChange={e => setAskMode(e.target.value as import('../api').AskMode)}
+                                                    className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                    title="Answer mode"
+                                                >
+                                                    <option value="detailed">Detailed</option>
+                                                    <option value="short">Short</option>
+                                                    <option value="steps">Steps</option>
+                                                    <option value="simple">Simple</option>
+                                                    <option value="review">Review</option>
+                                                </select>
+                                                <select
+                                                    value={askScope}
+                                                    onChange={e => setAskScope(e.target.value as import('../api').AskScope)}
+                                                    className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                    title="Analysis scope"
+                                                >
+                                                    <option value="file">File</option>
+                                                    <option value="dependents">Dependents</option>
+                                                    <option value="repo">Repo</option>
+                                                </select>
+                                            </div>
+                                        }
                                         primaryAction={
                                             <button
                                                 onClick={handleNewChat}
@@ -4678,9 +4582,30 @@ ${lastAssistant?.content || 'No response recorded.'}
                             <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3 min-h-0">
                                 {aiError && (
                                     <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
-                                        <div className="flex items-center gap-2 text-xs font-medium text-red-200">
-                                            <ShieldAlert size={14} className="text-red-400 shrink-0" />
-                                            <span>{aiError.message}</span>
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                <ShieldAlert size={14} className="text-red-400 shrink-0" />
+                                                <span>
+                                                    {aiError.code === 'rate_limited'
+                                                        ? (rateLimitCountdown > 0
+                                                            ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
+                                                            : "Rate limit reached. You can now try again.")
+                                                        : aiError.message}
+                                                </span>
+                                            </div>
+                                            <button
+                                                disabled={aiError.code === 'rate_limited' && rateLimitCountdown > 0}
+                                                onClick={handleRetry}
+                                                className={cn(
+                                                    "text-[11px] px-2.5 py-1 rounded font-medium transition-colors shrink-0 flex items-center gap-1",
+                                                    aiError.code === 'rate_limited' && rateLimitCountdown > 0
+                                                        ? "opacity-50 cursor-not-allowed bg-red-500/10 text-red-400 border border-red-500/20"
+                                                        : "bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 cursor-pointer"
+                                                )}
+                                            >
+                                                <RefreshCw size={11} />
+                                                <span>Retry</span>
+                                            </button>
                                         </div>
                                     </div>
                                 )}
@@ -4717,44 +4642,90 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                         </div>
                                                     ) : (
                                                         <>
-                                                            <MarkdownRenderer content={cleanAnswerMarkers(msg.content)} />
+                                                            <MarkdownRenderer content={msg.content} />
 
-                                                            {/* Evidence chips: only real repo references */}
-                                                            {(() => {
-                                                                const citations = extractValidEvidence(msg.content, analyzedPaths);
-                                                                if (citations.length === 0) return null;
-                                                                return (
-                                                                    <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                        <span className="text-[10px] text-[#8A918C]">Evidence:</span>
-                                                                        {citations.map((c, cIdx) => {
-                                                                            const lastColon = c.lastIndexOf(':');
-                                                                            const hasColon = lastColon !== -1;
-                                                                            const linePart = hasColon ? c.substring(lastColon + 1) : '';
-                                                                            const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
-                                                                            const filePath = hasLine ? c.substring(0, lastColon) : c;
-                                                                            const lineRange = hasLine ? linePart : '';
-                                                                            const fileName = filePath.split('/').pop() || filePath;
-                                                                            const label = lineRange ? `${fileName}:${lineRange}` : fileName;
-                                                                            const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
+                                                            {msg.stopped && (
+                                                                <div className="pt-1 text-[11px] text-[#E3A04A] font-mono flex items-center gap-1">
+                                                                    <span>Stopped</span>
+                                                                </div>
+                                                            )}
 
-                                                                            return (
-                                                                                <button
-                                                                                    key={cIdx}
-                                                                                    onClick={() => {
-                                                                                        if (filePath) setSelectedFile(filePath);
-                                                                                        if (!isNaN(startLine)) setCodeHighlightLine(startLine);
-                                                                                        setActiveTab('Code');
-                                                                                    }}
-                                                                                    className="font-mono text-[10px] px-2 py-0.5 rounded-md border border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer transition-colors"
-                                                                                    title={"Open " + c + " in Code viewer"}
-                                                                                >
-                                                                                    {label}
-                                                                                </button>
-                                                                            );
-                                                                        })}
-                                                                    </div>
-                                                                );
-                                                            })()}
+                                                            {/* Evidence chips: mono, path:line, base name bold, folder muted */}
+                                                            {msg.evidence && msg.evidence.length > 0 && (
+                                                                <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                    <span className="text-[10px] text-[#8A918C]">Evidence:</span>
+                                                                    {msg.evidence.map((item, eIdx) => {
+                                                                        const fullPath = item.path;
+                                                                        const lastSlash = fullPath.lastIndexOf('/');
+                                                                        const folder = lastSlash !== -1 ? fullPath.slice(0, lastSlash + 1) : '';
+                                                                        const baseName = lastSlash !== -1 ? fullPath.slice(lastSlash + 1) : fullPath;
+                                                                        const linePart = item.line !== undefined
+                                                                            ? (item.endLine && item.endLine !== item.line ? `:${item.line}-${item.endLine}` : `:${item.line}`)
+                                                                            : '';
+
+                                                                        const isAnalyzed = analyzedPaths.has(fullPath) ||
+                                                                            analyzedPaths.has(fullPath.replace(/^\.\//, '')) ||
+                                                                            Array.from(analyzedPaths).some(p => p.endsWith('/' + fullPath) || fullPath.endsWith('/' + p));
+
+                                                                        const tooltip = isAnalyzed
+                                                                            ? `${fullPath}${linePart}${item.snippet ? `\n\n${item.snippet}` : ''}`
+                                                                            : 'Not analyzed';
+
+                                                                        return (
+                                                                            <button
+                                                                                key={eIdx}
+                                                                                disabled={!isAnalyzed}
+                                                                                onClick={() => {
+                                                                                    if (!isAnalyzed) return;
+                                                                                    selectFile(fullPath);
+                                                                                    if (item.line !== undefined) {
+                                                                                        setCodeHighlightLine(item.line);
+                                                                                    }
+                                                                                    setActiveTab('Code');
+                                                                                }}
+                                                                                className={cn(
+                                                                                    "font-mono text-[10px] px-2 py-0.5 rounded-md border transition-colors inline-flex items-center",
+                                                                                    isAnalyzed
+                                                                                        ? "border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer"
+                                                                                        : "border-white/5 bg-white/[0.01] text-[#8A918C]/40 cursor-not-allowed opacity-60"
+                                                                                )}
+                                                                                title={tooltip}
+                                                                            >
+                                                                                {folder && <span className="text-[#8A918C] font-normal">{folder}</span>}
+                                                                                <span className="font-semibold">{baseName}</span>
+                                                                                {linePart && <span className="font-normal">{linePart}</span>}
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            )}
+
+                                                            {/* Status line: muted 12px "Based on N files and M commits" from usedContext, plus "cached" badge */}
+                                                            {msg.usedContext && (
+                                                                <div className="pt-2 text-[12px] text-[#8A918C] flex items-center gap-2 flex-wrap font-sans">
+                                                                    <span>Based on {msg.usedContext.files} {msg.usedContext.files === 1 ? 'file' : 'files'} and {msg.usedContext.commits} {msg.usedContext.commits === 1 ? 'commit' : 'commits'}</span>
+                                                                    {msg.usedContext.cached && (
+                                                                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5]">
+                                                                            cached
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            )}
+
+                                                            {/* Collapsible disclosure "What I could not see" if missingData is non-empty */}
+                                                            {msg.missingData && msg.missingData.length > 0 && (
+                                                                <details className="pt-1.5 text-[11px] text-[#8A918C] group cursor-pointer font-sans">
+                                                                    <summary className="hover:text-[#E8EAE6] transition-colors select-none list-none flex items-center gap-1 font-mono">
+                                                                        <span className="group-open:rotate-90 transition-transform inline-block">›</span>
+                                                                        <span>What I could not see</span>
+                                                                    </summary>
+                                                                    <ul className="mt-1 pl-4 list-disc space-y-0.5 text-[11px] text-[#8A918C]/80">
+                                                                        {msg.missingData.map((item, mIdx) => (
+                                                                            <li key={mIdx}>{item}</li>
+                                                                        ))}
+                                                                    </ul>
+                                                                </details>
+                                                            )}
 
                                                             {/* Follow-up chips */}
                                                             {msg.followups && msg.followups.length > 0 && (
@@ -4768,6 +4739,20 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                                             {followup}
                                                                         </button>
                                                                     ))}
+                                                                </div>
+                                                            )}
+
+                                                            {/* Regenerate under the last answer */}
+                                                            {idx === chatMessages.length - 1 && !isStreaming && (
+                                                                <div className="pt-2 flex items-center gap-2">
+                                                                    <button
+                                                                        onClick={handleRegenerate}
+                                                                        className="text-[11px] font-sans px-2 py-0.5 rounded border border-white/10 hover:border-white/20 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer flex items-center gap-1.5"
+                                                                        title="Regenerate with last question"
+                                                                    >
+                                                                        <RefreshCw size={11} />
+                                                                        <span>Regenerate</span>
+                                                                    </button>
                                                                 </div>
                                                             )}
                                                         </>
@@ -4816,7 +4801,14 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     <input
                                         value={askQ}
                                         onChange={e => setAskQ(e.target.value)}
-                                        onKeyDown={e => e.key === 'Enter' && !isStreaming && askAI()}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault();
+                                                if (!isStreaming) {
+                                                    askAI();
+                                                }
+                                            }
+                                        }}
                                         placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
                                         className="flex-1 bg-transparent px-3 py-1.5 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans"
                                     />

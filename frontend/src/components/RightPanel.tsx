@@ -152,37 +152,9 @@ function CommitDetails({ className }: { className?: string }) {
 }
 
 function EvidenceList({ className }: { className?: string }) {
-    const { selectedFile, aiCitations, selectFile, setCodeHighlightLine, setActiveTab } = useAppStore();
+    const { aiEvidence, selectFile, setCodeHighlightLine, setActiveTab } = useAppStore();
 
-    if (!selectedFile) {
-        return (
-            <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
-                <div className="p-3.5 border-b border-white/10">
-                    <div className="flex items-center justify-between">
-                        <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
-                            <MessageSquare size={13} className="text-[#4FD1B5]" />
-                            <span>Evidence list</span>
-                        </h3>
-                        <Badge variant="default">0 cited</Badge>
-                    </div>
-                    <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
-                        No file selected
-                    </div>
-                </div>
-                <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-[#8A918C]">
-                    <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#4FD1B5] bg-white/[0.02]">
-                        <MessageSquare size={18} />
-                    </div>
-                    <div className="text-xs font-medium text-[#E8EAE6] mb-1">No file selected</div>
-                    <div className="text-[11px] text-[#8A918C] max-w-[200px] leading-relaxed">
-                        Select a file to inspect its cited evidence and sources.
-                    </div>
-                </div>
-            </div>
-        );
-    }
-
-    const citations = aiCitations || [];
+    const evidence = aiEvidence || [];
     return (
         <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
             <div className="p-3.5 border-b border-white/10">
@@ -191,39 +163,33 @@ function EvidenceList({ className }: { className?: string }) {
                         <MessageSquare size={13} className="text-[#4FD1B5]" />
                         <span>Evidence list</span>
                     </h3>
-                    <Badge variant="default">{citations.length} cited</Badge>
-                </div>
-                <div className="text-[11px] text-[#8A918C] font-mono truncate mt-1">
-                    {selectedFile ? selectedFile.split('/').pop() : 'Context sources'}
+                    <Badge variant="default">{evidence.length} cited</Badge>
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-3 text-xs">
-                {citations.length > 0 ? (
-                    citations.map((c: string, idx: number) => {
-                        const lastColon = c.lastIndexOf(':');
-                        const hasColon = lastColon !== -1;
-                        const linePart = hasColon ? c.substring(lastColon + 1) : '';
-                        const hasLine = /^\d+(?:-\d+)?$/.test(linePart);
-                        const filePath = hasLine ? c.substring(0, lastColon) : c;
-                        const lineRange = hasLine ? linePart : '';
-                        const startLine = lineRange ? parseInt(lineRange.split('-')[0], 10) : NaN;
+            <div className="flex-1 overflow-y-auto scrollbar-custom p-3.5 space-y-2.5 text-xs">
+                {evidence.length > 0 ? (
+                    evidence.map((item, idx) => {
+                        const filePath = item.path;
                         const fileName = filePath?.split('/').pop() || filePath;
+                        const lineRange = item.line !== undefined
+                            ? (item.endLine && item.endLine !== item.line ? `${item.line}-${item.endLine}` : `${item.line}`)
+                            : '';
 
                         return (
                             <button
                                 key={idx}
                                 onClick={() => {
-                                    if (selectFile) {
+                                    if (selectFile && filePath) {
                                         selectFile(filePath);
                                     }
-                                    if (!isNaN(startLine)) {
-                                        setCodeHighlightLine(startLine);
+                                    if (item.line !== undefined) {
+                                        setCodeHighlightLine(item.line);
                                     }
                                     setActiveTab('Code');
                                 }}
                                 className="w-full text-left glass-surface p-2.5 rounded-lg border-white/10 hover:border-[#4FD1B5]/40 hover:bg-white/[0.04] transition-colors cursor-pointer space-y-1 block"
-                                title={`Open ${c} in Code viewer`}
+                                title={`Open ${filePath}${lineRange ? `:${lineRange}` : ''} in Code viewer`}
                             >
                                 <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
                                     <span className="truncate">{fileName}</span>
@@ -232,13 +198,17 @@ function EvidenceList({ className }: { className?: string }) {
                                 <div className="text-[10px] text-[#8A918C] font-mono truncate">
                                     {filePath}
                                 </div>
+                                {item.snippet && (
+                                    <div className="text-[10px] text-[#8A918C]/80 font-mono line-clamp-3 bg-white/[0.02] p-1.5 rounded border border-white/[0.05]">
+                                        {item.snippet}
+                                    </div>
+                                )}
                             </button>
                         );
                     })
                 ) : (
                     <div className="p-6 text-center text-[#8A918C] space-y-1.5">
-                        <div className="text-xs">No active evidence citations</div>
-                        <div className="text-[11px] text-[#8A918C]/70">Evidence citations appear when AI answers reference specific files or lines.</div>
+                        <div className="text-xs">No evidence for this answer</div>
                     </div>
                 )}
             </div>

@@ -53,6 +53,10 @@ export interface AppState {
     aiCitations: string[];
     setAiCitations: (citations: string[]) => void;
 
+    // AI Evidence (from last Ask AI answer)
+    aiEvidence: import('./api').AskEvidenceItem[];
+    setAiEvidence: (evidence: import('./api').AskEvidenceItem[]) => void;
+
     // Change Set (in-memory)
     changeSet: string[];
     addToChangeSet: (path: string) => void;
@@ -131,6 +135,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     aiCitations: [],
     setAiCitations: (citations) => set({ aiCitations: citations }),
+
+    aiEvidence: [],
+    setAiEvidence: (evidence) => set({ aiEvidence: evidence }),
 
     changeSet: [],
     addToChangeSet: (path: string) => set((state) => {

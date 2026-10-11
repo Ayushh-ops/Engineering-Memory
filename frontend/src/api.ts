@@ -140,7 +140,38 @@ export interface BatchImpactResult {
     affectedByInput: Record<string, string[]>;
 }
 
-export interface AiAnswerResult { status: string; answer: string; citations: any[]; confidence?: string; missingData?: string[]; error?: any; }
+export type AskMode = 'short' | 'detailed' | 'steps' | 'simple' | 'review';
+export type AskScope = 'file' | 'dependents' | 'repo';
+
+export interface AskEvidenceItem {
+    path: string;
+    line?: number;
+    endLine?: number;
+    snippet?: string;
+}
+
+export interface AskUsedContext {
+    files: number;
+    commits: number;
+    provider: string;
+    model: string;
+    cached: boolean;
+}
+
+export interface AskPayload {
+    status?: string;
+    answer: string;
+    citations?: any[];
+    confidence?: string;
+    missingData?: string[];
+    error?: any;
+    followUps?: string[];
+    evidence?: AskEvidenceItem[];
+    usedContext?: AskUsedContext;
+    retryAfterSeconds?: number;
+}
+
+export type AiAnswerResult = AskPayload;
 
 export interface FileOwner {
     name: string;
@@ -256,9 +287,13 @@ export const api = {
                 dependents?: string[];
                 recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
                 owners?: any;
-            }
+                mode?: AskMode;
+                scope?: AskScope;
+            },
+            mode: AskMode = 'detailed',
+            scope: AskScope = 'file'
         ) {
-            return post<AiAnswerResult>('/api/ai/ask-repository', {
+            return post<AskPayload>('/api/ai/ask-repository', {
                 url,
                 sha,
                 paths,
@@ -268,7 +303,9 @@ export const api = {
                 risk: extraContext?.risk,
                 dependents: extraContext?.dependents,
                 recentCommits: extraContext?.recentCommits,
-                owners: extraContext?.owners
+                owners: extraContext?.owners,
+                mode: extraContext?.mode || mode,
+                scope: extraContext?.scope || scope
             });
         },
         async askStream(
@@ -285,8 +322,14 @@ export const api = {
                 dependents?: string[];
                 recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
                 owners?: any;
-            }
-        ): Promise<AiAnswerResult> {
+                mode?: AskMode;
+                scope?: AskScope;
+            },
+            mode: AskMode = 'detailed',
+            scope: AskScope = 'file'
+        ): Promise<AskPayload> {
+            const effectiveMode = extraContext?.mode || mode;
+            const effectiveScope = extraContext?.scope || scope;
             try {
                 const response = await fetch('/api/ai/ask-repository', {
                     method: 'POST',
@@ -304,18 +347,24 @@ export const api = {
                         risk: extraContext?.risk,
                         dependents: extraContext?.dependents,
                         recentCommits: extraContext?.recentCommits,
-                        owners: extraContext?.owners
+                        owners: extraContext?.owners,
+                        mode: effectiveMode,
+                        scope: effectiveScope
                     }),
                     signal
                 });
 
                 if (!response.ok) {
                     const error = await response.json().catch(() => ({ error: 'Request failed' }));
-                    throw new Error(error.error || `HTTP ${response.status}`);
+                    const err = new Error(error.error || error.message || `HTTP ${response.status}`);
+                    (err as any).data = error;
+                    (err as any).code = error.code;
+                    (err as any).retryAfterSeconds = error.retryAfterSeconds;
+                    throw err;
                 }
 
                 if (!response.body) {
-                    return post<AiAnswerResult>('/api/ai/ask-repository', {
+                    return post<AskPayload>('/api/ai/ask-repository', {
                         url,
                         sha,
                         paths,
@@ -325,14 +374,16 @@ export const api = {
                         risk: extraContext?.risk,
                         dependents: extraContext?.dependents,
                         recentCommits: extraContext?.recentCommits,
-                        owners: extraContext?.owners
+                        owners: extraContext?.owners,
+                        mode: effectiveMode,
+                        scope: effectiveScope
                     });
                 }
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
-                let finalResult: AiAnswerResult | null = null;
+                let finalResult: AskPayload | null = null;
                 let currentEvent = 'message';
 
                 while (true) {
@@ -345,27 +396,41 @@ export const api = {
 
                     for (const line of lines) {
                         const trimmed = line.trim();
-                        if (!trimmed.startsWith('event:')) {
+                        if (trimmed.startsWith(':')) {
+                            continue;
+                        }
+                        if (trimmed === '') {
+                            currentEvent = 'message';
+                            continue;
+                        }
+                        if (trimmed.startsWith('event:')) {
                             currentEvent = trimmed.slice(6).trim();
                             continue;
                         }
-                        if (!trimmed.startsWith('data:')) continue;
-                        const jsonStr = trimmed.slice(5).trim();
-                        if (!jsonStr) continue;
+                        if (trimmed.startsWith('data:')) {
+                            const jsonStr = trimmed.slice(5).trim();
+                            if (!jsonStr) continue;
 
-                        try {
-                            const data = JSON.parse(jsonStr);
+                            let data: any;
+                            try {
+                                data = JSON.parse(jsonStr);
+                            } catch {
+                                continue;
+                            }
+
                             if (currentEvent === 'token') {
                                 if (typeof data.token === 'string') {
                                     onToken(data.token);
                                 }
                             } else if (currentEvent === 'done') {
-                                finalResult = data as AiAnswerResult;
+                                finalResult = data as AskPayload;
                             } else if (currentEvent === 'error') {
-                                throw new Error(data.message || data.code || 'AI service error');
+                                const err = new Error(data.message || data.code || 'AI service error');
+                                (err as any).data = data;
+                                (err as any).code = data.code;
+                                (err as any).retryAfterSeconds = data.retryAfterSeconds;
+                                throw err;
                             }
-                        } catch (err: any) {
-                            if (err.message && !err.message.includes('JSON')) throw err;
                         }
                     }
                 }
@@ -376,8 +441,10 @@ export const api = {
                 if (signal?.aborted) {
                     throw err;
                 }
-                // Fall back to non-streaming endpoint if streaming fails
-                return post<AiAnswerResult>('/api/ai/ask-repository', {
+                if (err.data || err.code || err.retryAfterSeconds) {
+                    throw err;
+                }
+                return post<AskPayload>('/api/ai/ask-repository', {
                     url,
                     sha,
                     paths,
@@ -387,7 +454,9 @@ export const api = {
                     risk: extraContext?.risk,
                     dependents: extraContext?.dependents,
                     recentCommits: extraContext?.recentCommits,
-                    owners: extraContext?.owners
+                    owners: extraContext?.owners,
+                    mode: effectiveMode,
+                    scope: effectiveScope
                 });
             }
         }
