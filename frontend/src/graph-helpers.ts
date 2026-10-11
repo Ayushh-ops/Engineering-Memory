@@ -473,19 +473,22 @@ export function computeRisk(
         else indirectTestCount++;
     }
     const totalTestCount = testMap.size;
-    const hasNoTests = totalTestCount === 0;
+    const isSelfTest = isTestFile(filePath);
+    const hasNoTests = !isSelfTest && totalTestCount === 0;
 
     let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
     if (directDependents === 0 && transitiveDependents === 0) {
         rawScore = Math.min(15, rawScore);
     }
-    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+    const score = Math.min(100, Math.max(0, Math.round(100 * (1 - Math.exp(-rawScore / 60)))));
 
-    const testCoverageText = hasNoTests
-        ? "No test covers this file"
-        : directTestCount === 0
-            ? `Only indirect tests cover it (${indirectTestCount})`
-            : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
+    const testCoverageText = isSelfTest
+        ? "This is a test file"
+        : hasNoTests
+            ? "No test covers this file"
+            : directTestCount === 0
+                ? `Only indirect tests cover it (${indirectTestCount})`
+                : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
 
     const reasons: Array<{ label: string; value: string }> = [
         { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },
@@ -588,19 +591,22 @@ export function computeChangeSetRisk(
         else indirectTestCount++;
     }
     const totalTestCount = testMap.size;
-    const hasNoTests = totalTestCount === 0;
+    const isAllTestFiles = changeSetFiles.length > 0 && changeSetFiles.every(f => isTestFile(f));
+    const hasNoTests = !isAllTestFiles && totalTestCount === 0;
 
     let rawScore = 4 * directDependents + 2 * transitiveDependents + 0.25 * churnPercent + (hasNoTests ? 10 : 0);
     if (directDependents === 0 && transitiveDependents === 0) {
         rawScore = Math.min(15, rawScore);
     }
-    const score = Math.min(100, Math.max(0, Math.round(rawScore)));
+    const score = Math.min(100, Math.max(0, Math.round(100 * (1 - Math.exp(-rawScore / 60)))));
 
-    const testCoverageText = hasNoTests
-        ? "No test covers this file"
-        : directTestCount === 0
-            ? `Only indirect tests cover it (${indirectTestCount})`
-            : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
+    const testCoverageText = isAllTestFiles
+        ? "This is a test file"
+        : hasNoTests
+            ? "No test covers this file"
+            : directTestCount === 0
+                ? `Only indirect tests cover it (${indirectTestCount})`
+                : `Covered by ${totalTestCount} test${totalTestCount === 1 ? "" : "s"}`;
 
     const reasons: Array<{ label: string; value: string }> = [
         { label: "Direct dependents", value: `${directDependents} file${directDependents === 1 ? "" : "s"}` },

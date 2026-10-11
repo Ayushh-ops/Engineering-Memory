@@ -1507,12 +1507,14 @@ function placeTiltedRingArc(
     // For left half (Imports, x < 0): angle centered around Math.PI
     // For right half (Imported by, x > 0): angle centered around 0
     const centerAngle = isLeftHalf ? Math.PI : 0;
-    const arcSpan = count === 1 ? 0 : Math.min(Math.PI * 0.78, 0.35 + (count - 1) * 0.28);
+    const arcSpan = count === 1 ? 0 : Math.min(Math.PI * 0.85, 0.4 + (count - 1) * 0.3);
 
     nodeIds.forEach((id, idx) => {
         let angle = centerAngle;
         if (count > 1) {
-            angle = (centerAngle - arcSpan / 2) + (idx / (count - 1)) * arcSpan;
+            const step = arcSpan / (count - 1);
+            const stagger = rankOffset === 1 ? (step * 0.5) : 0;
+            angle = (centerAngle - arcSpan / 2) + idx * step + stagger;
         }
 
         const x0 = radius * Math.cos(angle);
@@ -1787,12 +1789,12 @@ function create3DLabelPill(
 
     // Scale in 3D world units:
     const aspect = w / h;
-    const worldHeight = folderName ? 7.2 : 5.0;
+    const worldHeight = folderName ? 16 : 12;
     sprite.scale.set(worldHeight * aspect, worldHeight, 1);
 
     (sprite as any).userData = {
-        boxWidth: Math.max(70, w / dpr),
-        boxHeight: Math.max(24, h / dpr)
+        boxWidth: Math.max(90, w / dpr),
+        boxHeight: Math.max(28, h / dpr)
     };
 
     return sprite;
@@ -2027,8 +2029,16 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 ];
             }
         } else {
-            const all3D = [centerNode, ...importsNodes, ...importedByNodes, ...indirectNodes];
-            displayed = showAllNodes ? all3D : all3D.slice(0, 30);
+            if (showAllNodes) {
+                displayed = [centerNode, ...importsNodes, ...importedByNodes, ...indirectNodes];
+            } else {
+                displayed = [
+                    centerNode,
+                    ...importsNodes.slice(0, 12),
+                    ...importedByNodes.slice(0, 12),
+                    ...indirectNodes.slice(0, 12)
+                ];
+            }
         }
 
         return {
@@ -2911,10 +2921,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         }
 
                         // Edges start at cube border, not center, so lines do not merge into one blob at selected cube
-                        const sourceCubeSize = link.source?.cubeSize || (link.source?.role === 'center' ? 30 : 14);
-                        const targetCubeSize = link.target?.cubeSize || (link.target?.role === 'center' ? 30 : 14);
-                        const sourceBorderOffset = sourceCubeSize / 2;
-                        const targetBorderOffset = targetCubeSize / 2;
+                        const sourceId = link.source?.id || link.sourceId || link.source;
+                        const targetId = link.target?.id || link.targetId || link.target;
+                        const sNode = typeof link.source === 'object' ? link.source : undefined;
+                        const tNode = typeof link.target === 'object' ? link.target : undefined;
+                        const sourceCubeSize = sNode?.cubeSize || (sNode?.role === 'center' || sourceId === selectedFile ? 30 : 14);
+                        const targetCubeSize = tNode?.cubeSize || (tNode?.role === 'center' || targetId === selectedFile ? 30 : 14);
+                        const sourceBorderOffset = (sourceCubeSize / 2) + 2;
+                        const targetBorderOffset = (targetCubeSize / 2) + 2;
                         const coneLength = 10;
 
                         const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
@@ -3139,8 +3153,11 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 />
             )}
 
-            {/* Bottom-left: Compact horizontal legend strip inside reserved 56px bottom band */}
-            <div className="absolute bottom-2.5 left-3.5 z-20 h-9 px-3 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3.5 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto">
+            {/* Legend (top-right): compact horizontal legend strip */}
+            <div className={cn(
+                "absolute top-3.5 z-20 h-9 px-3 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3.5 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto",
+                isExpanded ? "right-32" : "right-3.5"
+            )}>
                 <div className="flex items-center gap-1.5">
                     <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
                         <line x1="1" y1="4" x2="13" y2="4" stroke="#4FD1B5" strokeWidth="1.5" />
@@ -3171,10 +3188,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         <span className="text-[#E8EAE6]">Calls</span>
                     </div>
                 )}
-                <div className="h-3.5 w-[1px] bg-white/10" />
-                <span className="text-[10px] text-[#8A918C]/80 italic">
-                    Arrow points to the file being imported.
-                </span>
+            </div>
+
+            {/* Hint text (bottom-centre): non-overlapping controls guide */}
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 glass-surface bg-[rgba(16,22,26,0.85)] backdrop-blur-md rounded-full border border-white/10 text-[11px] font-mono text-[#8A918C] select-none pointer-events-none shadow-md flex items-center gap-2">
+                <span>Drag to rotate</span>
+                <span className="text-white/20">•</span>
+                <span>Scroll to zoom</span>
+                <span className="text-white/20">•</span>
+                <span>Click node to select</span>
             </div>
 
             {/* Scrollable list modal for Indirect files when M > 30 */}
@@ -4848,7 +4870,10 @@ ${lastAssistant?.content || 'No response recorded.'}
                                 const indirectTestCount = testsToRunList.filter(t => t.depth > 1).length;
                                 const targetDisplayName = selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'file') || 'file';
 
+                                const isTargetTest = selectedFile ? isTestFile(selectedFile) : false;
+
                                 const verdictTestText = (() => {
+                                    if (isTargetTest) return "This is a test file.";
                                     if (testCount === 0) return "No test covers this file.";
                                     if (directTestCount === 0) return `Only indirect tests cover it (${indirectTestCount}).`;
                                     return `Covered by ${testCount} test${testCount === 1 ? '' : 's'}.`;
@@ -4894,7 +4919,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 Changing <span className="font-mono text-[#E3A04A] font-semibold">{targetDisplayName}</span> can break{' '}
                                                 <span className="font-mono font-semibold text-[#E8EAE6]">{directCount}</span> file{directCount === 1 ? '' : 's'} directly and{' '}
                                                 <span className="font-mono font-semibold text-[#E8EAE6]">{indirectCount}</span> more indirectly.{' '}
-                                                <span className={testCount === 0 ? "text-[#E3A04A]" : "text-[#8A918C]"}>
+                                                <span className={testCount === 0 && !isTargetTest ? "text-[#E3A04A]" : "text-[#8A918C]"}>
                                                     {verdictTestText}
                                                 </span>
                                             </h2>
@@ -5195,6 +5220,15 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     })()}
                                                 </svg>
 
+                                                {/* If 0 dependents: message under empty ring */}
+                                                {directCount === 0 && indirectCount === 0 && (
+                                                    <div className="w-full flex items-center justify-center py-2 shrink-0 text-center">
+                                                        <span className="text-xs font-mono text-[#4FD1B5] bg-[#4FD1B5]/10 border border-[#4FD1B5]/30 px-3.5 py-1 rounded-full">
+                                                            Nothing depends on this file. Safe to change.
+                                                        </span>
+                                                    </div>
+                                                )}
+
                                                 {/* Bottom pill row for +N more placed outside the outer ring at the bottom */}
                                                 {(directCount > 10 || indirectCount > 6) && (
                                                     <div className="w-full flex items-center justify-center gap-3 py-1.5 shrink-0">
@@ -5245,7 +5279,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                             </div>
 
                                             {/* Right (about 40%): ranked list "Files that could break" + Tests + Why score */}
-                                            <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col justify-between h-full min-h-0 overflow-hidden">
+                                            <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col h-full min-h-0 overflow-hidden">
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     {/* Sticky Header: Files that could break */}
                                                     <div className="sticky top-0 z-10 flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] bg-[#07090A]/95 backdrop-blur-sm shrink-0">
@@ -5264,7 +5298,7 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     </div>
 
                                                     {/* Scrollable Ranked list (shows at least 6 rows) */}
-                                                    <div className="flex-1 min-h-[220px] overflow-y-auto scrollbar-custom pr-1 space-y-1.5">
+                                                    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 pt-1.5 space-y-1.5">
                                                         {rankedAll.length === 0 ? (
                                                             <div className="text-xs text-[#8A918C] py-4 text-center">
                                                                 No dependents found.
@@ -5338,17 +5372,19 @@ ${lastAssistant?.content || 'No response recorded.'}
 
                                                 {/* Footer: Tests to run & Why this score */}
                                                 <div className="pt-2 border-t border-white/[0.08] mt-2 shrink-0 space-y-2">
-                                                    {/* Tests to run block: expanded with amber warning when count 0, or list with Direct/2 hops tag */}
-                                                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 text-xs">
-                                                        <div className="flex items-center justify-between mb-1.5">
+                                                    {/* Tests to run block: fixed max-height with own scroll */}
+                                                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 text-xs max-h-40 flex flex-col shrink-0">
+                                                        <div className="flex items-center justify-between mb-1.5 shrink-0">
                                                             <span className="font-medium text-[#8A918C]">Tests to run ({testCount})</span>
                                                         </div>
                                                         {testCount === 0 ? (
-                                                            <div className="p-2.5 rounded border border-[#E3A04A]/30 bg-[#E3A04A]/10 text-[11px] text-[#E3A04A] leading-relaxed">
-                                                                No test covers this file. Add a unit test covering this module before modifying it.
+                                                            <div className="p-2.5 rounded border border-[#E3A04A]/30 bg-[#E3A04A]/10 text-[11px] text-[#E3A04A] leading-relaxed shrink-0">
+                                                                {isTargetTest
+                                                                    ? "This is a test file."
+                                                                    : "No test covers this file. Add a unit test covering this module before modifying it."}
                                                             </div>
                                                         ) : (
-                                                            <div className="space-y-1 max-h-24 overflow-y-auto scrollbar-custom pr-0.5">
+                                                            <div className="space-y-1 max-h-28 overflow-y-auto scrollbar-custom pr-0.5">
                                                                 {testsToRunList.map((testItem, i) => {
                                                                     const testPath = testItem.path;
                                                                     const testTag = testItem.depth > 1 ? `${testItem.depth} hops` : 'Direct';
@@ -5395,11 +5431,13 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             <div className="flex items-center justify-between">
                                                                 <span>Test coverage</span>
                                                                 <span className="font-mono text-[#E8EAE6]">
-                                                                    {testCount === 0
-                                                                        ? "No test covers this file"
-                                                                        : directTestCount === 0
-                                                                            ? `Only indirect tests cover it (${indirectTestCount})`
-                                                                            : `Covered by ${testCount} test${testCount === 1 ? '' : 's'}`}
+                                                                    {isTargetTest
+                                                                        ? "This is a test file"
+                                                                        : testCount === 0
+                                                                            ? "No test covers this file"
+                                                                            : directTestCount === 0
+                                                                                ? `Only indirect tests cover it (${indirectTestCount})`
+                                                                                : `Covered by ${testCount} test${testCount === 1 ? '' : 's'}`}
                                                                 </span>
                                                             </div>
                                                             <div className="flex items-center justify-between">
