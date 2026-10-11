@@ -38,7 +38,6 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const W = () => el.clientWidth || 600;
     const H = () => el.clientHeight || 400;
     const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x07090A, 700, 1800);
 
     const cam = new THREE.PerspectiveCamera(45, W() / H(), 1, 6000);
     const gl = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -56,7 +55,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.autoRotate = true;
-    controls.autoRotateSpeed = 0.35;
+    controls.autoRotateSpeed = 0.5;
 
     const group = new THREE.Group();
     scene.add(group);
@@ -124,7 +123,8 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       hb: number,
       color: string,
       dashed = false,
-      isHighRisk = false
+      isHighRisk = false,
+      forcedOpacity?: number
     ) => {
       const d = b.clone().sub(a).normalize();
       if (b.distanceTo(a) < 0.001) return;
@@ -133,7 +133,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       const total = s.distanceTo(e);
       if (total <= 2) return;
 
-      const opacity = isHighRisk ? 0.9 : 0.6;
+      const opacity = forcedOpacity !== undefined ? forcedOpacity : (isHighRisk ? 0.9 : 0.6);
       const mt = new THREE.MeshBasicMaterial({ color, transparent: true, opacity });
 
       // Edge line from border to border with 2px thickness (radius ~1.0)
@@ -199,10 +199,8 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
 
     // Direct nodes
     const direct = nodes.filter((n) => n.kind !== 'indirect').sort((a, b) => b.risk - a.risk);
-    const top8DirectIds = new Set(direct.slice(0, 8).map((n) => n.id));
+    const top10DirectIds = new Set(direct.slice(0, 10).map((n) => n.id));
     const top3DirectIds = new Set(direct.slice(0, 3).map((n) => n.id));
-    const left = direct.filter((n) => n.kind === 'imports');
-    const right = direct.filter((n) => n.kind === 'importedBy');
 
     type DirectItem = {
       node: G3Node;
@@ -210,33 +208,25 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       size: number;
       color: string;
       emissiveIntensity: number;
-      isTop8: boolean;
+      isTop10: boolean;
       isHighRisk: boolean;
     };
     const directItems: DirectItem[] = [];
 
-    const setupGroup = (list: G3Node[], isLeft: boolean) => {
-      const n = list.length;
-      list.forEach((node, i) => {
-        const v = fib(i, Math.max(1, n));
-        v.x = isLeft ? -Math.abs(v.x) : Math.abs(v.x);
-        if (Math.abs(v.x) < 0.05) v.x = isLeft ? -0.05 : 0.05;
-        v.normalize();
-        const radius = i % 2 === 0 ? 260 : 360;
-        const pos = v.clone().multiplyScalar(radius);
-        const size = 28 + (Math.min(100, Math.max(0, node.risk)) / 100) * 16;
-        const color = node.kind === 'imports' ? '#4FD1B5' : '#F0B35F';
-        const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, node.risk)) / 100) * 0.5;
-        const isTop8 = top8DirectIds.has(node.id);
-        const isHighRisk = top3DirectIds.has(node.id);
-        directItems.push({ node, pos, size, color, emissiveIntensity, isTop8, isHighRisk });
-      });
-    };
+    const nDirect = direct.length;
+    direct.forEach((node, i) => {
+      const v = fib(i, Math.max(1, nDirect));
+      const radius = i % 3 === 0 ? 240 : i % 3 === 1 ? 330 : 420;
+      const pos = v.clone().multiplyScalar(radius);
+      const size = 28 + (Math.min(100, Math.max(0, node.risk)) / 100) * 16;
+      const color = node.kind === 'imports' ? '#4FD1B5' : '#F0B35F';
+      const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, node.risk)) / 100) * 0.5;
+      const isTop10 = top10DirectIds.has(node.id);
+      const isHighRisk = top3DirectIds.has(node.id);
+      directItems.push({ node, pos, size, color, emissiveIntensity, isTop10, isHighRisk });
+    });
 
-    setupGroup(left, true);
-    setupGroup(right, false);
-
-    // 12 relaxation iterations pushing cubes closer than 70 units apart
+    // 12 relaxation iterations (min distance 80 between cubes; selected cube fixed at origin; no cube within 160 of origin)
     for (let iter = 0; iter < 12; iter++) {
       for (let a = 0; a < directItems.length; a++) {
         for (let b = a + 1; b < directItems.length; b++) {
@@ -244,8 +234,8 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
           const itemB = directItems[b];
           const delta = itemA.pos.clone().sub(itemB.pos);
           const d = delta.length();
-          if (d < 70) {
-            const overlap = 70 - d;
+          if (d < 80) {
+            const overlap = 80 - d;
             const norm = d > 0.001 ? delta.divideScalar(d) : new THREE.Vector3(0, 1, 0);
             itemA.pos.addScaledVector(norm, overlap * 0.5);
             itemB.pos.addScaledVector(norm, -overlap * 0.5);
@@ -253,27 +243,22 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
         }
       }
 
-      // Never put any cube within 150 units of the origin
+      // Never put any cube within 160 units of the origin
       directItems.forEach((item) => {
         const dist = item.pos.length();
-        if (dist < 150) {
+        if (dist < 160) {
           if (dist > 0.001) {
-            item.pos.normalize().multiplyScalar(150);
+            item.pos.normalize().multiplyScalar(160);
           } else {
-            item.pos.set(item.node.kind === 'imports' ? -150 : 150, 0, 0);
+            item.pos.set(160, 0, 0);
           }
-        }
-        if (item.node.kind === 'imports' && item.pos.x > -10) {
-          item.pos.x = -10;
-        } else if (item.node.kind === 'importedBy' && item.pos.x < 10) {
-          item.pos.x = 10;
         }
       });
     }
 
     const directMeshMap = new Map<string, { mesh: THREE.Mesh; size: number }>();
     directItems.forEach((item) => {
-      const mesh = addCube(item.node, item.pos, item.size, item.color, item.emissiveIntensity, item.node.risk, item.isTop8);
+      const mesh = addCube(item.node, item.pos, item.size, item.color, item.emissiveIntensity, item.node.risk + 10, item.isTop10);
       directMeshMap.set(item.node.id, { mesh, size: item.size });
 
       if (item.node.kind === 'imports') {
@@ -288,7 +273,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     // Indirect nodes
     const ind = nodes.filter((n) => n.kind === 'indirect');
     const sortedInd = [...ind].sort((a, b) => b.risk - a.risk);
-    const top6IndirectIds = new Set(sortedInd.slice(0, 6).map((n) => n.id));
+    const top8IndirectIds = new Set(sortedInd.slice(0, 8).map((n) => n.id));
 
     const groupedByVia = new Map<string, G3Node[]>();
     const orphaned: G3Node[] = [];
@@ -306,55 +291,47 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     groupedByVia.forEach((children, via) => {
       const parentInfo = directMeshMap.get(via)!;
       const parentPos = parentInfo.mesh.position;
-      const baseDir = parentPos.clone().normalize();
-      if (baseDir.lengthSq() === 0) baseDir.set(0, 1, 0);
       const count = children.length;
 
       children.forEach((n, k) => {
-        const offset = fib(k, count).multiplyScalar(0.6);
-        const dir = baseDir.clone().add(offset).normalize();
-        const pos = parentPos.clone().addScaledVector(dir, 190);
+        // dir = normalize(parent.pos + fib(k, count) * 0.9)
+        const dir = parentPos.clone().add(fib(k, count).multiplyScalar(0.9)).normalize();
+        const pos = parentPos.clone().addScaledVector(dir, 200);
 
-        const size = 28 + (Math.min(100, Math.max(0, n.risk)) / 100) * 16;
-        const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, n.risk)) / 100) * 0.5;
-        const isTop6 = top6IndirectIds.has(n.id);
-        const pri = isTop6 ? 0.1 + (n.risk / 1000) : 0;
+        const isTop8Ind = top8IndirectIds.has(n.id);
+        const pri = isTop8Ind ? 0.01 + (n.risk / 10000) : 0;
 
-        addCube(n, pos, size, '#7C8A93', emissiveIntensity, pri, isTop6);
-        // dashed link to parent
-        link(parentPos, pos, parentInfo.size / 2, size / 2, '#7C8A93', true, false);
+        // Cube size 24, colour #9AA5B1, emissive #9AA5B1 with emissiveIntensity 0.35, opacity 1
+        addCube(n, pos, 24, '#9AA5B1', 0.35, pri, isTop8Ind);
+        // dashed link to the parent stays (colour #9AA5B1, opacity 0.7)
+        link(parentPos, pos, parentInfo.size / 2, 12, '#9AA5B1', true, false, 0.7);
       });
     });
 
     const M = orphaned.length;
     orphaned.forEach((n, j) => {
       const v = fib(j, Math.max(1, M));
-      const pos = v.multiplyScalar(600);
-      const size = 28 + (Math.min(100, Math.max(0, n.risk)) / 100) * 16;
-      const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, n.risk)) / 100) * 0.5;
-      const isTop6 = top6IndirectIds.has(n.id);
-      const pri = isTop6 ? 0.1 + (n.risk / 1000) : 0;
+      const pos = v.multiplyScalar(640);
+      const isTop8Ind = top8IndirectIds.has(n.id);
+      const pri = isTop8Ind ? 0.01 + (n.risk / 10000) : 0;
 
-      addCube(n, pos, size, '#7C8A93', emissiveIntensity, pri, isTop6);
+      addCube(n, pos, 24, '#9AA5B1', 0.35, pri, isTop8Ind);
     });
 
     // Camera initial position & fit
     const camDir = new THREE.Vector3(0.55, 0.4, 1).normalize();
 
     const fit = () => {
-      let maxDist = CS / 2;
+      let R = CS + CS / 2;
       meshes.forEach((m) => {
-        const s = (m.userData.size || 30) / 2;
+        const s = m.userData.size || 30;
         const d = m.position.length() + s;
-        if (d > maxDist) maxDist = d;
+        if (d > R) R = d;
       });
 
-      const halfFovRad = THREE.MathUtils.degToRad(cam.fov / 2);
-      const tanFov = Math.tan(halfFovRad);
-      const dh = maxDist / (0.75 * tanFov);
-      const dw = maxDist / (0.75 * cam.aspect * tanFov);
-      const dist = Math.max(dh, dw);
-
+      const half = THREE.MathUtils.degToRad(cam.fov / 2);
+      const dist = (R / Math.sin(Math.min(half, Math.atan(Math.tan(half) * cam.aspect)))) * 1.18;
+      cam.far = dist * 4;
       controls.target.set(0, 0, 0);
       cam.position.copy(camDir).multiplyScalar(dist);
       cam.updateProjectionMatrix();
@@ -416,13 +393,6 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const loop = () => {
       raf = requestAnimationFrame(loop);
       controls.update();
-      meshes.forEach((m) => {
-        const d = m.position.distanceTo(cam.position);
-        const mat = m.material as THREE.MeshStandardMaterial;
-        if (mat && mat.opacity !== undefined) {
-          mat.opacity = d > 500 ? 0.75 : 1.0;
-        }
-      });
       updateLabels();
       gl.render(scene, cam);
       lr.render(scene, cam);
