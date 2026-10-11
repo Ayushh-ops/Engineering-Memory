@@ -1909,7 +1909,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             }
         }
 
-        const toG3 = (n: any, kind: 'imports' | 'importedBy' | 'indirect'): G3Node => {
+        const toG3 = (n: any, kind: 'imports' | 'importedBy' | 'indirect', via?: string): G3Node => {
             const raw = (n as any).path || (n.type === 'file' ? n.id : '') || n.id || '';
             const p = raw.replace(/\\/g, '/').split('/').filter(Boolean);
             const nm = p.pop() || (n as any).name || raw;
@@ -1922,7 +1922,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     risk = 0;
                 }
             }
-            return { id: raw, name: nm, folder: fol, risk, kind };
+            return { id: raw, name: nm, folder: fol, risk, kind, via };
         };
 
         const imports = Array.from(directImportsSet)
@@ -1939,17 +1939,67 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         const visibleImportedBy = showAllNodes ? importedByAll : importedByAll.slice(0, 12);
         const importedBy = visibleImportedBy.map(n => toG3(n, 'importedBy'));
 
+        // BFS to find the closest visible direct node for each indirect node
+        const adj = new Map<string, string[]>();
+        for (const e of graph.edges) {
+            if (!adj.has(e.from)) adj.set(e.from, []);
+            if (!adj.has(e.to)) adj.set(e.to, []);
+            adj.get(e.from)!.push(e.to);
+            adj.get(e.to)!.push(e.from);
+        }
+
+        const viaMap = new Map<string, string>();
+        const bfsQueue: string[] = [];
+        const visitedBfs = new Set<string>();
+
+        if (centerNode.id) visitedBfs.add(centerNode.id);
+        const centerPath = (centerNode as any).path;
+        if (centerPath) visitedBfs.add(centerPath);
+
+        const visibleDirectList = [...imports, ...importedBy];
+        const visibleDirectIds = new Set<string>(visibleDirectList.map(v => v.id));
+
+        for (const dirNode of [...Array.from(directImportsSet), ...visibleImportedBy.map(n => n.id)]) {
+            const bNode = baseNodeMap.get(dirNode) as any;
+            if (!bNode) continue;
+            const g3Id = toG3(bNode, 'imports').id;
+            if (!visibleDirectIds.has(g3Id)) continue;
+
+            viaMap.set(dirNode, g3Id);
+            if (bNode.path) viaMap.set(bNode.path, g3Id);
+            visitedBfs.add(dirNode);
+            if (bNode.path) visitedBfs.add(bNode.path);
+            bfsQueue.push(dirNode);
+        }
+
+        let qHead = 0;
+        while (qHead < bfsQueue.length) {
+            const curr = bfsQueue[qHead++];
+            const parentG3Id = viaMap.get(curr)!;
+            const neighbors = adj.get(curr) || [];
+            for (const nbr of neighbors) {
+                if (!visitedBfs.has(nbr)) {
+                    visitedBfs.add(nbr);
+                    viaMap.set(nbr, parentG3Id);
+                    bfsQueue.push(nbr);
+                }
+            }
+        }
+
         const indirect = Array.from(indirectNodeIds)
             .map(id => baseNodeMap.get(id))
             .filter(Boolean)
-            .sort((a, b) => {
+            .sort((a: any, b: any) => {
                 const pathA = a.path || a.id;
                 const pathB = b.path || b.id;
                 const rA = computeRisk(pathA, graph).score;
                 const rB = computeRisk(pathB, graph).score;
                 return rB - rA || (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0);
             })
-            .map(n => toG3(n, 'indirect'));
+            .map((n: any) => {
+                const via = viaMap.get(n.id) || (n.path ? viaMap.get(n.path) : undefined);
+                return toG3(n, 'indirect', via);
+            });
 
         return {
             g3Center: center,
@@ -2209,11 +2259,13 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 </div>
                 <div className="flex items-center gap-1.5">
                     <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                        <line x1="1" y1="4" x2="13" y2="4" stroke="#8A918C" strokeWidth="1.5" strokeDasharray="3 3" />
-                        <polygon points="12,1.5 17,4 12,6.5" fill="#8A918C" />
+                        <line x1="1" y1="4" x2="13" y2="4" stroke="#7C8A93" strokeWidth="1.5" strokeDasharray="3 3" />
+                        <polygon points="12,1.5 17,4 12,6.5" fill="#7C8A93" />
                     </svg>
                     <span className="text-[#E8EAE6]">Indirect</span>
                 </div>
+                <div className="h-3 w-[1px] bg-white/10" />
+                <span className="text-[#8A918C]">Size = risk</span>
                 {showCalls && viewMode !== '3D' && (
                     <div className="flex items-center gap-1.5">
                         <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">

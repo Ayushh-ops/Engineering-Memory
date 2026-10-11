@@ -3,12 +3,24 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 
-export type G3Node = { id: string; name: string; folder: string; risk: number; kind: 'imports' | 'importedBy' | 'indirect' };
+export type G3Node = {
+  id: string;
+  name: string;
+  folder: string;
+  risk: number;
+  kind: 'imports' | 'importedBy' | 'indirect';
+  via?: string;
+};
 type Props = { center: { id: string; name: string; folder: string }; nodes: G3Node[]; onSelect?: (id: string) => void; resetSignal?: number };
 
-const PALETTE = ['#F0B35F', '#7AA2F7', '#F7768E', '#9ECE6A', '#BB9AF7', '#2AC3DE', '#FF9E64', '#73DACA', '#F4A6D7', '#E0AF68', '#A3E635', '#FB7185', '#60A5FA'];
-const hash = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); };
 const Y = new THREE.Vector3(0, 1, 0);
+
+const fib = (i: number, n: number) => {
+  const y = 1 - (2 * (i + 0.5)) / n;
+  const r = Math.sqrt(Math.max(0, 1 - y * y));
+  const t = i * 2.399963;
+  return new THREE.Vector3(Math.cos(t) * r, y, Math.sin(t) * r);
+};
 
 type Item = { id: string; mesh: THREE.Mesh; lbl: CSS2DObject; pri: number; always: boolean; hover: boolean; below: boolean };
 
@@ -17,7 +29,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
   const fitRef = useRef<() => void>(() => {});
   const selRef = useRef(onSelect);
   selRef.current = onSelect;
-  const key = center.id + '|' + nodes.map((n) => n.id + n.kind + n.risk).join(',');
+  const key = center.id + '|' + nodes.map((n) => n.id + n.kind + n.risk + (n.via || '')).join(',');
 
   useEffect(() => { fitRef.current(); }, [resetSignal]);
 
@@ -26,6 +38,8 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const W = () => el.clientWidth || 600;
     const H = () => el.clientHeight || 400;
     const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x07090A, 700, 1800);
+
     const cam = new THREE.PerspectiveCamera(45, W() / H(), 1, 6000);
     const gl = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -41,34 +55,61 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const controls = new OrbitControls(cam, gl.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.35;
 
     const group = new THREE.Group();
     scene.add(group);
     const items: Item[] = [];
     const meshes: THREE.Mesh[] = [];
 
-    const makeLabel = (name: string, folder: string, color: string, below: boolean) => {
+    const makeLabel = (name: string, folder: string, color: string, below: boolean, isCenter = false) => {
       const wrap = document.createElement('div');
       const d = document.createElement('div');
       d.style.cssText = `transform:translateY(${below ? '125%' : '-125%'});background:rgba(16,22,26,.9);border:1px solid ${color};border-radius:6px;padding:3px 9px;font:500 12px/1.3 'IBM Plex Mono',monospace;color:#fff;white-space:nowrap;text-align:center`;
       const a = document.createElement('div');
       a.textContent = name;
-      a.style.fontWeight = '600';
+      a.style.fontWeight = isCenter ? '700' : '600';
+      if (isCenter) a.style.fontSize = '15px';
       const b = document.createElement('div');
       b.textContent = folder.length > 26 ? '…' + folder.slice(-25) : folder;
-      b.style.cssText = 'font-size:10.5px;color:#8A918C';
+      b.style.cssText = `font-size:${isCenter ? '11px' : '10.5px'};color:#8A918C`;
       d.append(a, b);
       wrap.append(d);
       return new CSS2DObject(wrap);
     };
 
-    const addCube = (n: { id: string; name: string; folder: string }, pos: THREE.Vector3, size: number, color: string, pri: number, always: boolean, below = false) => {
-      const mat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.18, roughness: 0.45, metalness: 0.1, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+    const addCube = (
+      n: { id: string; name: string; folder: string },
+      pos: THREE.Vector3,
+      size: number,
+      color: string,
+      emissiveIntensity: number,
+      pri: number,
+      always: boolean,
+      below = false,
+      isCenter = false
+    ) => {
+      const mat = new THREE.MeshStandardMaterial({
+        color,
+        emissive: color,
+        emissiveIntensity,
+        roughness: 0.45,
+        metalness: 0.1,
+        transparent: true,
+        opacity: 1.0,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      });
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), mat);
       mesh.position.copy(pos);
       mesh.userData = { id: n.id, size };
-      mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })));
-      const lbl = makeLabel(n.name, n.folder, color, below);
+      mesh.add(new THREE.LineSegments(
+        new THREE.EdgesGeometry(mesh.geometry),
+        new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
+      ));
+      const lbl = makeLabel(n.name, n.folder, color, below, isCenter);
       mesh.add(lbl);
       group.add(mesh);
       meshes.push(mesh);
@@ -76,75 +117,253 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       return mesh;
     };
 
-    const link = (a: THREE.Vector3, b: THREE.Vector3, ha: number, hb: number, color: string) => {
+    const link = (
+      a: THREE.Vector3,
+      b: THREE.Vector3,
+      ha: number,
+      hb: number,
+      color: string,
+      dashed = false,
+      isHighRisk = false
+    ) => {
       const d = b.clone().sub(a).normalize();
-      const s = a.clone().addScaledVector(d, ha * 0.9);
-      const e = b.clone().addScaledVector(d, -hb * 0.9);
-      const L = s.distanceTo(e);
-      const mt = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8 });
-      const cy = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, L, 6), mt);
-      cy.position.copy(s.clone().add(e).multiplyScalar(0.5));
-      cy.quaternion.setFromUnitVectors(Y, d);
-      group.add(cy);
-      const cone = new THREE.Mesh(new THREE.ConeGeometry(5, 14, 12), mt);
-      cone.position.copy(e.clone().addScaledVector(d, -7));
+      if (b.distanceTo(a) < 0.001) return;
+      const s = a.clone().addScaledVector(d, ha * 1.02);
+      const e = b.clone().addScaledVector(d, -hb * 1.02);
+      const total = s.distanceTo(e);
+      if (total <= 2) return;
+
+      const opacity = isHighRisk ? 0.9 : 0.6;
+      const mt = new THREE.MeshBasicMaterial({ color, transparent: true, opacity });
+
+      // Edge line from border to border with 2px thickness (radius ~1.0)
+      if (!dashed) {
+        const cyl = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, total, 6), mt);
+        cyl.position.copy(s.clone().addScaledVector(d, total / 2));
+        cyl.quaternion.setFromUnitVectors(Y, d);
+        group.add(cyl);
+      } else {
+        const dashLen = 9;
+        const gap = 9;
+        for (let t = 0; t < total; t += dashLen + gap) {
+          const len = Math.min(dashLen, total - t);
+          if (len <= 0) break;
+          const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 0.9, len, 6), mt);
+          seg.position.copy(s.clone().addScaledVector(d, t + len / 2));
+          seg.quaternion.setFromUnitVectors(Y, d);
+          group.add(seg);
+        }
+      }
+
+      // One arrowhead at 58% along the edge pointing in edge direction
+      const coneR = dashed ? 6 : 8;
+      const coneL = dashed ? 18 : 24;
+      const midPos = s.clone().addScaledVector(d, total * 0.58);
+      const cone = new THREE.Mesh(new THREE.ConeGeometry(coneR, coneL, 16), mt);
+      cone.position.copy(midPos);
       cone.quaternion.setFromUnitVectors(Y, d);
       group.add(cone);
     };
 
-    // center
-    const centerMesh = addCube(center, new THREE.Vector3(0, 0, 0), 52, '#4FD1B5', 1000, true, true);
-    const CS = 52;
+    // Glow halo behind selected cube
+    const makeHalo = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+        grad.addColorStop(0, 'rgba(79, 209, 181, 0.35)');
+        grad.addColorStop(0.5, 'rgba(79, 209, 181, 0.15)');
+        grad.addColorStop(1, 'rgba(79, 209, 181, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 128, 128);
+      }
+      const tex = new THREE.CanvasTexture(canvas);
+      const sMat = new THREE.SpriteMaterial({
+        map: tex,
+        transparent: true,
+        depthWrite: false,
+      });
+      const sp = new THREE.Sprite(sMat);
+      sp.scale.set(420, 420, 1);
+      sp.position.set(0, 0, 0);
+      sp.renderOrder = -1;
+      return sp;
+    };
+    group.add(makeHalo());
 
-    // direct nodes
+    // Selected center cube: size 120, colour #4FD1B5, emissiveIntensity 0.5, label below, 15px bold
+    const CS = 120;
+    const centerMesh = addCube(center, new THREE.Vector3(0, 0, 0), CS, '#4FD1B5', 0.5, 1000, true, true, true);
+
+    // Direct nodes
     const direct = nodes.filter((n) => n.kind !== 'indirect').sort((a, b) => b.risk - a.risk);
-    const colorOf = new Map(direct.map((n, i) => [n.id, PALETTE[i % PALETTE.length]]));
+    const top8DirectIds = new Set(direct.slice(0, 8).map((n) => n.id));
+    const top3DirectIds = new Set(direct.slice(0, 3).map((n) => n.id));
     const left = direct.filter((n) => n.kind === 'imports');
     const right = direct.filter((n) => n.kind === 'importedBy');
-    const RINGS = [190, 270, 350];
-    const spread = (list: G3Node[], a0: number, a1: number) =>
-      list.forEach((n, i) => {
-        const th = a0 + ((i + 0.5) / list.length) * (a1 - a0);
-        const R = RINGS[i % 3];
-        const pos = new THREE.Vector3(R * 1.4 * Math.cos(th), (hash(n.id) % 37) - 18, R * 0.55 * Math.sin(th));
-        const size = 26 + (Math.min(100, n.risk) / 100) * 16;
-        const color = colorOf.get(n.id)!;
-        addCube(n, pos, size, color, n.risk, true);
-        if (n.kind === 'imports') link(new THREE.Vector3(0, 0, 0), pos, CS / 2, size / 2, color);
-        else link(pos, new THREE.Vector3(0, 0, 0), size / 2, CS / 2, color);
+
+    type DirectItem = {
+      node: G3Node;
+      pos: THREE.Vector3;
+      size: number;
+      color: string;
+      emissiveIntensity: number;
+      isTop8: boolean;
+      isHighRisk: boolean;
+    };
+    const directItems: DirectItem[] = [];
+
+    const setupGroup = (list: G3Node[], isLeft: boolean) => {
+      const n = list.length;
+      list.forEach((node, i) => {
+        const v = fib(i, Math.max(1, n));
+        v.x = isLeft ? -Math.abs(v.x) : Math.abs(v.x);
+        if (Math.abs(v.x) < 0.05) v.x = isLeft ? -0.05 : 0.05;
+        v.normalize();
+        const radius = i % 2 === 0 ? 260 : 360;
+        const pos = v.clone().multiplyScalar(radius);
+        const size = 28 + (Math.min(100, Math.max(0, node.risk)) / 100) * 16;
+        const color = node.kind === 'imports' ? '#4FD1B5' : '#F0B35F';
+        const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, node.risk)) / 100) * 0.5;
+        const isTop8 = top8DirectIds.has(node.id);
+        const isHighRisk = top3DirectIds.has(node.id);
+        directItems.push({ node, pos, size, color, emissiveIntensity, isTop8, isHighRisk });
       });
-    const PAD = 0.25;
-    if (left.length && right.length) {
-      spread(right, -Math.PI / 2 + PAD, Math.PI / 2 - PAD);
-      spread(left, Math.PI / 2 + PAD, (3 * Math.PI) / 2 - PAD);
-    } else {
-      spread(direct, 0.2, Math.PI * 2 - 0.2);
+    };
+
+    setupGroup(left, true);
+    setupGroup(right, false);
+
+    // 12 relaxation iterations pushing cubes closer than 70 units apart
+    for (let iter = 0; iter < 12; iter++) {
+      for (let a = 0; a < directItems.length; a++) {
+        for (let b = a + 1; b < directItems.length; b++) {
+          const itemA = directItems[a];
+          const itemB = directItems[b];
+          const delta = itemA.pos.clone().sub(itemB.pos);
+          const d = delta.length();
+          if (d < 70) {
+            const overlap = 70 - d;
+            const norm = d > 0.001 ? delta.divideScalar(d) : new THREE.Vector3(0, 1, 0);
+            itemA.pos.addScaledVector(norm, overlap * 0.5);
+            itemB.pos.addScaledVector(norm, -overlap * 0.5);
+          }
+        }
+      }
+
+      // Never put any cube within 150 units of the origin
+      directItems.forEach((item) => {
+        const dist = item.pos.length();
+        if (dist < 150) {
+          if (dist > 0.001) {
+            item.pos.normalize().multiplyScalar(150);
+          } else {
+            item.pos.set(item.node.kind === 'imports' ? -150 : 150, 0, 0);
+          }
+        }
+        if (item.node.kind === 'imports' && item.pos.x > -10) {
+          item.pos.x = -10;
+        } else if (item.node.kind === 'importedBy' && item.pos.x < 10) {
+          item.pos.x = 10;
+        }
+      });
     }
 
-    // indirect nodes
-    const ind = nodes.filter((n) => n.kind === 'indirect');
-    ind.forEach((n, i) => {
-      const th = ((i + 0.5) / ind.length) * Math.PI * 2;
-      addCube(n, new THREE.Vector3(470 * 1.4 * Math.cos(th), (hash(n.id) % 37) - 18, 470 * 0.55 * Math.sin(th)), 16, '#6B7480', 0, false);
+    const directMeshMap = new Map<string, { mesh: THREE.Mesh; size: number }>();
+    directItems.forEach((item) => {
+      const mesh = addCube(item.node, item.pos, item.size, item.color, item.emissiveIntensity, item.node.risk, item.isTop8);
+      directMeshMap.set(item.node.id, { mesh, size: item.size });
+
+      if (item.node.kind === 'imports') {
+        // selected -> dependency
+        link(new THREE.Vector3(0, 0, 0), item.pos, CS / 2, item.size / 2, '#4FD1B5', false, item.isHighRisk);
+      } else {
+        // importer -> selected
+        link(item.pos, new THREE.Vector3(0, 0, 0), item.size / 2, CS / 2, '#F0B35F', false, item.isHighRisk);
+      }
     });
 
-    // fit camera
+    // Indirect nodes
+    const ind = nodes.filter((n) => n.kind === 'indirect');
+    const sortedInd = [...ind].sort((a, b) => b.risk - a.risk);
+    const top6IndirectIds = new Set(sortedInd.slice(0, 6).map((n) => n.id));
+
+    const groupedByVia = new Map<string, G3Node[]>();
+    const orphaned: G3Node[] = [];
+
+    sortedInd.forEach((n) => {
+      if (n.via && directMeshMap.has(n.via)) {
+        const list = groupedByVia.get(n.via) || [];
+        list.push(n);
+        groupedByVia.set(n.via, list);
+      } else {
+        orphaned.push(n);
+      }
+    });
+
+    groupedByVia.forEach((children, via) => {
+      const parentInfo = directMeshMap.get(via)!;
+      const parentPos = parentInfo.mesh.position;
+      const baseDir = parentPos.clone().normalize();
+      if (baseDir.lengthSq() === 0) baseDir.set(0, 1, 0);
+      const count = children.length;
+
+      children.forEach((n, k) => {
+        const offset = fib(k, count).multiplyScalar(0.6);
+        const dir = baseDir.clone().add(offset).normalize();
+        const pos = parentPos.clone().addScaledVector(dir, 190);
+
+        const size = 28 + (Math.min(100, Math.max(0, n.risk)) / 100) * 16;
+        const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, n.risk)) / 100) * 0.5;
+        const isTop6 = top6IndirectIds.has(n.id);
+        const pri = isTop6 ? 0.1 + (n.risk / 1000) : 0;
+
+        addCube(n, pos, size, '#7C8A93', emissiveIntensity, pri, isTop6);
+        // dashed link to parent
+        link(parentPos, pos, parentInfo.size / 2, size / 2, '#7C8A93', true, false);
+      });
+    });
+
+    const M = orphaned.length;
+    orphaned.forEach((n, j) => {
+      const v = fib(j, Math.max(1, M));
+      const pos = v.multiplyScalar(600);
+      const size = 28 + (Math.min(100, Math.max(0, n.risk)) / 100) * 16;
+      const emissiveIntensity = 0.1 + (Math.min(100, Math.max(0, n.risk)) / 100) * 0.5;
+      const isTop6 = top6IndirectIds.has(n.id);
+      const pri = isTop6 ? 0.1 + (n.risk / 1000) : 0;
+
+      addCube(n, pos, size, '#7C8A93', emissiveIntensity, pri, isTop6);
+    });
+
+    // Camera initial position & fit
+    const camDir = new THREE.Vector3(0.55, 0.4, 1).normalize();
+
     const fit = () => {
-      let mx = 0, my = 0, mz = 0;
-      meshes.forEach((m) => { const s = m.userData.size / 2; mx = Math.max(mx, Math.abs(m.position.x) + s); my = Math.max(my, Math.abs(m.position.y) + s); mz = Math.max(mz, Math.abs(m.position.z) + s); });
-      const t = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
-      const dh = (my + 90) / (t * 0.78);
-      const dw = (mx + 70) / (t * cam.aspect * 0.78);
-      const dist = Math.max(dh, dw) + mz;
+      let maxDist = CS / 2;
+      meshes.forEach((m) => {
+        const s = (m.userData.size || 30) / 2;
+        const d = m.position.length() + s;
+        if (d > maxDist) maxDist = d;
+      });
+
+      const halfFovRad = THREE.MathUtils.degToRad(cam.fov / 2);
+      const tanFov = Math.tan(halfFovRad);
+      const dh = maxDist / (0.75 * tanFov);
+      const dw = maxDist / (0.75 * cam.aspect * tanFov);
+      const dist = Math.max(dh, dw);
+
       controls.target.set(0, 0, 0);
-      cam.position.set(0, 0.42, 1).normalize().multiplyScalar(dist);
+      cam.position.copy(camDir).multiplyScalar(dist);
       cam.updateProjectionMatrix();
       controls.update();
     };
     fitRef.current = fit;
     fit();
 
-    // hover and select
+    // Hover and select
     const ray = new THREE.Raycaster();
     const ptr = new THREE.Vector2();
     let down = { x: 0, y: 0 };
@@ -160,7 +379,10 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
       items.forEach((it) => { it.hover = it.mesh === h; it.mesh.scale.setScalar(it.mesh === h ? 1.12 : 1); });
       gl.domElement.style.cursor = h ? 'pointer' : 'grab';
     };
-    const onDown = (e: PointerEvent) => { down = { x: e.clientX, y: e.clientY }; };
+    const onDown = (e: PointerEvent) => {
+      controls.autoRotate = false;
+      down = { x: e.clientX, y: e.clientY };
+    };
     const onUp = (e: PointerEvent) => {
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return;
       const h = pick(e);
@@ -170,9 +392,8 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     gl.domElement.addEventListener('pointerdown', onDown);
     gl.domElement.addEventListener('pointerup', onUp);
 
-    // label collision (higher priority wins)
+    // Label collision
     const v = new THREE.Vector3();
-    const order = [...items].sort((a, b) => (b.hover ? 999 : b.pri) - (a.hover ? 999 : a.pri));
     const updateLabels = () => {
       const w = W(), h = H();
       const placed: { x: number; y: number; w: number; h: number }[] = [];
@@ -181,7 +402,7 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
         if (!want) { it.lbl.visible = false; return; }
         v.copy(it.mesh.position).project(cam);
         const sx = (v.x * 0.5 + 0.5) * w;
-        const sy = (-v.y * 0.5 + 0.5) * h + (it.below ? 46 : -46);
+        const sy = (-v.y * 0.5 + 0.5) * h + (it.below ? (it.id === center.id ? 80 : 46) : -46);
         const inner = it.lbl.element.firstElementChild as HTMLElement | null;
         const bw = (inner?.offsetWidth || 110) + 6, bh = (inner?.offsetHeight || 34) + 4;
         const box = { x: sx - bw / 2, y: sy - bh / 2, w: bw, h: bh };
@@ -190,12 +411,18 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
         if (!clash) placed.push(box);
       });
     };
-    void order;
 
     let raf = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
       controls.update();
+      meshes.forEach((m) => {
+        const d = m.position.distanceTo(cam.position);
+        const mat = m.material as THREE.MeshStandardMaterial;
+        if (mat && mat.opacity !== undefined) {
+          mat.opacity = d > 500 ? 0.75 : 1.0;
+        }
+      });
       updateLabels();
       gl.render(scene, cam);
       lr.render(scene, cam);
