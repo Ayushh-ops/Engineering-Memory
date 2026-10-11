@@ -4,7 +4,7 @@ import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import ForceGraph3D from 'react-force-graph-3d';
-import SpriteText from 'three-spritetext';
+import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import * as THREE from 'three';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api';
@@ -1491,30 +1491,45 @@ interface Hub3DNodePos {
     role: 'center' | 'imports' | 'importedBy' | 'indirect' | 'calls' | 'default';
 }
 
+function hashString(str: string): number {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return hash;
+}
+
+function getNodeYOffset(id: string): number {
+    const h = Math.abs(hashString(id));
+    return -18 + ((h % 3601) / 100);
+}
+
 function placeTiltedRingArc(
     nodeIds: string[],
     radius: number,
     isLeftHalf: boolean,
     tiltDeg: number,
     role: Hub3DNodePos['role'],
-    positions: Map<string, Hub3DNodePos>,
-    rankOffset = 0
+    positions: Map<string, Hub3DNodePos>
 ) {
     const count = nodeIds.length;
     if (count === 0) return;
 
     const tiltRad = (tiltDeg * Math.PI) / 180;
-    // For left half (Imports, x < 0): angle centered around Math.PI
-    // For right half (Imported by, x > 0): angle centered around 0
-    const centerAngle = isLeftHalf ? Math.PI : 0;
-    const arcSpan = count === 1 ? 0 : Math.min(Math.PI * 0.85, 0.4 + (count - 1) * 0.3);
 
     nodeIds.forEach((id, idx) => {
-        let angle = centerAngle;
-        if (count > 1) {
-            const step = arcSpan / (count - 1);
-            const stagger = rankOffset === 1 ? (step * 0.5) : 0;
-            angle = (centerAngle - arcSpan / 2) + idx * step + stagger;
+        let angle: number;
+        if (isLeftHalf) {
+            // Imports on left half (x < 0): angle strictly in (pi/2, 3pi/2)
+            angle = count === 1
+                ? Math.PI
+                : (Math.PI / 2) + ((idx + 1) / (count + 1)) * Math.PI;
+        } else {
+            // Imported by on right half (x > 0): angle strictly in (-pi/2, pi/2)
+            angle = count === 1
+                ? 0
+                : (-Math.PI / 2) + ((idx + 1) / (count + 1)) * Math.PI;
         }
 
         const x0 = radius * Math.cos(angle);
@@ -1524,8 +1539,8 @@ function placeTiltedRingArc(
         const yTilted = -z0 * Math.sin(tiltRad);
         const zTilted = z0 * Math.cos(tiltRad);
 
-        // Small deterministic y-offset (+-18) per node for depth:
-        const yOffset = ((idx + rankOffset) % 2 === 0 ? 18 : -18);
+        // Small deterministic y-offset (+-18) per node for depth using hash:
+        const yOffset = getNodeYOffset(id);
 
         positions.set(id, {
             x: x0,
@@ -1673,22 +1688,24 @@ function compute3DHubLayout(
     const uniqueIndirect = Array.from(new Set(indirectNodes)).sort(riskComparator);
 
     // Tilted ring layout:
-    // Direct nodes evenly spaced on 2 concentric rings (radius 140 and 210, alternating by rank, highest risk on the inner ring)
-    // In a plane tilted 25 degrees, with a small deterministic y-offset (+-18) per node for depth.
-    // Imports on the left half and Imported by on the right half of the ring.
-    const innerImports = uniqueImports.filter((_, idx) => idx % 2 === 0);
-    const middleImports = uniqueImports.filter((_, idx) => idx % 2 === 1);
-    placeTiltedRingArc(innerImports, 140, true, 25, 'imports', positions, 0);
-    placeTiltedRingArc(middleImports, 210, true, 25, 'imports', positions, 1);
+    // Direct nodes on 2 concentric rings (radius 140 inner for highest-risk half, 210 outer),
+    // in a plane tilted 25 degrees, deterministic y offset between -18 and +18 per node (use a hash of the file path),
+    // evenly spaced by angle: Imports on the left half, Imported by on the right half.
+    const halfImports = Math.ceil(uniqueImports.length / 2);
+    const innerImports = uniqueImports.slice(0, halfImports);
+    const outerImports = uniqueImports.slice(halfImports);
+    placeTiltedRingArc(innerImports, 140, true, 25, 'imports', positions);
+    placeTiltedRingArc(outerImports, 210, true, 25, 'imports', positions);
 
-    const innerImportedBy = uniqueImportedBy.filter((_, idx) => idx % 2 === 0);
-    const middleImportedBy = uniqueImportedBy.filter((_, idx) => idx % 2 === 1);
-    placeTiltedRingArc(innerImportedBy, 140, false, 25, 'importedBy', positions, 0);
-    placeTiltedRingArc(middleImportedBy, 210, false, 25, 'importedBy', positions, 1);
+    const halfImportedBy = Math.ceil(uniqueImportedBy.length / 2);
+    const innerImportedBy = uniqueImportedBy.slice(0, halfImportedBy);
+    const outerImportedBy = uniqueImportedBy.slice(halfImportedBy);
+    placeTiltedRingArc(innerImportedBy, 140, false, 25, 'importedBy', positions);
+    placeTiltedRingArc(outerImportedBy, 210, false, 25, 'importedBy', positions);
 
     // Calls placed on left half on intermediate radius 175
     if (uniqueCalls.length > 0) {
-        placeTiltedRingArc(uniqueCalls, 175, true, 25, 'calls', positions, 0);
+        placeTiltedRingArc(uniqueCalls, 175, true, 25, 'calls', positions);
     }
 
     // Indirect nodes on an outer ring (radius 290) in dim grey
@@ -1699,7 +1716,7 @@ function compute3DHubLayout(
         const z0 = 290 * Math.sin(angle);
         const yTilted = -z0 * Math.sin(tiltRad);
         const zTilted = z0 * Math.cos(tiltRad);
-        const yOffset = (idx % 2 === 0 ? 18 : -18);
+        const yOffset = getNodeYOffset(id);
 
         positions.set(id, {
             x: x0,
@@ -1713,91 +1730,6 @@ function compute3DHubLayout(
     runDeterministicRelaxation(positions, selectedNodeId, 44, 45);
 
     return positions;
-}
-
-function create3DLabelPill(
-    fileName: string,
-    folderName: string,
-    isSelected: boolean
-): THREE.Sprite {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return new THREE.Sprite();
-
-    const dpr = 2;
-    const fontTitle = `bold ${12 * dpr}px 'IBM Plex Mono', monospace`;
-    const fontFolder = `${10 * dpr}px 'IBM Plex Mono', monospace`;
-
-    ctx.font = fontTitle;
-    const titleW = ctx.measureText(fileName).width;
-
-    let folderW = 0;
-    if (folderName) {
-        ctx.font = fontFolder;
-        folderW = ctx.measureText(folderName).width;
-    }
-
-    const padX = 8 * dpr;
-    const padY = 5 * dpr;
-    const titleH = 14 * dpr;
-    const gap = 3 * dpr;
-    const folderH = folderName ? 11 * dpr : 0;
-
-    const contentW = Math.max(titleW, folderW);
-    const contentH = folderName ? (titleH + gap + folderH) : titleH;
-
-    const w = Math.ceil(contentW + padX * 2);
-    const h = Math.ceil(contentH + padY * 2);
-
-    canvas.width = w;
-    canvas.height = h;
-
-    // Dark translucent pill: rgba(16, 22, 26, 0.85)
-    ctx.fillStyle = 'rgba(16, 22, 26, 0.85)';
-    ctx.beginPath();
-    ctx.roundRect(0.5 * dpr, 0.5 * dpr, w - 1 * dpr, h - 1 * dpr, 5 * dpr);
-    ctx.fill();
-
-    // 1px hairline border: rgba(255, 255, 255, 0.15)
-    ctx.strokeStyle = isSelected ? 'rgba(79, 209, 181, 0.65)' : 'rgba(255, 255, 255, 0.15)';
-    ctx.lineWidth = 1 * dpr;
-    ctx.stroke();
-
-    // Line 1: file name (white text, mono 12px)
-    ctx.font = fontTitle;
-    ctx.fillStyle = isSelected ? '#FFFFFF' : '#E8EAE6';
-    ctx.textBaseline = 'top';
-    const titleX = padX + (contentW - titleW) / 2;
-    ctx.fillText(fileName, titleX, padY);
-
-    // Line 2: folder muted (mono 10px)
-    if (folderName) {
-        ctx.font = fontFolder;
-        ctx.fillStyle = '#8A918C';
-        const folderX = padX + (contentW - folderW) / 2;
-        ctx.fillText(folderName, folderX, padY + titleH + gap);
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    const spriteMat = new THREE.SpriteMaterial({
-        map: texture,
-        transparent: true,
-        depthTest: false
-    });
-    const sprite = new THREE.Sprite(spriteMat);
-
-    // Scale in 3D world units:
-    const aspect = w / h;
-    const worldHeight = folderName ? 16 : 12;
-    sprite.scale.set(worldHeight * aspect, worldHeight, 1);
-
-    (sprite as any).userData = {
-        boxWidth: Math.max(90, w / dpr),
-        boxHeight: Math.max(28, h / dpr)
-    };
-
-    return sprite;
 }
 
 function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
@@ -1827,6 +1759,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const [hovered3DNodeId, setHovered3DNodeId] = useState<string | null>(null);
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
     const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+
+    const extraRenderers = useMemo(() => {
+        const r = new CSS2DRenderer();
+        r.domElement.style.position = 'absolute';
+        r.domElement.style.top = '0px';
+        r.domElement.style.pointerEvents = 'none';
+        return [r];
+    }, []);
 
     const [simplify, setSimplify] = useState(false);
     const [showCalls, setShowCalls] = useState(false);
@@ -2280,20 +2220,15 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             distance = Math.max(boxDistance, minDistanceForSphere);
         }
 
-        // Default yaw 25 degrees and pitch 15 degrees:
-        // yaw 25 deg = 0.4363 rad, pitch 15 deg = 0.2618 rad
-        const yawRad = (25 * Math.PI) / 180;
-        const pitchRad = (15 * Math.PI) / 180;
+        // Camera centered horizontally (dirX = 0), gentle pitch of 16 degrees looking at center
+        const pitchRad = (16 * Math.PI) / 180;
         const cosPitch = Math.cos(pitchRad);
         const sinPitch = Math.sin(pitchRad);
-        const dirX = Math.sin(yawRad) * cosPitch;
-        const dirY = sinPitch;
-        const dirZ = Math.cos(yawRad) * cosPitch;
 
         const targetPos = {
-            x: centerX + dirX * distance,
-            y: centerY + dirY * distance,
-            z: centerZ + dirZ * distance
+            x: centerX,
+            y: centerY + sinPitch * distance,
+            z: centerZ + cosPitch * distance
         };
         const lookAt = { x: centerX, y: centerY, z: centerZ };
 
@@ -2313,6 +2248,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     fg.d3Force('charge', null);
                     fg.d3Force('link', null);
                     fg.d3Force('center', null);
+                    fg.d3Force('collision', null);
                 }
             } catch {
                 // ignore
@@ -2483,6 +2419,9 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 fx: pos.x,
                 fy: pos.y,
                 fz: pos.z,
+                vx: 0,
+                vy: 0,
+                vz: 0,
                 connections: nodeConnMap.get(n.id) || 0,
                 neighbors: new Set<string>(),
                 links: [] as any[]
@@ -2583,12 +2522,24 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         return () => clearTimeout(timer);
     }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
 
-    // Hide overlapping lower-priority 3D sprite labels (check every ~150ms)
+    // Refit camera when toggling Direct/Indirect focusDepth
+    useEffect(() => {
+        if (viewMode === '3D' && fgInstanceRef.current && graphData.nodes.length > 0) {
+            const timer = setTimeout(() => {
+                fitCameraToVisibleNodes(graphData.nodes, 0.75);
+            }, 100);
+            return () => clearTimeout(timer);
+        }
+    }, [focusDepth, viewMode, fitCameraToVisibleNodes, graphData.nodes]);
+
+    // Screen-space label overlap management for CSS2D HTML pills:
+    // Show only for selected + 8 highest-risk nodes, others on hover; drop overlapping lower-priority labels in screen space
     useEffect(() => {
         if (viewMode !== '3D') return;
+        let animId: number;
         const tmpVec = new THREE.Vector3();
 
-        const updateSprites = () => {
+        const updateLabels = () => {
             const fg = fgInstanceRef.current;
             if (fg && typeof fg.scene === 'function' && typeof fg.camera === 'function') {
                 const scene = fg.scene();
@@ -2596,48 +2547,88 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 if (scene && camera) {
                     const w = dimensions.width || (typeof window !== 'undefined' ? window.innerWidth : 800);
                     const h = dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
-                    const screenPositions: Array<{ x: number; y: number; sprite: any; priority: number; boxW: number; boxH: number }> = [];
 
-                    scene.traverse((obj: any) => {
-                        if (obj.isSprite && obj.userData?.priority !== undefined) {
-                            obj.getWorldPosition(tmpVec);
-                            const screenPos = tmpVec.clone().project(camera);
-                            const screenX = (screenPos.x + 1) * w / 2;
-                            const screenY = (-screenPos.y + 1) * h / 2;
-                            screenPositions.push({
-                                x: screenX,
-                                y: screenY,
-                                sprite: obj,
-                                priority: (obj.userData?.priority as number) || 1,
-                                boxW: (obj.userData?.boxWidth as number) || 80,
-                                boxH: (obj.userData?.boxHeight as number) || 28
+                    const candidates: Array<{
+                        pillDiv: HTMLElement;
+                        priority: number;
+                        screenX: number;
+                        screenY: number;
+                        boxW: number;
+                        boxH: number;
+                    }> = [];
+
+                    scene.traverse((child: any) => {
+                        if (child.isCSS2DObject && child.userData?.pillDiv) {
+                            const { pillDiv, nodeId, isSelected, isDirect, score } = child.userData;
+                            const isHovered = hovered3DNodeId === nodeId;
+                            const isTop8 = top8DirectNodeIds.has(nodeId);
+
+                            let priority = -1;
+                            if (isSelected) {
+                                priority = 1000000;
+                            } else if (isHovered) {
+                                priority = 500000;
+                            } else if (isDirect && isTop8) {
+                                priority = 1000 + (score || 0);
+                            }
+
+                            if (priority < 0) {
+                                pillDiv.style.display = 'none';
+                                return;
+                            }
+
+                            child.getWorldPosition(tmpVec);
+                            const proj = tmpVec.clone().project(camera);
+
+                            // Behind camera
+                            if (proj.z > 1) {
+                                pillDiv.style.display = 'none';
+                                return;
+                            }
+
+                            const screenX = (proj.x + 1) * w / 2;
+                            const screenY = (-proj.y + 1) * h / 2;
+
+                            const boxW = pillDiv.offsetWidth || 110;
+                            const boxH = pillDiv.offsetHeight || 30;
+
+                            candidates.push({
+                                pillDiv,
+                                priority,
+                                screenX,
+                                screenY,
+                                boxW,
+                                boxH
                             });
                         }
                     });
 
-                    screenPositions.sort((a, b) => b.priority - a.priority);
+                    candidates.sort((a, b) => b.priority - a.priority);
 
-                    const drawn: Array<{ x: number; y: number; boxW: number; boxH: number }> = [];
-                    for (const item of screenPositions) {
-                        const overlaps = drawn.some(d =>
-                            Math.abs(d.x - item.x) < (d.boxW + item.boxW) * 0.48 &&
-                            Math.abs(d.y - item.y) < (d.boxH + item.boxH) * 0.48
+                    const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+                    for (const cand of candidates) {
+                        const halfW = cand.boxW / 2;
+                        const halfH = cand.boxH / 2;
+                        const overlaps = placed.some(p =>
+                            Math.abs(p.x - cand.screenX) < (p.w / 2 + halfW) &&
+                            Math.abs(p.y - cand.screenY) < (p.h / 2 + halfH)
                         );
+
                         if (overlaps) {
-                            item.sprite.visible = false;
+                            cand.pillDiv.style.display = 'none';
                         } else {
-                            item.sprite.visible = true;
-                            drawn.push(item);
+                            cand.pillDiv.style.display = 'block';
+                            placed.push({ x: cand.screenX, y: cand.screenY, w: cand.boxW, h: cand.boxH });
                         }
                     }
                 }
             }
+            animId = requestAnimationFrame(updateLabels);
         };
 
-        updateSprites();
-        const intervalId = setInterval(updateSprites, 150);
-        return () => clearInterval(intervalId);
-    }, [viewMode, dimensions]);
+        animId = requestAnimationFrame(updateLabels);
+        return () => cancelAnimationFrame(animId);
+    }, [viewMode, dimensions, hovered3DNodeId, top8DirectNodeIds]);
 
     return (
         <div
@@ -2651,7 +2642,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
         >
             {/* View Mode & Toolbar */}
-            <div className="absolute top-3.5 left-3.5 z-30 glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-lg p-1.5 flex items-center gap-2 border border-white/10 shadow-lg text-xs font-mono select-none">
+            <div className="absolute top-3.5 left-3.5 z-30 glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-lg p-1.5 flex items-center gap-2 border border-white/10 shadow-lg text-xs font-mono select-none flex-wrap max-w-[calc(100%-20px)]">
                 {/* Back button: left chevron icon button with tooltip "Previous node", disabled when no history */}
                 {visitedHistory.length > 0 && (
                     <>
@@ -2858,12 +2849,17 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
             ) : (
                 <ForceGraph3D
                     ref={fgRef as any}
+                    extraRenderers={extraRenderers}
+                    showNavInfo={false}
                     graphData={graphData}
                     width={dimensions.width > 0 ? dimensions.width : undefined}
                     height={dimensions.height > 0 ? dimensions.height : undefined}
                     enableNodeDrag={false}
                     cooldownTicks={0}
                     warmupTicks={0}
+                    cooldownTime={0}
+                    d3AlphaDecay={1}
+                    d3VelocityDecay={1}
                     linkThreeObject={(link: any) => {
                         const isIndirect = link.edgeRole === 'indirect';
                         const sourceId = link.source?.id || link.sourceId;
@@ -3092,70 +3088,84 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                         edgesLines.scale.set(1.002, 1.002, 1.002);
                         group.add(edgesLines);
 
-                        // Labels: dark translucent pill (rgba(16,22,26,.85), 1px hairline, white text, mono 12px), two lines
-                        const isTop8Direct = top8DirectNodeIds.has(node.id);
-                        const shouldShowLabel = isSelected || isHovered || (isDirect && isTop8Direct);
+                        // Labels: HTML overlays (CSS2DObject) - dark translucent pill (rgba(16,22,26,.85), 1px hairline, white mono 12px, two lines: file name bold, folder muted truncated to 24 chars)
+                        const rawPath = node.path || (node.type === 'file' ? node.id : '') || node.id || '';
+                        const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean);
+                        const fileName = parts.pop() || node.name || node.id;
+                        const rawFolder = parts.length > 0 ? parts.join('/') : '';
+                        const folderName = rawFolder.length > 24 ? rawFolder.slice(0, 23) + '…' : rawFolder;
 
-                        if (shouldShowLabel && (!isIndirect || isHovered)) {
-                            const rawPath = node.path || (node.type === 'file' ? node.id : '') || node.id || '';
-                            const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean);
-                            const fileName = parts.pop() || node.name || node.id;
-                            const folderName = parts.length > 0 ? parts.slice(-2).join('/') : '';
+                        const pillDiv = document.createElement('div');
+                        pillDiv.className = 'graph-3d-label-pill select-none pointer-events-none';
+                        pillDiv.style.backgroundColor = 'rgba(16, 22, 26, 0.85)';
+                        pillDiv.style.border = '1px solid rgba(255, 255, 255, 0.15)';
+                        pillDiv.style.borderRadius = '6px';
+                        pillDiv.style.padding = '3px 8px';
+                        pillDiv.style.fontFamily = "'IBM Plex Mono', monospace, Consolas";
+                        pillDiv.style.whiteSpace = 'nowrap';
+                        pillDiv.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
+                        pillDiv.style.display = 'none';
 
-                            const sprite = create3DLabelPill(fileName, folderName, isSelected);
+                        const nameDiv = document.createElement('div');
+                        nameDiv.style.fontSize = '12px';
+                        nameDiv.style.fontWeight = '700';
+                        nameDiv.style.color = isSelected ? '#FFFFFF' : '#E8EAE6';
+                        nameDiv.style.lineHeight = '1.2';
+                        nameDiv.textContent = fileName;
+                        pillDiv.appendChild(nameDiv);
 
-                            // Placement:
-                            // Selected cube label goes BELOW the cube
-                            // Direct cubes: offset away from center so cube stays visible
-                            if (isSelected) {
-                                sprite.position.set(0, -(cubeSize / 2 + 8), 0);
-                            } else {
-                                const nx = typeof node.x === 'number' ? node.x : 0;
-                                const ny = typeof node.y === 'number' ? node.y : 0;
-                                const nz = typeof node.z === 'number' ? node.z : 0;
-                                const distFromOrigin = Math.sqrt(nx * nx + ny * ny + nz * nz);
-                                const offsetDist = (cubeSize / 2) + 12;
-
-                                if (distFromOrigin > 0.01) {
-                                    const dirOutX = nx / distFromOrigin;
-                                    const dirOutY = ny / distFromOrigin;
-                                    const dirOutZ = nz / distFromOrigin;
-                                    sprite.position.set(
-                                        dirOutX * offsetDist,
-                                        dirOutY * offsetDist + 3,
-                                        dirOutZ * offsetDist
-                                    );
-                                } else {
-                                    sprite.position.set(cubeSize * 0.8 + 6, cubeSize * 0.8 + 5, 0);
-                                }
-                            }
-
-                            sprite.renderOrder = 999;
-                            if (opacity < 0.5 && sprite.material) {
-                                sprite.material.opacity = opacity;
-                            }
-
-                            let priority = Number(node.connections || 0);
-                            if (isDirect) priority += 1000;
-                            if (isHovered) priority += 500000;
-                            if (isSelected) priority += 1000000;
-
-                            (sprite as any).userData = {
-                                priority,
-                                boxWidth: (sprite as any).userData?.boxWidth || 80,
-                                boxHeight: (sprite as any).userData?.boxHeight || 28
-                            };
-                            group.add(sprite);
+                        if (folderName) {
+                            const folderDiv = document.createElement('div');
+                            folderDiv.style.fontSize = '10px';
+                            folderDiv.style.fontWeight = '400';
+                            folderDiv.style.color = '#8A918C';
+                            folderDiv.style.lineHeight = '1.2';
+                            folderDiv.style.marginTop = '1px';
+                            folderDiv.textContent = folderName;
+                            pillDiv.appendChild(folderDiv);
                         }
+
+                        const labelObj = new CSS2DObject(pillDiv);
+
+                        // Placement: selected cube label goes BELOW the cube; others offset outside away from center
+                        if (isSelected) {
+                            labelObj.position.set(0, -(cubeSize / 2 + 16), 0);
+                        } else {
+                            const nx = typeof node.x === 'number' ? node.x : 0;
+                            const ny = typeof node.y === 'number' ? node.y : 0;
+                            const nz = typeof node.z === 'number' ? node.z : 0;
+                            const distFromOrigin = Math.sqrt(nx * nx + ny * ny + nz * nz);
+                            const offsetDist = (cubeSize / 2) + 16;
+
+                            if (distFromOrigin > 0.01) {
+                                labelObj.position.set(
+                                    (nx / distFromOrigin) * offsetDist,
+                                    (ny / distFromOrigin) * offsetDist + 2,
+                                    (nz / distFromOrigin) * offsetDist
+                                );
+                            } else {
+                                labelObj.position.set(offsetDist, 2, 0);
+                            }
+                        }
+
+                        (labelObj as any).userData = {
+                            pillDiv,
+                            nodeId: node.id,
+                            isSelected,
+                            isDirect,
+                            isIndirect,
+                            score: node.score || 0
+                        };
+                        group.add(labelObj);
 
                         return group;
                     }}
                 />
             )}
 
-            {/* Legend (top-right): compact horizontal legend strip */}
+            {/* Legend (top-right below toolbar): compact horizontal legend strip */}
             <div className={cn(
-                "absolute top-3.5 z-20 h-9 px-3 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3.5 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto",
+                "absolute top-[3.75rem] z-20 h-8 px-2.5 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto",
                 isExpanded ? "right-32" : "right-3.5"
             )}>
                 <div className="flex items-center gap-1.5">
@@ -4571,26 +4581,17 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                 <div className="text-xs text-[#8A918C] py-3">No risky files found in the analyzed set.</div>
                                             ) : (
                                                 hotspotsList.map((h, i) => {
-                                                    const rawFileName = h.name || (h.path ? h.path.split('/').pop() : 'unknown');
-                                                    const hasDuplicate = (hotspotNameCounts.get(rawFileName) || 0) > 1;
-                                                    let line1FileName = rawFileName;
-                                                    let line2Folder = '';
-
-                                                    if (h.path) {
-                                                        const segments = h.path.split('/').filter(Boolean);
-                                                        if (hasDuplicate && segments.length >= 2) {
-                                                            line1FileName = segments.slice(-2).join('/');
-                                                            line2Folder = segments.length > 2 ? segments.slice(0, -2).join('/') : '';
-                                                        } else {
-                                                            line1FileName = rawFileName;
-                                                            line2Folder = segments.length > 1 ? segments.slice(0, -1).join('/') : '';
-                                                        }
+                                                    const baseFileName = h.path ? h.path.split('/').pop() || h.name || 'unknown' : (h.name || 'unknown');
+                                                    let folder = '';
+                                                    if (h.path && h.path.includes('/')) {
+                                                        folder = h.path.substring(0, h.path.lastIndexOf('/'));
                                                     }
-
-                                                    const reach = (h.risk?.directDependents || 0) + (h.risk?.transitiveDependents || 0);
-                                                    const reasonText = (h.risk?.directDependents || 0) > 0
-                                                        ? `Imported by ${h.risk.directDependents} file${h.risk.directDependents === 1 ? '' : 's'}, reaches ${reach}`
-                                                        : (reach > 0 ? `Reaches ${reach} file${reach === 1 ? '' : 's'}` : `Isolated file`);
+                                                    const directDeps = h.risk?.directDependents || 0;
+                                                    const reach = directDeps + (h.risk?.transitiveDependents || 0);
+                                                    const reasonText = directDeps > 0
+                                                        ? `${directDeps} direct dependent${directDeps === 1 ? '' : 's'}`
+                                                        : (reach > 0 ? `reaches ${reach} file${reach === 1 ? '' : 's'}` : `isolated file`);
+                                                    const line2Text = folder ? `${folder} · ${reasonText}` : reasonText;
                                                     const isSelected = drawerOpen && drawerFile === h.path;
 
                                                     return (
@@ -4602,12 +4603,12 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                             <span className="font-mono text-xs text-[#8A918C]">
                                                                 {String(i + 1).padStart(2, '0')}
                                                             </span>
-                                                            <div className="min-w-0 pr-2">
-                                                                <div className="font-mono font-bold text-sm text-[#E8EAE6] break-words">
-                                                                    {line1FileName}
+                                                            <div className="min-w-0 pr-2 flex-1">
+                                                                <div className="font-mono font-bold text-sm text-[#E8EAE6] truncate" title={h.path || baseFileName}>
+                                                                    {baseFileName}
                                                                 </div>
-                                                                <div className="text-xs text-[#8A918C] leading-relaxed break-words mt-0.5">
-                                                                    {line2Folder ? `${line2Folder} · ${reasonText}` : reasonText}
+                                                                <div className="text-xs text-[#8A918C] leading-relaxed truncate mt-0.5" title={line2Text}>
+                                                                    {line2Text}
                                                                 </div>
                                                             </div>
                                                             <span className="overview-bar">
