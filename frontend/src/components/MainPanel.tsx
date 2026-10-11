@@ -3,9 +3,7 @@ import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
-import ForceGraph3D from 'react-force-graph-3d';
-import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import * as THREE from 'three';
+import Graph3D, { G3Node } from './Graph3D';
 import '@xyflow/react/dist/style.css';
 import { api } from '../api';
 import { isCodeFile, getPathsToAnalyze } from '../analyze-helpers';
@@ -1484,254 +1482,6 @@ function OverviewGraph2D({
     );
 }
 
-interface Hub3DNodePos {
-    x: number;
-    y: number;
-    z: number;
-    role: 'center' | 'imports' | 'importedBy' | 'indirect' | 'calls' | 'default';
-}
-
-function hashString(str: string): number {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        hash = ((hash << 5) - hash) + str.charCodeAt(i);
-        hash |= 0;
-    }
-    return hash;
-}
-
-function getNodeYOffset(id: string): number {
-    const h = Math.abs(hashString(id));
-    return -18 + ((h % 3601) / 100);
-}
-
-function placeTiltedRingArc(
-    nodeIds: string[],
-    radius: number,
-    isLeftHalf: boolean,
-    tiltDeg: number,
-    role: Hub3DNodePos['role'],
-    positions: Map<string, Hub3DNodePos>
-) {
-    const count = nodeIds.length;
-    if (count === 0) return;
-
-    const tiltRad = (tiltDeg * Math.PI) / 180;
-
-    nodeIds.forEach((id, idx) => {
-        let angle: number;
-        if (isLeftHalf) {
-            // Imports on left half (x < 0): angle strictly in (pi/2, 3pi/2)
-            angle = count === 1
-                ? Math.PI
-                : (Math.PI / 2) + ((idx + 1) / (count + 1)) * Math.PI;
-        } else {
-            // Imported by on right half (x > 0): angle strictly in (-pi/2, pi/2)
-            angle = count === 1
-                ? 0
-                : (-Math.PI / 2) + ((idx + 1) / (count + 1)) * Math.PI;
-        }
-
-        const x0 = radius * Math.cos(angle);
-        const z0 = radius * Math.sin(angle);
-
-        // Plane tilted 25 degrees around X axis:
-        const yTilted = -z0 * Math.sin(tiltRad);
-        const zTilted = z0 * Math.cos(tiltRad);
-
-        // Small deterministic y-offset (+-18) per node for depth using hash:
-        const yOffset = getNodeYOffset(id);
-
-        positions.set(id, {
-            x: x0,
-            y: yTilted + yOffset,
-            z: zTilted,
-            role
-        });
-    });
-}
-
-function runDeterministicRelaxation(
-    positions: Map<string, Hub3DNodePos>,
-    fixedId: string | null,
-    minDistance = 44,
-    iterations = 45
-) {
-    const ids = Array.from(positions.keys());
-    for (let it = 0; it < iterations; it++) {
-        let maxShift = 0;
-        for (let i = 0; i < ids.length; i++) {
-            const idA = ids[i];
-            const pA = positions.get(idA)!;
-            if (idA === fixedId) continue;
-
-            let forceX = 0;
-            let forceY = 0;
-            let forceZ = 0;
-
-            for (let j = 0; j < ids.length; j++) {
-                if (i === j) continue;
-                const idB = ids[j];
-                const pB = positions.get(idB)!;
-
-                const dx = pA.x - pB.x;
-                const dy = pA.y - pB.y;
-                const dz = pA.z - pB.z;
-                const distSq = dx * dx + dy * dy + dz * dz;
-                const dist = Math.sqrt(distSq);
-
-                if (dist < minDistance && dist > 0.001) {
-                    const overlap = (minDistance - dist) / dist;
-                    const push = overlap * 0.4;
-                    forceX += dx * push;
-                    forceY += dy * push;
-                    forceZ += dz * push;
-                } else if (dist <= 0.001) {
-                    forceY += 2;
-                    forceZ += 2;
-                }
-            }
-
-            pA.x += forceX;
-            pA.y += forceY;
-            pA.z += forceZ;
-
-            // Preserve hemisphere half-space
-            if (pA.role === 'imports' && pA.x > -25) pA.x = -25;
-            if (pA.role === 'importedBy' && pA.x < 25) pA.x = 25;
-
-            const shift = Math.sqrt(forceX * forceX + forceY * forceY + forceZ * forceZ);
-            if (shift > maxShift) maxShift = shift;
-        }
-        if (maxShift < 0.2) break;
-    }
-}
-
-function compute3DHubLayout(
-    nodes: any[],
-    edges: any[],
-    selectedNodeId: string | null,
-    graphFull?: any
-): Map<string, Hub3DNodePos> {
-    const positions = new Map<string, Hub3DNodePos>();
-    if (!nodes || nodes.length === 0) return positions;
-
-    if (!selectedNodeId) {
-        const sorted = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-        const count = sorted.length;
-        const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-        const radius = 180;
-
-        sorted.forEach((node, i) => {
-            const y = count <= 1 ? 0 : 1 - (i / (count - 1)) * 2;
-            const rCircle = Math.sqrt(Math.max(0, 1 - y * y));
-            const theta = i * goldenAngle;
-            positions.set(node.id, {
-                x: radius * rCircle * Math.cos(theta),
-                y: radius * y * 0.85,
-                z: radius * rCircle * Math.sin(theta),
-                role: 'default'
-            });
-        });
-        runDeterministicRelaxation(positions, null, 44, 35);
-        return positions;
-    }
-
-    // Selected node always fixed at exact centre (0, 0, 0)
-    positions.set(selectedNodeId, { x: 0, y: 0, z: 0, role: 'center' });
-
-    const directImports: string[] = [];
-    const directImportedBy: string[] = [];
-    const callNodes: string[] = [];
-    const indirectNodes: string[] = [];
-    const directNodeIds = new Set<string>([selectedNodeId]);
-
-    for (const edge of edges) {
-        const from = typeof edge.from === 'object' ? edge.from.id : edge.from;
-        const to = typeof edge.to === 'object' ? edge.to.id : edge.to;
-        if (edge.type === 'calls') {
-            if (from === selectedNodeId && to !== selectedNodeId) {
-                callNodes.push(to);
-                directNodeIds.add(to);
-            } else if (to === selectedNodeId && from !== selectedNodeId) {
-                callNodes.push(from);
-                directNodeIds.add(from);
-            }
-        } else {
-            if (from === selectedNodeId && to !== selectedNodeId) {
-                directImports.push(to);
-                directNodeIds.add(to);
-            } else if (to === selectedNodeId && from !== selectedNodeId) {
-                directImportedBy.push(from);
-                directNodeIds.add(from);
-            }
-        }
-    }
-
-    for (const node of nodes) {
-        if (!directNodeIds.has(node.id)) {
-            indirectNodes.push(node.id);
-        }
-    }
-
-    // Risk scoring comparator (highest risk first, then ID)
-    const riskComparator = (idA: string, idB: string) => {
-        const riskA = graphFull ? computeRisk(idA, graphFull).score : 0;
-        const riskB = graphFull ? computeRisk(idB, graphFull).score : 0;
-        if (riskB !== riskA) return riskB - riskA;
-        return idA.localeCompare(idB);
-    };
-
-    const uniqueImports = Array.from(new Set(directImports)).sort(riskComparator);
-    const uniqueImportedBy = Array.from(new Set(directImportedBy)).sort(riskComparator);
-    const uniqueCalls = Array.from(new Set(callNodes)).sort(riskComparator);
-    const uniqueIndirect = Array.from(new Set(indirectNodes)).sort(riskComparator);
-
-    // Tilted ring layout:
-    // Direct nodes on 2 concentric rings (radius 140 inner for highest-risk half, 210 outer),
-    // in a plane tilted 25 degrees, deterministic y offset between -18 and +18 per node (use a hash of the file path),
-    // evenly spaced by angle: Imports on the left half, Imported by on the right half.
-    const halfImports = Math.ceil(uniqueImports.length / 2);
-    const innerImports = uniqueImports.slice(0, halfImports);
-    const outerImports = uniqueImports.slice(halfImports);
-    placeTiltedRingArc(innerImports, 140, true, 25, 'imports', positions);
-    placeTiltedRingArc(outerImports, 210, true, 25, 'imports', positions);
-
-    const halfImportedBy = Math.ceil(uniqueImportedBy.length / 2);
-    const innerImportedBy = uniqueImportedBy.slice(0, halfImportedBy);
-    const outerImportedBy = uniqueImportedBy.slice(halfImportedBy);
-    placeTiltedRingArc(innerImportedBy, 140, false, 25, 'importedBy', positions);
-    placeTiltedRingArc(outerImportedBy, 210, false, 25, 'importedBy', positions);
-
-    // Calls placed on left half on intermediate radius 175
-    if (uniqueCalls.length > 0) {
-        placeTiltedRingArc(uniqueCalls, 175, true, 25, 'calls', positions);
-    }
-
-    // Indirect nodes on an outer ring (radius 290) in dim grey
-    const tiltRad = (25 * Math.PI) / 180;
-    uniqueIndirect.forEach((id, idx) => {
-        const angle = (idx / Math.max(1, uniqueIndirect.length)) * 2 * Math.PI;
-        const x0 = 290 * Math.cos(angle);
-        const z0 = 290 * Math.sin(angle);
-        const yTilted = -z0 * Math.sin(tiltRad);
-        const zTilted = z0 * Math.cos(tiltRad);
-        const yOffset = getNodeYOffset(id);
-
-        positions.set(id, {
-            x: x0,
-            y: yTilted + yOffset,
-            z: zTilted,
-            role: 'indirect'
-        });
-    });
-
-    // Relaxation so no two cubes are closer than 44 units
-    runDeterministicRelaxation(positions, selectedNodeId, 44, 45);
-
-    return positions;
-}
-
 function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
     const {
         selectedFile,
@@ -1754,19 +1504,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
     const [isExpanded, setIsExpanded] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
-    const fgInstanceRef = useRef<any>(null);
-    const fitCameraToVisibleNodesRef = useRef<any>(null);
-    const [hovered3DNodeId, setHovered3DNodeId] = useState<string | null>(null);
-    const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
-    const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
-
-    const extraRenderers = useMemo(() => {
-        const r = new CSS2DRenderer();
-        r.domElement.style.position = 'absolute';
-        r.domElement.style.top = '0px';
-        r.domElement.style.pointerEvents = 'none';
-        return [r];
-    }, []);
+    const [resetSignal, setResetSignal] = useState(0);
 
     const [simplify, setSimplify] = useState(false);
     const [showCalls, setShowCalls] = useState(false);
@@ -1806,6 +1544,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setActiveTab('Graph');
         await selectFile(prevFile);
         setResetTrigger(prev => prev + 1);
+        setResetSignal(prev => prev + 1);
     }, [visitedHistory, setActiveTab, selectFile]);
 
     const handleReset = useCallback(() => {
@@ -1814,10 +1553,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setSelectedSymbol(null);
         setShowAllNodes(false);
         setResetTrigger(prev => prev + 1);
-        if (viewMode === '3D' && fgInstanceRef.current) {
-            fitCameraToVisibleNodesRef.current?.(graphData.nodes, 0.75);
-        }
-    }, [setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
+        setResetSignal(prev => prev + 1);
+    }, [setSelectedFile, setSelectedSymbol]);
 
     // Track full graph connection counts
     const connectionCounts = useMemo(() => {
@@ -2030,31 +1767,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     };
 
-    // Track container dimensions and handle resize transitions
-    useEffect(() => {
-        if (!containerRef.current) return;
-        const updateSize = () => {
-            if (!containerRef.current) return;
-            const w = containerRef.current.clientWidth;
-            const h = containerRef.current.clientHeight;
-            if (w > 0 && h > 0) {
-                setDimensions({ width: w, height: h });
-            }
-        };
-        updateSize();
-
-        const observer = new ResizeObserver((entries) => {
-            for (const entry of entries) {
-                const { width, height } = entry.contentRect;
-                if (width > 0 && height > 0) {
-                    setDimensions({ width: Math.floor(width), height: Math.floor(height) });
-                }
-            }
-        });
-        observer.observe(containerRef.current);
-        return () => observer.disconnect();
-    }, [isExpanded]);
-
     // In-page expanded toggle
     const toggleExpanded = useCallback(() => {
         setIsExpanded(prev => !prev);
@@ -2089,22 +1801,6 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [isExpanded]);
 
-    // On expanded toggle: resize and fit to view (2D via FlowFitViewHandler, 3D via fitCameraToVisibleNodes)
-    useEffect(() => {
-        const timer = setTimeout(() => {
-            if (containerRef.current) {
-                setDimensions({
-                    width: containerRef.current.clientWidth,
-                    height: containerRef.current.clientHeight
-                });
-            }
-            if (viewMode === '3D' && fgInstanceRef.current) {
-                fitCameraToVisibleNodes(graphData.nodes, 0.75);
-            }
-        }, 100);
-        return () => clearTimeout(timer);
-    }, [isExpanded, viewMode, graphData.nodes]);
-
     // Node click selects node and refits view to neighborhood
     const handleSelectNode = useCallback(async (node: any) => {
         if (!node) {
@@ -2133,13 +1829,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
 
         setResetTrigger(prev => prev + 1);
-
-        if (viewMode === '3D' && fgInstanceRef.current) {
-            setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.75);
-            }, 100);
-        }
-    }, [selectedFile, setSelectedFile, setSelectedSymbol, viewMode, graphData.nodes]);
+    }, [selectedFile, setSelectedFile, setSelectedSymbol]);
 
     const handleDoubleClickNode = useCallback(async (node: any) => {
         if (!node) return;
@@ -2150,485 +1840,122 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         }
     }, [setActiveTab, selectFile]);
 
-    // Single click handler for 3D
-    const handleNodeClick3D = useCallback((node: any) => {
-        handleSelectNode(node);
-    }, [handleSelectNode]);
-
-    const fitCameraToVisibleNodes = useCallback((targetNodes: any[], fillFraction = 0.75) => {
-        const fg = fgInstanceRef.current;
-        if (!fg || typeof fg.camera !== 'function') return;
-
-        const camera = fg.camera();
-        if (!camera) return;
-
-        let minX = Infinity, maxX = -Infinity;
-        let minY = Infinity, maxY = -Infinity;
-        let minZ = Infinity, maxZ = -Infinity;
-        let count = 0;
-
-        for (const n of targetNodes) {
-            if (typeof n.x === 'number' && typeof n.y === 'number' && typeof n.z === 'number') {
-                minX = Math.min(minX, n.x);
-                maxX = Math.max(maxX, n.x);
-                minY = Math.min(minY, n.y);
-                maxY = Math.max(maxY, n.y);
-                minZ = Math.min(minZ, n.z);
-                maxZ = Math.max(maxZ, n.z);
-                count++;
-            }
-        }
-
-        if (count === 0) return;
-
-        // Origin centering: selected file is always at (0, 0, 0)
-        let centerX = 0;
-        let centerY = 0;
-        let centerZ = 0;
-
-        if (!selectedFile) {
-            centerX = (minX + maxX) / 2;
-            centerY = (minY + maxY) / 2;
-            centerZ = (minZ + maxZ) / 2;
-        }
-
-        const fovRad = ((camera.fov || 45) * Math.PI) / 180;
-        const domHeight = (typeof fg.renderer === 'function' && fg.renderer()?.domElement?.clientHeight) || dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
-
-        let distance: number;
-
-        if (count === 1) {
-            const nodeRadiusWorld = 16;
-            distance = (nodeRadiusWorld * domHeight) / (16 * Math.tan(fovRad / 2));
-        } else {
-            let maxDistSq = 0;
-            for (const n of targetNodes) {
-                if (typeof n.x === 'number' && typeof n.y === 'number' && typeof n.z === 'number') {
-                    const distSq = (n.x - centerX) ** 2 + (n.y - centerY) ** 2 + (n.z - centerZ) ** 2;
-                    if (distSq > maxDistSq) maxDistSq = distSq;
-                }
-            }
-            const sphereRadius = Math.max(Math.sqrt(maxDistSq) + 6, 25);
-            const minDistanceForSphere = sphereRadius / (fillFraction * Math.tan(fovRad / 2));
-
-            const sizeX = Math.max(maxX - minX, 30);
-            const sizeY = Math.max(maxY - minY, 30);
-            const sizeZ = Math.max(maxZ - minZ, 30);
-            const maxDim = Math.max(sizeX, sizeY, sizeZ);
-            const boxDistance = maxDim / (2 * Math.tan(fovRad / 2) * fillFraction);
-
-            distance = Math.max(boxDistance, minDistanceForSphere);
-        }
-
-        // Camera centered horizontally (dirX = 0), gentle pitch of 16 degrees looking at center
-        const pitchRad = (16 * Math.PI) / 180;
-        const cosPitch = Math.cos(pitchRad);
-        const sinPitch = Math.sin(pitchRad);
-
-        const targetPos = {
-            x: centerX,
-            y: centerY + sinPitch * distance,
-            z: centerZ + cosPitch * distance
-        };
-        const lookAt = { x: centerX, y: centerY, z: centerZ };
-
-        if (typeof fg.cameraPosition === 'function') {
-            const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-            fg.cameraPosition(targetPos, lookAt, prefersReducedMotion ? 0 : 350);
-        }
-    }, [dimensions.height, selectedFile]);
-
-    fitCameraToVisibleNodesRef.current = fitCameraToVisibleNodes;
-
-    const fgRef = useCallback((fg: any) => {
-        if (fg) {
-            fgInstanceRef.current = fg;
-            try {
-                if (typeof fg.d3Force === 'function') {
-                    fg.d3Force('charge', null);
-                    fg.d3Force('link', null);
-                    fg.d3Force('center', null);
-                    fg.d3Force('collision', null);
-                }
-            } catch {
-                // ignore
-            }
-            if (fg.controls && typeof fg.controls === 'function') {
-                const controls = fg.controls();
-                if (controls) {
-                    controls.autoRotate = false;
-                    controls.enableDamping = true;
-                    controls.dampingFactor = 0.05;
-                }
-            }
-
-            // Scene lighting & background starfield
-            if (typeof fg.scene === 'function') {
-                const scene = fg.scene();
-                if (scene && !(scene as any).__customSceneInitialized) {
-                    (scene as any).__customSceneInitialized = true;
-
-                    // Lights: Ambient 0.6 + Directional 0.8 from top-left + Point light at center
-                    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-                    scene.add(ambientLight);
-
-                    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-                    dirLight.position.set(-150, 250, 200);
-                    scene.add(dirLight);
-
-                    const pointLight = new THREE.PointLight(0x4FD1B5, 1.2, 350);
-                    pointLight.position.set(0, 0, 0);
-                    scene.add(pointLight);
-
-                    // Faint grid on ground plane
-                    const gridHelper = new THREE.GridHelper(800, 40, 0x1F292E, 0x10161A);
-                    gridHelper.position.y = -120;
-                    if (gridHelper.material instanceof THREE.Material) {
-                        gridHelper.material.transparent = true;
-                        gridHelper.material.opacity = 0.25;
-                    }
-                    scene.add(gridHelper);
-
-                    // Idle cube rotation loop (0.002 rad/frame, disabled if prefers-reduced-motion)
-                    const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-                    if (!prefersReducedMotion) {
-                        const animate = () => {
-                            if (fgInstanceRef.current && typeof fgInstanceRef.current.scene === 'function') {
-                                const currentScene = fgInstanceRef.current.scene();
-                                if (currentScene) {
-                                    currentScene.traverse((obj: any) => {
-                                        if (obj.userData?.isRotatableCube) {
-                                            obj.rotation.x += 0.0012;
-                                            obj.rotation.y += 0.002;
-                                        }
-                                    });
-                                }
-                            }
-                            requestAnimationFrame(animate);
-                        };
-                        requestAnimationFrame(animate);
-                    }
-                }
-            }
-
-            setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.75);
-            }, 300);
-        }
-    }, [graphData.nodes, fitCameraToVisibleNodes]);
-
-    // Keep 3D graphData in sync with displayGraph - fixed deterministic layout
-    useEffect(() => {
-        const visible3DNodes = displayGraph.nodes;
-        const visibleIdSet = new Set(visible3DNodes.map(n => n.id));
-
-        let selectedNodeId: string | null = null;
-        if (selectedFile) {
-            const found = visible3DNodes.find((n: any) => {
-                const nPath = n.path || (n.type === 'file' ? n.id : undefined);
-                return nPath === selectedFile || n.id === selectedFile || (n.type === 'file' && n.name === selectedFile);
+    // Single click handler for 3D selection
+    const handleSelect3D = useCallback((id: string) => {
+        if (!id) return;
+        if (selectedFile && selectedFile !== id) {
+            setVisitedHistory(prev => {
+                const next = [...prev, selectedFile];
+                return next.slice(-10);
             });
-            if (found) selectedNodeId = found.id;
+            lastNavigatedFileRef.current = id;
+        }
+        setSelectedFile(id);
+        setSelectedSymbol(null);
+        setResetSignal(prev => prev + 1);
+    }, [selectedFile, setSelectedFile, setSelectedSymbol]);
+
+    useEffect(() => {
+        setResetSignal(prev => prev + 1);
+    }, [selectedFile, isExpanded, focusDepth]);
+
+    // 3D Graph Center and Nodes
+    const { g3Center, g3Nodes } = useMemo(() => {
+        const targetPath = selectedFile || (baseNodes.length > 0
+            ? ([...baseNodes].sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0))[0]?.id || '')
+            : '');
+
+        const parts = targetPath.replace(/\\/g, '/').split('/').filter(Boolean);
+        const centerName = parts.pop() || targetPath || 'root';
+        const centerFolder = parts.join('/');
+        const center = { id: targetPath, name: centerName, folder: centerFolder };
+
+        if (!targetPath || !graph?.edges) {
+            return { g3Center: center, g3Nodes: [] };
         }
 
-        const layoutPositions = compute3DHubLayout(visible3DNodes, displayGraph.edges, selectedNodeId, graph);
-
-        const nodeConnMap = new Map<string, number>();
-        displayGraph.edges.forEach((e: any) => {
-            if (visibleIdSet.has(e.from) && visibleIdSet.has(e.to)) {
-                nodeConnMap.set(e.from, (nodeConnMap.get(e.from) || 0) + 1);
-                nodeConnMap.set(e.to, (nodeConnMap.get(e.to) || 0) + 1);
-            }
+        const baseNodeMap = new Map<string, any>(baseNodes.map(n => [n.id, n]));
+        let centerNode = baseNodes.find((n: any) => {
+            const nPath = n.path || (n.type === 'file' ? n.id : undefined);
+            return nPath === targetPath || n.id === targetPath || (n.type === 'file' && n.name === targetPath);
         });
+        if (!centerNode) {
+            return { g3Center: center, g3Nodes: [] };
+        }
 
-        const nodeRiskMap = new Map<string, number>();
-        for (const n of visible3DNodes) {
-            let sc = 0;
+        const directImportsSet = new Set<string>();
+        const directImportedBySet = new Set<string>();
+
+        for (const e of graph.edges) {
+            if (e.from === centerNode.id && baseNodeMap.has(e.to)) {
+                directImportsSet.add(e.to);
+            }
+            if (e.to === centerNode.id && baseNodeMap.has(e.from)) {
+                directImportedBySet.add(e.from);
+            }
+        }
+        directImportsSet.delete(centerNode.id);
+        directImportedBySet.delete(centerNode.id);
+
+        const depResult = getFileDependents(graph, targetPath);
+        const indirectNodeIds = new Set<string>();
+
+        if (focusDepth === 2) {
+            for (const ind of depResult.indirect) {
+                const found = baseNodes.find((n: any) => (n.path && n.path === ind.path) || n.id === ind.path || (n.type === 'file' && n.name === ind.path));
+                if (found && found.id !== centerNode.id && !directImportsSet.has(found.id) && !directImportedBySet.has(found.id)) {
+                    indirectNodeIds.add(found.id);
+                }
+            }
+        }
+
+        const toG3 = (n: any, kind: 'imports' | 'importedBy' | 'indirect'): G3Node => {
+            const raw = (n as any).path || (n.type === 'file' ? n.id : '') || n.id || '';
+            const p = raw.replace(/\\/g, '/').split('/').filter(Boolean);
+            const nm = p.pop() || (n as any).name || raw;
+            const fol = p.join('/');
+            let risk = 0;
             if (graph) {
                 try {
-                    sc = computeRisk(n.id, graph).score || 0;
+                    risk = computeRisk(raw, graph).score || 0;
                 } catch {
-                    sc = 0;
+                    risk = 0;
                 }
             }
-            if (sc === 0) {
-                sc = nodeConnMap.get(n.id) || 0;
-            }
-            nodeRiskMap.set(n.id, sc);
-        }
-
-        let maxDirectScore = 1;
-        for (const n of visible3DNodes) {
-            const pos = layoutPositions.get(n.id);
-            const role = pos?.role;
-            if (role === 'imports' || role === 'importedBy' || role === 'calls') {
-                const sc = nodeRiskMap.get(n.id) || 0;
-                if (sc > maxDirectScore) maxDirectScore = sc;
-            }
-        }
-
-        const nodes = visible3DNodes.map((n: any) => {
-            const pos = layoutPositions.get(n.id) || { x: 0, y: 0, z: 0, role: 'default' };
-            const role = pos.role;
-            let color = '#8A918C';
-            if (role === 'center') {
-                color = '#FAFAFA';
-            } else if (role === 'imports') {
-                color = '#4FD1B5';
-            } else if (role === 'importedBy') {
-                color = '#F0B35F';
-            } else if (role === 'calls') {
-                color = '#6F8F9A';
-            } else if (role === 'indirect') {
-                color = '#8A918C';
-            } else {
-                if (n.type === 'repository') color = '#E8EAE6';
-                else if (n.type === 'file') color = '#4FD1B5';
-                else if (n.type === 'class') color = '#F0B35F';
-                else color = '#8A918C';
-            }
-
-            const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
-            const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
-            const baseName = n.type === 'repository' ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
-
-            const score = nodeRiskMap.get(n.id) || 0;
-            const isCenter = role === 'center';
-            const isDirect = role === 'imports' || role === 'importedBy' || role === 'calls';
-            const isIndirect = role === 'indirect';
-            const cubeSize = isCenter
-                ? 30
-                : isDirect
-                ? Math.max(8, Math.round(12 + 14 * (score / maxDirectScore)))
-                : isIndirect
-                ? 8
-                : Math.max(8, Math.round(12 + 14 * (score / maxDirectScore)));
-
-            return {
-                id: n.id,
-                name: baseName,
-                path: nodePath,
-                color,
-                role,
-                type: n.type,
-                score,
-                cubeSize,
-                x: pos.x,
-                y: pos.y,
-                z: pos.z,
-                fx: pos.x,
-                fy: pos.y,
-                fz: pos.z,
-                vx: 0,
-                vy: 0,
-                vz: 0,
-                connections: nodeConnMap.get(n.id) || 0,
-                neighbors: new Set<string>(),
-                links: [] as any[]
-            };
-        });
-
-        const nodeMap = new Map<string, any>(nodes.map((n: any) => [n.id, n]));
-
-        const links = displayGraph.edges
-            .filter((e: any) => visibleIdSet.has(e.from) && visibleIdSet.has(e.to))
-            .map((e: any) => {
-                const edgeId = e.id || (e.from + '->' + e.to + ':' + e.type);
-                let color = '#8A918C';
-                let edgeRole = 'indirect';
-
-                if (selectedNodeId) {
-                    if (e.type === 'calls') {
-                        color = '#6F8F9A';
-                        edgeRole = 'calls';
-                    } else if (e.from === selectedNodeId) {
-                        color = '#4FD1B5';
-                        edgeRole = 'imports';
-                    } else if (e.to === selectedNodeId) {
-                        color = '#F0B35F';
-                        edgeRole = 'importedBy';
-                    } else {
-                        color = '#8A918C';
-                        edgeRole = 'indirect';
-                    }
-                } else {
-                    if (e.type === 'calls') color = '#6F8F9A';
-                    else if (e.type === 'imports') color = '#4FD1B5';
-                    else color = '#8A918C';
-                }
-
-                let linkSource = e.from;
-                let linkTarget = e.to;
-                if (selectedNodeId) {
-                    if (edgeRole === 'imports') {
-                        linkSource = selectedNodeId;
-                        linkTarget = e.to === selectedNodeId ? e.from : e.to;
-                    } else if (edgeRole === 'importedBy') {
-                        linkSource = e.from === selectedNodeId ? e.to : e.from;
-                        linkTarget = selectedNodeId;
-                    }
-                }
-
-                const sourceNode = nodeMap.get(linkSource) || linkSource;
-                const targetNode = nodeMap.get(linkTarget) || linkTarget;
-
-                const link = {
-                    source: sourceNode,
-                    target: targetNode,
-                    sourceId: linkSource,
-                    targetId: linkTarget,
-                    originalFrom: e.from,
-                    originalTo: e.to,
-                    type: e.type,
-                    color,
-                    edgeRole,
-                    id: edgeId
-                };
-
-                if (nodeMap.has(e.from) && nodeMap.has(e.to)) {
-                    nodeMap.get(e.from)!.neighbors.add(e.to);
-                    nodeMap.get(e.to)!.neighbors.add(e.from);
-                    nodeMap.get(e.from)!.links.push(link);
-                    nodeMap.get(e.to)!.links.push(link);
-                }
-                return link;
-            });
-
-        setGraphData({ nodes, links });
-    }, [displayGraph, selectedFile, graph]);
-
-    // Precompute top 8 direct nodes by size/score for persistent 3D label display
-    const top8DirectNodeIds = useMemo(() => {
-        if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
-        const directNodes = graphData.nodes.filter(n => n.role === 'imports' || n.role === 'importedBy' || n.role === 'calls');
-        const sorted = [...directNodes].sort((a, b) => (b.cubeSize || 0) - (a.cubeSize || 0) || (b.score || 0) - (a.score || 0));
-        return new Set(sorted.slice(0, 8).map(n => n.id));
-    }, [graphData.nodes]);
-
-    // Precompute top 3 highest-risk direct nodes for 0.9 edge opacity
-    const top3RiskNodeIds = useMemo(() => {
-        if (!graphData.nodes || graphData.nodes.length === 0) return new Set<string>();
-        const directNodes = graphData.nodes.filter(n => n.role === 'imports' || n.role === 'importedBy' || n.role === 'calls');
-        const sorted = [...directNodes].sort((a, b) => (b.score || 0) - (a.score || 0) || (b.cubeSize || 0) - (a.cubeSize || 0));
-        return new Set(sorted.slice(0, 3).map(n => n.id));
-    }, [graphData.nodes]);
-
-    // Center 3D camera on visible nodes bounding box (~75% of canvas) when selectedFile changes
-    useEffect(() => {
-        if (viewMode !== '3D' || !fgInstanceRef.current) return;
-        const timer = setTimeout(() => {
-            fitCameraToVisibleNodes(graphData.nodes, 0.75);
-        }, 150);
-        return () => clearTimeout(timer);
-    }, [selectedFile, viewMode, graphData.nodes, fitCameraToVisibleNodes]);
-
-    // Refit camera when toggling Direct/Indirect focusDepth
-    useEffect(() => {
-        if (viewMode === '3D' && fgInstanceRef.current && graphData.nodes.length > 0) {
-            const timer = setTimeout(() => {
-                fitCameraToVisibleNodes(graphData.nodes, 0.75);
-            }, 100);
-            return () => clearTimeout(timer);
-        }
-    }, [focusDepth, viewMode, fitCameraToVisibleNodes, graphData.nodes]);
-
-    // Screen-space label overlap management for CSS2D HTML pills:
-    // Show only for selected + 8 highest-risk nodes, others on hover; drop overlapping lower-priority labels in screen space
-    useEffect(() => {
-        if (viewMode !== '3D') return;
-        let animId: number;
-        const tmpVec = new THREE.Vector3();
-
-        const updateLabels = () => {
-            const fg = fgInstanceRef.current;
-            if (fg && typeof fg.scene === 'function' && typeof fg.camera === 'function') {
-                const scene = fg.scene();
-                const camera = fg.camera();
-                if (scene && camera) {
-                    const w = dimensions.width || (typeof window !== 'undefined' ? window.innerWidth : 800);
-                    const h = dimensions.height || (typeof window !== 'undefined' ? window.innerHeight : 600);
-
-                    const candidates: Array<{
-                        pillDiv: HTMLElement;
-                        priority: number;
-                        screenX: number;
-                        screenY: number;
-                        boxW: number;
-                        boxH: number;
-                    }> = [];
-
-                    scene.traverse((child: any) => {
-                        if (child.isCSS2DObject && child.userData?.pillDiv) {
-                            const { pillDiv, nodeId, isSelected, isDirect, score } = child.userData;
-                            const isHovered = hovered3DNodeId === nodeId;
-                            const isTop8 = top8DirectNodeIds.has(nodeId);
-
-                            let priority = -1;
-                            if (isSelected) {
-                                priority = 1000000;
-                            } else if (isHovered) {
-                                priority = 500000;
-                            } else if (isDirect && isTop8) {
-                                priority = 1000 + (score || 0);
-                            }
-
-                            if (priority < 0) {
-                                pillDiv.style.display = 'none';
-                                return;
-                            }
-
-                            child.getWorldPosition(tmpVec);
-                            const proj = tmpVec.clone().project(camera);
-
-                            // Behind camera
-                            if (proj.z > 1) {
-                                pillDiv.style.display = 'none';
-                                return;
-                            }
-
-                            const screenX = (proj.x + 1) * w / 2;
-                            const screenY = (-proj.y + 1) * h / 2;
-
-                            const boxW = pillDiv.offsetWidth || 110;
-                            const boxH = pillDiv.offsetHeight || 30;
-
-                            candidates.push({
-                                pillDiv,
-                                priority,
-                                screenX,
-                                screenY,
-                                boxW,
-                                boxH
-                            });
-                        }
-                    });
-
-                    candidates.sort((a, b) => b.priority - a.priority);
-
-                    const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
-                    for (const cand of candidates) {
-                        const halfW = cand.boxW / 2;
-                        const halfH = cand.boxH / 2;
-                        const overlaps = placed.some(p =>
-                            Math.abs(p.x - cand.screenX) < (p.w / 2 + halfW) &&
-                            Math.abs(p.y - cand.screenY) < (p.h / 2 + halfH)
-                        );
-
-                        if (overlaps) {
-                            cand.pillDiv.style.display = 'none';
-                        } else {
-                            cand.pillDiv.style.display = 'block';
-                            placed.push({ x: cand.screenX, y: cand.screenY, w: cand.boxW, h: cand.boxH });
-                        }
-                    }
-                }
-            }
-            animId = requestAnimationFrame(updateLabels);
+            return { id: raw, name: nm, folder: fol, risk, kind };
         };
 
-        animId = requestAnimationFrame(updateLabels);
-        return () => cancelAnimationFrame(animId);
-    }, [viewMode, dimensions, hovered3DNodeId, top8DirectNodeIds]);
+        const imports = Array.from(directImportsSet)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0))
+            .map(n => toG3(n, 'imports'));
+
+        const importedByAll = Array.from(directImportedBySet)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0));
+
+        const visibleImportedBy = showAllNodes ? importedByAll : importedByAll.slice(0, 12);
+        const importedBy = visibleImportedBy.map(n => toG3(n, 'importedBy'));
+
+        const indirect = Array.from(indirectNodeIds)
+            .map(id => baseNodeMap.get(id))
+            .filter(Boolean)
+            .sort((a, b) => {
+                const pathA = a.path || a.id;
+                const pathB = b.path || b.id;
+                const rA = computeRisk(pathA, graph).score;
+                const rB = computeRisk(pathB, graph).score;
+                return rB - rA || (connectionCounts.get(b.id) || 0) - (connectionCounts.get(a.id) || 0);
+            })
+            .map(n => toG3(n, 'indirect'));
+
+        return {
+            g3Center: center,
+            g3Nodes: [...imports, ...importedBy, ...indirect]
+        };
+    }, [selectedFile, baseNodes, connectionCounts, graph, focusDepth, showAllNodes]);
 
     return (
         <div
@@ -2723,21 +2050,25 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     </button>
                 </div>
 
-                <div className="h-3.5 w-[1px] bg-white/10" />
+                {viewMode !== '3D' && (
+                    <>
+                        <div className="h-3.5 w-[1px] bg-white/10" />
 
-                {/* "Show calls" toggle button */}
-                <button
-                    onClick={() => setShowCalls(prev => !prev)}
-                    className={cn(
-                        "px-2.5 py-1 text-xs rounded-md border transition-colors cursor-pointer flex items-center gap-1.5",
-                        showCalls
-                            ? "bg-[#4FD1B5]/20 border-[#4FD1B5]/50 text-[#4FD1B5] font-medium"
-                            : "bg-white/[0.04] border-white/[0.06] text-[#8A918C] hover:text-[#E8EAE6]"
-                    )}
-                    title="Toggle function-level calls"
-                >
-                    <span>Show calls</span>
-                </button>
+                        {/* "Show calls" toggle button */}
+                        <button
+                            onClick={() => setShowCalls(prev => !prev)}
+                            className={cn(
+                                "px-2.5 py-1 text-xs rounded-md border transition-colors cursor-pointer flex items-center gap-1.5",
+                                showCalls
+                                    ? "bg-[#4FD1B5]/20 border-[#4FD1B5]/50 text-[#4FD1B5] font-medium"
+                                    : "bg-white/[0.04] border-white/[0.06] text-[#8A918C] hover:text-[#E8EAE6]"
+                            )}
+                            title="Toggle function-level calls"
+                        >
+                            <span>Show calls</span>
+                        </button>
+                    </>
+                )}
 
                 {/* "Reset view" visible button */}
                 <button
@@ -2847,320 +2178,14 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     />
                 </div>
             ) : (
-                <ForceGraph3D
-                    ref={fgRef as any}
-                    extraRenderers={extraRenderers}
-                    showNavInfo={false}
-                    graphData={graphData}
-                    width={dimensions.width > 0 ? dimensions.width : undefined}
-                    height={dimensions.height > 0 ? dimensions.height : undefined}
-                    enableNodeDrag={false}
-                    cooldownTicks={0}
-                    warmupTicks={0}
-                    cooldownTime={0}
-                    d3AlphaDecay={1}
-                    d3VelocityDecay={1}
-                    linkThreeObject={(link: any) => {
-                        const isIndirect = link.edgeRole === 'indirect';
-                        const sourceId = link.source?.id || link.sourceId;
-                        const targetId = link.target?.id || link.targetId;
-                        const isTop3 = top3RiskNodeIds.has(sourceId) || top3RiskNodeIds.has(targetId);
-                        const group = new THREE.Group();
-
-                        // Line geometry between two points
-                        const geom = new THREE.BufferGeometry();
-                        const positions = new Float32Array(6);
-                        geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-                        const colorHex = link.color ? new THREE.Color(link.color) : new THREE.Color(0x8A918C);
-                        const lineMat = new THREE.LineBasicMaterial({
-                            color: colorHex,
-                            transparent: true,
-                            opacity: isIndirect ? 0.40 : (isTop3 ? 0.90 : 0.60),
-                            linewidth: 2,
-                            depthTest: true
-                        });
-                        const line = new THREE.Line(geom, lineMat);
-                        group.add(line);
-
-                        // Arrowhead cone 10 units long pointing towards target (imported end)
-                        const coneLength = 10;
-                        const coneRadius = 3.5;
-                        const coneGeo = new THREE.ConeGeometry(coneRadius, coneLength, 8);
-                        // Rotate cone so its tip points along +Z axis
-                        coneGeo.rotateX(Math.PI / 2);
-                        const coneMat = new THREE.MeshBasicMaterial({
-                            color: colorHex,
-                            transparent: true,
-                            opacity: isIndirect ? 0.40 : (isTop3 ? 0.90 : 0.60),
-                            depthTest: true
-                        });
-                        const coneMesh = new THREE.Mesh(coneGeo, coneMat);
-                        group.add(coneMesh);
-
-                        (group as any).userData = { line, geom, coneMesh, lineMat, coneMat };
-                        return group;
-                    }}
-                    linkPositionUpdate={(group: any, { start, end }: any, link: any) => {
-                        if (!group || !start || !end) return false;
-                        const userData = (group as any).userData;
-                        if (!userData) return false;
-
-                        const isIndirect = link.edgeRole === 'indirect';
-                        if (isIndirect) {
-                            const isConnectedToHoveredOrSelected = (hovered3DNodeId && (link.source?.id === hovered3DNodeId || link.target?.id === hovered3DNodeId || link.sourceId === hovered3DNodeId || link.targetId === hovered3DNodeId)) ||
-                                (selectedFile && (link.source?.id === selectedFile || link.target?.id === selectedFile || link.sourceId === selectedFile || link.targetId === selectedFile));
-                            group.visible = !!isConnectedToHoveredOrSelected;
-                            if (!group.visible) return true;
-                        } else {
-                            group.visible = true;
-                        }
-
-                        // Edges start at cube border, not center, so lines do not merge into one blob at selected cube
-                        const sourceId = link.source?.id || link.sourceId || link.source;
-                        const targetId = link.target?.id || link.targetId || link.target;
-                        const sNode = typeof link.source === 'object' ? link.source : undefined;
-                        const tNode = typeof link.target === 'object' ? link.target : undefined;
-                        const sourceCubeSize = sNode?.cubeSize || (sNode?.role === 'center' || sourceId === selectedFile ? 30 : 14);
-                        const targetCubeSize = tNode?.cubeSize || (tNode?.role === 'center' || targetId === selectedFile ? 30 : 14);
-                        const sourceBorderOffset = (sourceCubeSize / 2) + 2;
-                        const targetBorderOffset = (targetCubeSize / 2) + 2;
-                        const coneLength = 10;
-
-                        const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
-                        const dist = dir.length();
-
-                        if (dist > 0.001) {
-                            dir.normalize();
-
-                            // Start point at source cube border
-                            const startX = dist > sourceBorderOffset ? start.x + dir.x * sourceBorderOffset : start.x;
-                            const startY = dist > sourceBorderOffset ? start.y + dir.y * sourceBorderOffset : start.y;
-                            const startZ = dist > sourceBorderOffset ? start.z + dir.z * sourceBorderOffset : start.z;
-
-                            // End point of line: at cone base (or target border if no cone)
-                            const lineEndOffset = !isIndirect ? targetBorderOffset + coneLength : targetBorderOffset;
-                            const endX = dist > lineEndOffset ? end.x - dir.x * lineEndOffset : end.x;
-                            const endY = dist > lineEndOffset ? end.y - dir.y * lineEndOffset : end.y;
-                            const endZ = dist > lineEndOffset ? end.z - dir.z * lineEndOffset : end.z;
-
-                            const positions = userData.geom.attributes.position.array;
-                            positions[0] = startX;
-                            positions[1] = startY;
-                            positions[2] = startZ;
-                            positions[3] = endX;
-                            positions[4] = endY;
-                            positions[5] = endZ;
-                            userData.geom.attributes.position.needsUpdate = true;
-
-                            // Position cone so its tip touches target cube border: cone center is at targetBorderOffset + coneLength/2
-                            if (!isIndirect && dist > targetBorderOffset + coneLength) {
-                                const coneCenterDist = targetBorderOffset + coneLength / 2;
-                                userData.coneMesh.position.set(
-                                    end.x - dir.x * coneCenterDist,
-                                    end.y - dir.y * coneCenterDist,
-                                    end.z - dir.z * coneCenterDist
-                                );
-                                userData.coneMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
-                                userData.coneMesh.visible = true;
-                            } else {
-                                userData.coneMesh.visible = false;
-                            }
-                        }
-
-                        return true;
-                    }}
-                    backgroundColor="#07090A"
-                    onNodeHover={(node: any) => {
-                        setHovered3DNodeId(node ? node.id : null);
-                    }}
-                    nodeLabel={(node: any) => {
-                        if (!node) return '';
-                        const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
-                        const rawName = node.name || (nodePath ? nodePath.split('/').pop() : node.id);
-                        const nodeName = rawName.includes('/') ? rawName.split('/').pop() : rawName;
-                        if (!selectedFile) return nodeName;
-                        const selName = selectedFile.split('/').pop() || selectedFile;
-                        if (node.role === 'imports') {
-                            return `${selName} imports ${nodeName}`;
-                        } else if (node.role === 'importedBy') {
-                            return `${nodeName} imports ${selName}`;
-                        } else if (node.role === 'calls') {
-                            return `${nodeName} calls ${selName}`;
-                        } else if (node.role === 'center') {
-                            return nodeName;
-                        } else {
-                            return `${nodeName} (indirect)`;
-                        }
-                    }}
-                    onNodeClick={handleNodeClick3D}
-                    onBackgroundClick={() => handleSelectNode(null)}
-                    onEngineStop={() => fitCameraToVisibleNodes(graphData.nodes, 0.75)}
-                    nodeThreeObject={(node: any) => {
-                        const nodePath = node.path || (node.type === 'file' ? node.id : undefined);
-                        const isSelected = !!(node.role === 'center' || neighborInfo.selectedNodeIds.has(node.id) || (selectedFile && (nodePath === selectedFile || node.id === selectedFile)));
-                        const isHovered = hovered3DNodeId === node.id;
-                        const isIndirect = node.role === 'indirect';
-                        const isDirect = node.role === 'imports' || node.role === 'importedBy' || node.role === 'calls';
-
-                        // Sizes by importance: selected 30; direct 12 + 14 * (score / maxScore); indirect 8 (minimum 8)
-                        const cubeSize = typeof node.cubeSize === 'number'
-                            ? node.cubeSize
-                            : (isSelected ? 30 : isDirect ? 12 : 8);
-
-                        // Colours: selected #E8EAE6, Imports #4FD1B5, Imported by #F0B35F, Indirect #8A918C, Calls #6F8F9A
-                        let hexColor = 0x8A918C;
-                        if (isSelected) hexColor = 0xE8EAE6;
-                        else if (node.role === 'imports') hexColor = 0x4FD1B5;
-                        else if (node.role === 'importedBy') hexColor = 0xF0B35F;
-                        else if (node.role === 'calls') hexColor = 0x6F8F9A;
-                        else if (node.role === 'indirect') hexColor = 0x8A918C;
-
-                        let opacity = 0.95;
-                        if (hovered3DNodeId) {
-                            const isConnectedToHovered = isHovered || (node.links && node.links.some((l: any) => l.source === hovered3DNodeId || l.target === hovered3DNodeId || l.source?.id === hovered3DNodeId || l.target?.id === hovered3DNodeId));
-                            if (!isConnectedToHovered) {
-                                opacity = 0.15;
-                            }
-                        }
-
-                        const group = new THREE.Group();
-
-                        // Soft sprite glow behind selected node
-                        if (isSelected) {
-                            const canvas = document.createElement('canvas');
-                            canvas.width = 128;
-                            canvas.height = 128;
-                            const ctx = canvas.getContext('2d');
-                            if (ctx) {
-                                const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-                                grad.addColorStop(0, 'rgba(79, 209, 181, 0.65)');
-                                grad.addColorStop(0.4, 'rgba(79, 209, 181, 0.25)');
-                                grad.addColorStop(1, 'rgba(79, 209, 181, 0)');
-                                ctx.fillStyle = grad;
-                                ctx.fillRect(0, 0, 128, 128);
-                            }
-                            const glowTexture = new THREE.CanvasTexture(canvas);
-                            const glowMat = new THREE.SpriteMaterial({
-                                map: glowTexture,
-                                transparent: true,
-                                opacity: Math.max(0.4, opacity),
-                                depthWrite: false
-                            });
-                            const glowSprite = new THREE.Sprite(glowMat);
-                            glowSprite.scale.set(cubeSize * 3.4, cubeSize * 3.4, 1);
-                            group.add(glowSprite);
-                        }
-
-                        // MeshStandardMaterial with polygonOffset to eliminate z-fighting
-                        const threeColor = new THREE.Color(hexColor);
-                        const emissiveColor = isSelected ? new THREE.Color(0x4FD1B5) : threeColor.clone();
-                        const emissiveIntensity = isHovered ? 0.6 : (isSelected ? 0.45 : 0.25);
-
-                        const cubeGeo = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
-                        const cubeMat = new THREE.MeshStandardMaterial({
-                            color: threeColor,
-                            metalness: 0.2,
-                            roughness: 0.5,
-                            emissive: emissiveColor,
-                            emissiveIntensity,
-                            transparent: true,
-                            opacity,
-                            polygonOffset: true,
-                            polygonOffsetFactor: 1.5,
-                            polygonOffsetUnits: 1.5
-                        });
-                        const cubeMesh = new THREE.Mesh(cubeGeo, cubeMat);
-                        (cubeMesh as any).userData = { isRotatableCube: true };
-                        group.add(cubeMesh);
-
-                        // EdgesGeometry outline with inverse polygonOffset and slight scale
-                        const edgesGeo = new THREE.EdgesGeometry(cubeGeo);
-                        const edgesMat = new THREE.LineBasicMaterial({
-                            color: isSelected ? 0x4FD1B5 : (isHovered ? 0xFFFFFF : hexColor),
-                            transparent: true,
-                            opacity: Math.max(0.4, opacity),
-                            polygonOffset: true,
-                            polygonOffsetFactor: -1.5,
-                            polygonOffsetUnits: -1.5
-                        });
-                        const edgesLines = new THREE.LineSegments(edgesGeo, edgesMat);
-                        edgesLines.scale.set(1.002, 1.002, 1.002);
-                        group.add(edgesLines);
-
-                        // Labels: HTML overlays (CSS2DObject) - dark translucent pill (rgba(16,22,26,.85), 1px hairline, white mono 12px, two lines: file name bold, folder muted truncated to 24 chars)
-                        const rawPath = node.path || (node.type === 'file' ? node.id : '') || node.id || '';
-                        const parts = rawPath.replace(/\\/g, '/').split('/').filter(Boolean);
-                        const fileName = parts.pop() || node.name || node.id;
-                        const rawFolder = parts.length > 0 ? parts.join('/') : '';
-                        const folderName = rawFolder.length > 24 ? rawFolder.slice(0, 23) + '…' : rawFolder;
-
-                        const pillDiv = document.createElement('div');
-                        pillDiv.className = 'graph-3d-label-pill select-none pointer-events-none';
-                        pillDiv.style.backgroundColor = 'rgba(16, 22, 26, 0.85)';
-                        pillDiv.style.border = '1px solid rgba(255, 255, 255, 0.15)';
-                        pillDiv.style.borderRadius = '6px';
-                        pillDiv.style.padding = '3px 8px';
-                        pillDiv.style.fontFamily = "'IBM Plex Mono', monospace, Consolas";
-                        pillDiv.style.whiteSpace = 'nowrap';
-                        pillDiv.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.5)';
-                        pillDiv.style.display = 'none';
-
-                        const nameDiv = document.createElement('div');
-                        nameDiv.style.fontSize = '12px';
-                        nameDiv.style.fontWeight = '700';
-                        nameDiv.style.color = isSelected ? '#FFFFFF' : '#E8EAE6';
-                        nameDiv.style.lineHeight = '1.2';
-                        nameDiv.textContent = fileName;
-                        pillDiv.appendChild(nameDiv);
-
-                        if (folderName) {
-                            const folderDiv = document.createElement('div');
-                            folderDiv.style.fontSize = '10px';
-                            folderDiv.style.fontWeight = '400';
-                            folderDiv.style.color = '#8A918C';
-                            folderDiv.style.lineHeight = '1.2';
-                            folderDiv.style.marginTop = '1px';
-                            folderDiv.textContent = folderName;
-                            pillDiv.appendChild(folderDiv);
-                        }
-
-                        const labelObj = new CSS2DObject(pillDiv);
-
-                        // Placement: selected cube label goes BELOW the cube; others offset outside away from center
-                        if (isSelected) {
-                            labelObj.position.set(0, -(cubeSize / 2 + 16), 0);
-                        } else {
-                            const nx = typeof node.x === 'number' ? node.x : 0;
-                            const ny = typeof node.y === 'number' ? node.y : 0;
-                            const nz = typeof node.z === 'number' ? node.z : 0;
-                            const distFromOrigin = Math.sqrt(nx * nx + ny * ny + nz * nz);
-                            const offsetDist = (cubeSize / 2) + 16;
-
-                            if (distFromOrigin > 0.01) {
-                                labelObj.position.set(
-                                    (nx / distFromOrigin) * offsetDist,
-                                    (ny / distFromOrigin) * offsetDist + 2,
-                                    (nz / distFromOrigin) * offsetDist
-                                );
-                            } else {
-                                labelObj.position.set(offsetDist, 2, 0);
-                            }
-                        }
-
-                        (labelObj as any).userData = {
-                            pillDiv,
-                            nodeId: node.id,
-                            isSelected,
-                            isDirect,
-                            isIndirect,
-                            score: node.score || 0
-                        };
-                        group.add(labelObj);
-
-                        return group;
-                    }}
-                />
+                <div className={cn("w-full h-full transition-all relative", isExpanded && detailsOpen && "pr-80")}>
+                    <Graph3D
+                        center={g3Center}
+                        nodes={g3Nodes}
+                        onSelect={handleSelect3D}
+                        resetSignal={resetSignal}
+                    />
+                </div>
             )}
 
             {/* Legend (top-right below toolbar): compact horizontal legend strip */}
@@ -3189,7 +2214,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     </svg>
                     <span className="text-[#E8EAE6]">Indirect</span>
                 </div>
-                {showCalls && (
+                {showCalls && viewMode !== '3D' && (
                     <div className="flex items-center gap-1.5">
                         <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
                             <line x1="1" y1="4" x2="13" y2="4" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
@@ -3202,11 +2227,7 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
 
             {/* Hint text (bottom-centre): non-overlapping controls guide */}
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 glass-surface bg-[rgba(16,22,26,0.85)] backdrop-blur-md rounded-full border border-white/10 text-[11px] font-mono text-[#8A918C] select-none pointer-events-none shadow-md flex items-center gap-2">
-                <span>Drag to rotate</span>
-                <span className="text-white/20">•</span>
-                <span>Scroll to zoom</span>
-                <span className="text-white/20">•</span>
-                <span>Click node to select</span>
+                <span>Drag to rotate, scroll to zoom, click a cube to select</span>
             </div>
 
             {/* Scrollable list modal for Indirect files when M > 30 */}
