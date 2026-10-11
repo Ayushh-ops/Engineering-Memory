@@ -190,6 +190,7 @@ export function parseAndValidateEvidenceAndFollowUps(
     evidence: LlmEvidence[];
     followUps: string[];
     citations: LlmCitation[];
+    missingData?: string[];
 } {
     let parsedEvidenceRaw: any[] = [];
     let parsedFollowUpsRaw: any[] = [];
@@ -214,11 +215,151 @@ export function parseAndValidateEvidenceAndFollowUps(
         }
     }
 
-    const cleanAnswer = rawAnswer
+    const textWithoutDelimiters = rawAnswer
         .replace(/<<<EVIDENCE>>>[\s\S]*?<<<END_EVIDENCE>>>/g, "")
         .replace(/<<<FOLLOWUPS>>>[\s\S]*?<<<END_FOLLOWUPS>>>/g, "")
-        .replace(/<<<[\s\S]*?>>>/g, "")
+        .replace(/<<<[\s\S]*?>>>/g, "");
+
+    const tailStartRegex = /(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:missing\s*data|missingdata|evidence|follow-ups|followups|follow\s+ups)(?:\*{1,2}|_{1,2})?[ \t]*[:\-]/i;
+    const tailMatch = textWithoutDelimiters.match(tailStartRegex);
+
+    let cleanAnswer = textWithoutDelimiters;
+    let tailText = "";
+
+    if (tailMatch && tailMatch.index !== undefined) {
+        const newlineOffset = tailMatch[0].startsWith("\r\n") ? 2 : tailMatch[0].startsWith("\n") ? 1 : 0;
+        const splitIndex = tailMatch.index + newlineOffset;
+        cleanAnswer = textWithoutDelimiters.slice(0, splitIndex);
+        tailText = textWithoutDelimiters.slice(splitIndex);
+    }
+
+    // Strip standalone label lines remaining mid-answer and stray delimiters
+    cleanAnswer = cleanAnswer
+        .replace(/(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:missing\s*data|missingdata|evidence|follow-ups|followups|follow\s+ups)(?:\*{1,2}|_{1,2})?[ \t]*[:\-]?[ \t]*(?=\r?\n|$)/gi, "")
+        .replace(/<<<|>>>/g, "")
         .trim();
+
+    let parsedMissingData: string[] | undefined = undefined;
+
+    if (tailText) {
+        // Missing data extraction
+        const missingDataMatch = tailText.match(/(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:missing\s*data|missingdata)(?:\*{1,2}|_{1,2})?[ \t]*[:\-][ \t]*([\s\S]*?)(?=(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:evidence|follow-ups|followups|follow\s+ups)|$)/i);
+        if (missingDataMatch) {
+            const rawVal = missingDataMatch[1].trim();
+            let isJson = false;
+            try {
+                const parsed = JSON.parse(rawVal);
+                if (Array.isArray(parsed)) {
+                    isJson = true;
+                    parsedMissingData = parsed.map(s => String(s).trim()).filter(Boolean);
+                }
+            } catch {}
+
+            if (!isJson) {
+                const cleanedVal = rawVal.replace(/[.\s]+$/, "").trim().toLowerCase();
+                if (/^(none|nothing|koi nahin|n\/a|nil|null|no|not applicable|\[\])$/i.test(cleanedVal)) {
+                    parsedMissingData = [];
+                } else if (rawVal) {
+                    const lines = rawVal
+                        .split(/\r?\n/)
+                        .map(l => l.replace(/^[ \t]*[-*•]\s*/, "").trim())
+                        .filter(Boolean);
+                    if (lines.length > 0) {
+                        parsedMissingData = lines;
+                    } else {
+                        parsedMissingData = [rawVal];
+                    }
+                }
+            }
+        }
+
+        // Follow-ups extraction from tail if blocks were missing
+        if (parsedFollowUpsRaw.length === 0) {
+            const followUpsSectionMatch = tailText.match(/(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:follow-ups|followups|follow\s+ups)(?:\*{1,2}|_{1,2})?[ \t]*[:\-][ \t]*([\s\S]*?)(?=(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:evidence|missing\s*data|missingdata)|$)/i);
+            if (followUpsSectionMatch) {
+                const sectionBody = followUpsSectionMatch[1].trim();
+                let parsedAsJson = false;
+                const jsonMatch = sectionBody.match(/\[[\s\S]*?\]/);
+                if (jsonMatch) {
+                    try {
+                        const arr = JSON.parse(jsonMatch[0]);
+                        if (Array.isArray(arr)) {
+                            parsedAsJson = true;
+                            for (const item of arr) {
+                                if (typeof item === "string" && item.trim()) {
+                                    parsedFollowUpsRaw.push(item.trim().slice(0, 80));
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+
+                if (!parsedAsJson) {
+                    const lines = sectionBody.split(/\r?\n/);
+                    for (const line of lines) {
+                        const trimmed = line.replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]*/, "").trim();
+                        if (trimmed) {
+                            parsedFollowUpsRaw.push(trimmed.slice(0, 80));
+                            if (parsedFollowUpsRaw.length >= 3) break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Evidence extraction from tail if blocks were missing
+        if (parsedEvidenceRaw.length === 0) {
+            const evidenceSectionMatch = tailText.match(/(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:evidence)(?:\*{1,2}|_{1,2})?[ \t]*[:\-][ \t]*([\s\S]*?)(?=(?:^|\r?\n)[ \t]*(?:#+\s*|\*{1,2}|_{1,2})?(?:follow-ups|followups|follow\s+ups|missing\s*data|missingdata)|$)/i);
+            const evidenceText = evidenceSectionMatch ? evidenceSectionMatch[1].trim() : tailText;
+
+            let parsedAsJsonArray = false;
+            const jsonArrMatch = evidenceText.match(/\[[\s\S]*?\]/);
+            if (jsonArrMatch) {
+                try {
+                    const arr = JSON.parse(jsonArrMatch[0]);
+                    if (Array.isArray(arr) && arr.length > 0) {
+                        parsedAsJsonArray = true;
+                        parsedEvidenceRaw.push(...arr);
+                    }
+                } catch {}
+            }
+
+            if (!parsedAsJsonArray) {
+                const jsonPairRegex = /\{[^{}]*"path"\s*:\s*"([^"]+)"[^{}]*\}/g;
+                let mPair: RegExpExecArray | null;
+                let foundPairs = false;
+                while ((mPair = jsonPairRegex.exec(evidenceText)) !== null) {
+                    foundPairs = true;
+                    try {
+                        const parsed = JSON.parse(mPair[0]);
+                        if (parsed?.path) parsedEvidenceRaw.push(parsed);
+                    } catch {
+                        const p = mPair[1];
+                        const lineM = mPair[0].match(/"line"\s*:\s*(\d+)/);
+                        const endLineM = mPair[0].match(/"endLine"\s*:\s*(\d+)/);
+                        const snipM = mPair[0].match(/"snippet"\s*:\s*"([^"]*)"/);
+                        parsedEvidenceRaw.push({
+                            path: p,
+                            line: lineM ? parseInt(lineM[1], 10) : undefined,
+                            endLine: endLineM ? parseInt(endLineM[1], 10) : undefined,
+                            snippet: snipM ? snipM[1] : undefined
+                        });
+                    }
+                }
+
+                if (!foundPairs) {
+                    const pathLineRegex = /([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)(?:[ \t]+lines?[ \t]+(\d+)(?:[ \t]*-[ \t]*(\d+))?|:L?(\d+)(?:[ \t]*-[ \t]*(?:L?)(\d+))?)/gi;
+                    let mPL: RegExpExecArray | null;
+                    while ((mPL = pathLineRegex.exec(evidenceText)) !== null) {
+                        const path = mPL[1];
+                        const line = mPL[2] ? parseInt(mPL[2], 10) : (mPL[4] ? parseInt(mPL[4], 10) : undefined);
+                        const endLine = mPL[3] ? parseInt(mPL[3], 10) : (mPL[5] ? parseInt(mPL[5], 10) : undefined);
+                        parsedEvidenceRaw.push({ path, line, endLine });
+                    }
+                }
+            }
+        }
+    }
 
     const knownPaths = new Map<string, string>();
     const normalizePath = (p: string) => p.replace(/\\/g, "/").toLowerCase();
@@ -240,6 +381,7 @@ export function parseAndValidateEvidenceAndFollowUps(
         if (!canonicalPath) continue;
 
         let lineNum: number | undefined = undefined;
+        let endLineNum: number | undefined = typeof item.endLine === "number" && item.endLine > 0 ? Math.floor(item.endLine) : undefined;
         let snippet = typeof item.snippet === "string" ? item.snippet.trim().slice(0, 160) : undefined;
 
         if (typeof item.line === "number" && item.line > 0) {
@@ -248,25 +390,112 @@ export function parseAndValidateEvidenceAndFollowUps(
             if (lines) {
                 if (lineNum > lines.length) {
                     lineNum = undefined;
-                } else if (!snippet) {
-                    const lineText = lines[lineNum - 1] ?? "";
-                    snippet = lineText.trim().slice(0, 160);
+                    endLineNum = undefined;
+                } else {
+                    if (endLineNum !== undefined && endLineNum > lines.length) {
+                        endLineNum = lines.length;
+                    }
+                    if (!snippet) {
+                        const lineText = lines[lineNum - 1] ?? "";
+                        snippet = lineText.trim().slice(0, 160);
+                    }
                 }
             }
         }
 
-        const dedupKey = `${canonicalPath}:${lineNum ?? 0}:${item.endLine ?? 0}`;
+        const dedupKey = `${canonicalPath}:${lineNum ?? 0}:${endLineNum ?? 0}`;
         if (seenEvidence.has(dedupKey)) continue;
         seenEvidence.add(dedupKey);
 
         validEvidence.push({
             path: canonicalPath,
             ...(lineNum !== undefined ? { line: lineNum } : {}),
-            ...(typeof item.endLine === "number" ? { endLine: item.endLine } : {}),
+            ...(endLineNum !== undefined ? { endLine: endLineNum } : {}),
             ...(snippet ? { snippet } : {})
         });
 
         if (validEvidence.length >= 6) break;
+    }
+
+    // Fallback evidence: extract line references directly from cleanAnswer if still empty
+    if (validEvidence.length === 0) {
+        const fallbackCandidates: Array<{ path: string; line: number; endLine?: number }> = [];
+        const targetCanonical = targetPath ? knownPaths.get(normalizePath(targetPath)) : undefined;
+
+        // 1. Path-qualified references in cleanAnswer
+        const pathRefRegex = /([a-zA-Z0-9_./\\-]+\.[a-zA-Z0-9]+)(?:[ \t]+lines?[ \t]+(\d+)(?:[ \t]*-[ \t]*(\d+))?|:L?(\d+)(?:[ \t]*-[ \t]*(?:L?)(\d+))?)/gi;
+        let mPathRef: RegExpExecArray | null;
+        while ((mPathRef = pathRefRegex.exec(cleanAnswer)) !== null) {
+            const rawPath = mPathRef[1];
+            const canonical = knownPaths.get(normalizePath(rawPath));
+            if (!canonical) continue;
+            const line = mPathRef[2] ? parseInt(mPathRef[2], 10) : (mPathRef[4] ? parseInt(mPathRef[4], 10) : undefined);
+            const endLine = mPathRef[3] ? parseInt(mPathRef[3], 10) : (mPathRef[5] ? parseInt(mPathRef[5], 10) : undefined);
+            if (line && line > 0) {
+                fallbackCandidates.push({ path: canonical, line, endLine });
+            }
+        }
+
+        // 2. Bare L-numbers and line numbers against target file
+        if (targetCanonical) {
+            const lNumRegex = /(?:\(L(\d+)(?:[ \t]*-[ \t]*L?(\d+))?\)|(?<![a-zA-Z0-9_./\\-])L(\d+)(?:[ \t]*-[ \t]*L?(\d+))?)/g;
+            let mLNum: RegExpExecArray | null;
+            while ((mLNum = lNumRegex.exec(cleanAnswer)) !== null) {
+                const startStr = mLNum[1] || mLNum[3];
+                const endStr = mLNum[2] || mLNum[4];
+                if (startStr) {
+                    const line = parseInt(startStr, 10);
+                    const endLine = endStr ? parseInt(endStr, 10) : undefined;
+                    if (line > 0) {
+                        fallbackCandidates.push({ path: targetCanonical, line, endLine });
+                    }
+                }
+            }
+
+            const linesRegex = /(?<![a-zA-Z0-9_./\\-])lines?[ \t]+(\d+)(?:[ \t]*-[ \t]*(\d+))?/gi;
+            let mLines: RegExpExecArray | null;
+            while ((mLines = linesRegex.exec(cleanAnswer)) !== null) {
+                const line = parseInt(mLines[1], 10);
+                const endLine = mLines[2] ? parseInt(mLines[2], 10) : undefined;
+                if (line > 0) {
+                    fallbackCandidates.push({ path: targetCanonical, line, endLine });
+                }
+            }
+        }
+
+        fallbackCandidates.sort((a, b) => a.line - b.line);
+
+        for (const cand of fallbackCandidates) {
+            const normP = normalizePath(cand.path);
+            const lines = fileLinesMap?.get(normP);
+            let lineNum = cand.line;
+            let endLineNum = cand.endLine;
+            let snippet: string | undefined = undefined;
+
+            if (lines) {
+                if (lineNum > lines.length) {
+                    continue;
+                }
+                if (endLineNum !== undefined && endLineNum > lines.length) {
+                    endLineNum = lines.length;
+                }
+                const lineText = lines[lineNum - 1] ?? "";
+                snippet = lineText.trim().slice(0, 160);
+            }
+
+            const dedupKey = `${cand.path}:${lineNum}:${endLineNum ?? 0}`;
+            if (seenEvidence.has(dedupKey)) continue;
+            seenEvidence.add(dedupKey);
+
+            validEvidence.push({
+                path: cand.path,
+                line: lineNum,
+                ...(endLineNum !== undefined ? { endLine: endLineNum } : {}),
+                ...(snippet ? { snippet } : {})
+            });
+
+            if (validEvidence.length >= 6) break;
+        }
     }
 
     const followUps: string[] = [];
@@ -274,8 +503,7 @@ export function parseAndValidateEvidenceAndFollowUps(
         if (typeof q !== "string") continue;
         const trimmed = q.trim();
         if (!trimmed) continue;
-        const words = trimmed.split(/\s+/).slice(0, 8).join(" ");
-        followUps.push(words);
+        followUps.push(trimmed.slice(0, 80));
         if (followUps.length >= 3) break;
     }
 
@@ -288,7 +516,8 @@ export function parseAndValidateEvidenceAndFollowUps(
         cleanAnswer,
         evidence: validEvidence,
         followUps,
-        citations
+        citations,
+        ...(parsedMissingData !== undefined ? { missingData: parsedMissingData } : {})
     };
 }
 
@@ -589,7 +818,7 @@ export class AiAnswerService {
             answer: finalAnswer,
             citations: finalCitations,
             confidence: providerResponse.confidence,
-            missingData: providerResponse.missingData,
+            missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
             followUps: parsed.followUps,
             evidence: parsed.evidence,
             usedContext: providerResponse.usedContext ?? {
@@ -860,7 +1089,7 @@ export class AiAnswerService {
                 answer: finalAnswer,
                 citations: finalCitations,
                 confidence: providerResponse.confidence,
-                missingData: providerResponse.missingData,
+                missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
                 followUps: parsed.followUps,
                 evidence: parsed.evidence,
                 usedContext: providerResponse.usedContext ?? {

@@ -885,6 +885,85 @@ async function main(): Promise<void> {
     assert.equal(parsedEvidenceAndFollowUps.citations.length, 1);
     assert.equal(parsedEvidenceAndFollowUps.citations[0].path, "src/auth.ts");
 
+    // 1b. Tolerant tail parser - Sample 1 (plain text headings and lines)
+    const mockFacadeLines = Array.from({ length: 60 }, (_, i) => `// Line ${i + 1} content of facade`);
+    mockFacadeLines[13] = "export function runFacade() {";
+    mockFacadeLines[51] = "} // end runFacade";
+    mockFacadeLines[5] = "export const VERSION = 1;";
+    mockFacadeLines[11] = "export const DEBUG = false;";
+    mockFacadeLines[47] = "function helper() { return true; }";
+
+    const tailSample1 = [
+        "This file provides facade build utilities.",
+        "Missing data: none.",
+        "Evidence: build/lib/gulp/facade.ts lines 14-52.",
+        "Follow-ups:",
+        "- Why is risk score so high?",
+        "- How many tests cover this file?"
+    ].join("\n");
+
+    const parsedTail1 = parseAndValidateEvidenceAndFollowUps(
+        tailSample1,
+        [{ path: "build/lib/gulp/facade.ts" }],
+        "build/lib/gulp/facade.ts",
+        new Map([["build/lib/gulp/facade.ts", mockFacadeLines]])
+    );
+
+    assert.equal(parsedTail1.cleanAnswer, "This file provides facade build utilities.");
+    assert.deepEqual(parsedTail1.missingData, []);
+    assert.equal(parsedTail1.evidence.length, 1);
+    assert.equal(parsedTail1.evidence[0].path, "build/lib/gulp/facade.ts");
+    assert.equal(parsedTail1.evidence[0].line, 14);
+    assert.equal(parsedTail1.evidence[0].endLine, 52);
+    assert.equal(parsedTail1.evidence[0].snippet, "export function runFacade() {");
+    assert.equal(parsedTail1.followUps.length, 2);
+    assert.equal(parsedTail1.followUps[0], "Why is risk score so high?");
+    assert.equal(parsedTail1.followUps[1], "How many tests cover this file?");
+
+    // 1c. Tolerant tail parser - Sample 2 (Hinglish, JSON arrays in tail)
+    const tailSample2 = [
+        "Yeh file build system ka part hai.",
+        "missingData: koi nahin.",
+        'EVIDENCE: [{"path":"build/lib/gulp/facade.ts","line":6},{"path":"build/lib/gulp/facade.ts","line":12}]',
+        'FOLLOWUPS: ["Is koi test file iske liye hai?","Is file ka koi owner hai?"]'
+    ].join("\n");
+
+    const parsedTail2 = parseAndValidateEvidenceAndFollowUps(
+        tailSample2,
+        [{ path: "build/lib/gulp/facade.ts" }],
+        "build/lib/gulp/facade.ts",
+        new Map([["build/lib/gulp/facade.ts", mockFacadeLines]])
+    );
+
+    assert.equal(parsedTail2.cleanAnswer, "Yeh file build system ka part hai.");
+    assert.deepEqual(parsedTail2.missingData, []);
+    assert.equal(parsedTail2.evidence.length, 2);
+    assert.equal(parsedTail2.evidence[0].path, "build/lib/gulp/facade.ts");
+    assert.equal(parsedTail2.evidence[0].line, 6);
+    assert.equal(parsedTail2.evidence[0].snippet, "export const VERSION = 1;");
+    assert.equal(parsedTail2.evidence[1].line, 12);
+    assert.equal(parsedTail2.evidence[1].snippet, "export const DEBUG = false;");
+    assert.equal(parsedTail2.followUps.length, 2);
+    assert.equal(parsedTail2.followUps[0], "Is koi test file iske liye hai?");
+    assert.equal(parsedTail2.followUps[1], "Is file ka koi owner hai?");
+
+    // 1d. Fallback line references directly from cleanAnswer
+    const fallbackAnswer = "The facade implementation (L14-L29) wraps the gulp pipeline. Helper defined at L48.";
+    const parsedFallback = parseAndValidateEvidenceAndFollowUps(
+        fallbackAnswer,
+        [{ path: "build/lib/gulp/facade.ts" }],
+        "build/lib/gulp/facade.ts",
+        new Map([["build/lib/gulp/facade.ts", mockFacadeLines]])
+    );
+
+    assert.equal(parsedFallback.cleanAnswer, fallbackAnswer);
+    assert.equal(parsedFallback.evidence.length, 2);
+    assert.equal(parsedFallback.evidence[0].line, 14);
+    assert.equal(parsedFallback.evidence[0].endLine, 29);
+    assert.equal(parsedFallback.evidence[0].snippet, "export function runFacade() {");
+    assert.equal(parsedFallback.evidence[1].line, 48);
+    assert.equal(parsedFallback.evidence[1].snippet, "function helper() { return true; }");
+
     // 2. Stream delimiter withholding
     const streamedTokens: string[] = [];
     const filter = new StreamDelimiterFilter((token) => streamedTokens.push(token));

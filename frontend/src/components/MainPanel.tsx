@@ -451,7 +451,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             // Render double-backtick inline code as plain text without interpolation
             const codeContent = m.slice(2, -2).trim();
             parts.push(
-                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5]">
+                <code key={`code-${match.index}`} className="font-mono text-[#4FD1B5] text-[11px]">
                     {codeContent}
                 </code>
             );
@@ -459,7 +459,7 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
             // Render single-backtick inline code as plain text without interpolation (trailing underscores like `filter_` stay inside code)
             const codeContent = m.slice(1, -1);
             parts.push(
-                <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-[11px] font-mono bg-white/[0.06] text-[#4FD1B5]">
+                <code key={`code-${match.index}`} className="font-mono text-[#4FD1B5] text-[11px]">
                     {codeContent}
                 </code>
             );
@@ -2464,6 +2464,8 @@ export function MainPanel({ className }: { className?: string }) {
     const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
     const [askMode, setAskMode] = useState<import('../api').AskMode>('detailed');
     const [askScope, setAskScope] = useState<import('../api').AskScope>('file');
+    const [isChatExpanded, setIsChatExpanded] = useState(false);
+    const [expandedEvidenceOpen, setExpandedEvidenceOpen] = useState(true);
     const [chatMessages, setChatMessages] = useState<Array<{
         role: 'user' | 'assistant';
         content: string;
@@ -2477,6 +2479,38 @@ export function MainPanel({ className }: { className?: string }) {
         stopped?: boolean;
         isThinking?: boolean;
     }>>([]);
+
+    const latestAssistantEvidence = useMemo(() => {
+        const lastWithEvidence = [...chatMessages].reverse().find(m => m.role === 'assistant' && m.evidence && m.evidence.length > 0);
+        return lastWithEvidence?.evidence || [];
+    }, [chatMessages]);
+
+    useEffect(() => {
+        if (latestAssistantEvidence.length > 0) {
+            setExpandedEvidenceOpen(true);
+        }
+    }, [latestAssistantEvidence.length]);
+
+    useEffect(() => {
+        if (!isChatExpanded) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                setIsChatExpanded(false);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [isChatExpanded]);
+
+    useEffect(() => {
+        if (isChatExpanded) {
+            const prevOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+            return () => {
+                document.body.style.overflow = prevOverflow;
+            };
+        }
+    }, [isChatExpanded]);
 
     useEffect(() => {
         if (aiError?.code === 'rate_limited' && (aiError.retryAfterSeconds ?? 0) > 0) {
@@ -4525,7 +4559,12 @@ ${lastAssistant?.content || 'No response recorded.'}
                                 <div className="text-xs text-[#8A918C]">Select a file from the sidebar to ask questions about it.</div>
                             </div>
                         ) : (
-                            <div className="flex-1 flex flex-col min-h-0 glass-surface border-white/10 rounded-xl overflow-hidden">
+                            <div className={cn(
+                                "flex flex-col overflow-hidden",
+                                isChatExpanded
+                                    ? "fixed top-12 left-0 right-0 bottom-0 z-40 bg-[#07090A] motion-reduce:transition-none"
+                                    : "flex-1 flex min-h-0 glass-surface border-white/10 rounded-xl"
+                            )}>
                                 <div className="p-3 bg-white/[0.02] border-b border-white/10 shrink-0">
                                     <ComponentToolbar
                                         title={
@@ -4560,17 +4599,40 @@ ${lastAssistant?.content || 'No response recorded.'}
                                                     <option value="dependents">Dependents</option>
                                                     <option value="repo">Repo</option>
                                                 </select>
+                                                {isChatExpanded && latestAssistantEvidence.length > 0 && (
+                                                    <button
+                                                        onClick={() => setExpandedEvidenceOpen(!expandedEvidenceOpen)}
+                                                        className={cn(
+                                                            "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
+                                                            expandedEvidenceOpen
+                                                                ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                                                : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6]"
+                                                        )}
+                                                        title="Toggle evidence panel"
+                                                    >
+                                                        <span>Evidence ({latestAssistantEvidence.length})</span>
+                                                    </button>
+                                                )}
                                             </div>
                                         }
                                         primaryAction={
-                                            <button
-                                                onClick={handleNewChat}
-                                                className="px-2.5 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
-                                                title="Clear conversation"
-                                            >
-                                                <Plus size={12} />
-                                                <span>New chat</span>
-                                            </button>
+                                            <div className="flex items-center gap-1.5">
+                                                <button
+                                                    onClick={() => setIsChatExpanded(!isChatExpanded)}
+                                                    className="p-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center justify-center border border-white/10 w-7 h-7"
+                                                    title={isChatExpanded ? "Collapse chat (Esc)" : "Expand chat"}
+                                                >
+                                                    {isChatExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+                                                </button>
+                                                <button
+                                                    onClick={handleNewChat}
+                                                    className="px-2.5 py-1 rounded-md text-[11px] font-medium text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] transition-colors cursor-pointer flex items-center gap-1 border border-white/10"
+                                                    title="Clear conversation"
+                                                >
+                                                    <Plus size={12} />
+                                                    <span>New chat</span>
+                                                </button>
+                                            </div>
                                         }
                                         onDownloadReport={handleDownloadChatReport}
                                         onCopyPRComment={handleCopyChatPRComment}
@@ -4578,265 +4640,343 @@ ${lastAssistant?.content || 'No response recorded.'}
                                     />
                                 </div>
 
-                            {/* Chat Messages - Fixed height scroll area */}
-                            <div className="flex-1 p-4 overflow-y-auto scrollbar-custom space-y-3 min-h-0">
-                                {aiError && (
-                                    <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
-                                        <div className="flex items-start justify-between gap-3">
-                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
-                                                <ShieldAlert size={14} className="text-red-400 shrink-0" />
-                                                <span>
-                                                    {aiError.code === 'rate_limited'
-                                                        ? (rateLimitCountdown > 0
-                                                            ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
-                                                            : "Rate limit reached. You can now try again.")
-                                                        : aiError.message}
-                                                </span>
-                                            </div>
-                                            <button
-                                                disabled={aiError.code === 'rate_limited' && rateLimitCountdown > 0}
-                                                onClick={handleRetry}
-                                                className={cn(
-                                                    "text-[11px] px-2.5 py-1 rounded font-medium transition-colors shrink-0 flex items-center gap-1",
-                                                    aiError.code === 'rate_limited' && rateLimitCountdown > 0
-                                                        ? "opacity-50 cursor-not-allowed bg-red-500/10 text-red-400 border border-red-500/20"
-                                                        : "bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 cursor-pointer"
-                                                )}
-                                            >
-                                                <RefreshCw size={11} />
-                                                <span>Retry</span>
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {chatMessages.length === 0 && !aiError ? (
-                                    <div className="h-full flex flex-col items-center justify-center text-center py-16 px-4">
-                                        <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#8A918C]">
-                                            <MessageSquare size={18} />
-                                        </div>
-                                        <div className="text-xs font-medium text-[#E8EAE6] mb-1">
-                                            Ask about {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this repository')}
-                                        </div>
-                                        <div className="text-[11px] text-[#8A918C] max-w-[280px]">
-                                            Questions are answered with the symbols and files that prove them. Type a prompt below or pick a suggestion.
-                                        </div>
-                                    </div>
-                                ) : (
-                                    chatMessages.map((msg, idx) => (
-                                        <div key={idx} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
-                                            {msg.role === 'user' ? (
-                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
-                                                    {msg.content}
-                                                </div>
-                                            ) : (
-                                                <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
-                                                    {msg.isThinking ? (
-                                                        <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
-                                                            <span>Thinking</span>
-                                                            <span className="flex items-center gap-1">
-                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
-                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
-                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
-                                                            </span>
+                                <div className="flex-1 min-h-0 flex overflow-hidden">
+                                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                                        {/* Chat Messages */}
+                                        <div className="flex-1 p-4 overflow-y-auto scrollbar-custom min-h-0">
+                                            <div className={cn("space-y-3", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
+                                                {aiError && (
+                                                    <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                                <ShieldAlert size={14} className="text-red-400 shrink-0" />
+                                                                <span>
+                                                                    {aiError.code === 'rate_limited'
+                                                                        ? (rateLimitCountdown > 0
+                                                                            ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
+                                                                            : "Rate limit reached. You can now try again.")
+                                                                        : aiError.message}
+                                                                </span>
+                                                            </div>
+                                                            <button
+                                                                disabled={aiError.code === 'rate_limited' && rateLimitCountdown > 0}
+                                                                onClick={handleRetry}
+                                                                className={cn(
+                                                                    "text-[11px] px-2.5 py-1 rounded font-medium transition-colors shrink-0 flex items-center gap-1",
+                                                                    aiError.code === 'rate_limited' && rateLimitCountdown > 0
+                                                                        ? "opacity-50 cursor-not-allowed bg-red-500/10 text-red-400 border border-red-500/20"
+                                                                        : "bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 cursor-pointer"
+                                                                )}
+                                                            >
+                                                                <RefreshCw size={11} />
+                                                                <span>Retry</span>
+                                                            </button>
                                                         </div>
-                                                    ) : (
-                                                        <>
-                                                            <MarkdownRenderer content={msg.content} />
+                                                    </div>
+                                                )}
 
-                                                            {msg.stopped && (
-                                                                <div className="pt-1 text-[11px] text-[#E3A04A] font-mono flex items-center gap-1">
-                                                                    <span>Stopped</span>
+                                                {chatMessages.length === 0 && !aiError ? (
+                                                    <div className="h-full flex flex-col items-center justify-center text-center py-16 px-4">
+                                                        <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#8A918C]">
+                                                            <MessageSquare size={18} />
+                                                        </div>
+                                                        <div className="text-xs font-medium text-[#E8EAE6] mb-1">
+                                                            Ask about {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this repository')}
+                                                        </div>
+                                                        <div className="text-[11px] text-[#8A918C] max-w-[280px]">
+                                                            Questions are answered with the symbols and files that prove them. Type a prompt below or pick a suggestion.
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    chatMessages.map((msg, idx) => (
+                                                        <div key={idx} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
+                                                            {msg.role === 'user' ? (
+                                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
+                                                                    {msg.content}
                                                                 </div>
-                                                            )}
+                                                            ) : (
+                                                                <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                                    {msg.isThinking ? (
+                                                                        <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
+                                                                            <span>Thinking</span>
+                                                                            <span className="flex items-center gap-1">
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
+                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
+                                                                            </span>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <>
+                                                                            <MarkdownRenderer content={msg.content} />
 
-                                                            {/* Evidence chips: mono, path:line, base name bold, folder muted */}
-                                                            {msg.evidence && msg.evidence.length > 0 && (
-                                                                <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                    <span className="text-[10px] text-[#8A918C]">Evidence:</span>
-                                                                    {msg.evidence.map((item, eIdx) => {
-                                                                        const fullPath = item.path;
-                                                                        const lastSlash = fullPath.lastIndexOf('/');
-                                                                        const folder = lastSlash !== -1 ? fullPath.slice(0, lastSlash + 1) : '';
-                                                                        const baseName = lastSlash !== -1 ? fullPath.slice(lastSlash + 1) : fullPath;
-                                                                        const linePart = item.line !== undefined
-                                                                            ? (item.endLine && item.endLine !== item.line ? `:${item.line}-${item.endLine}` : `:${item.line}`)
-                                                                            : '';
+                                                                            {msg.stopped && (
+                                                                                <div className="pt-1 text-[11px] text-[#E3A04A] font-mono flex items-center gap-1">
+                                                                                    <span>Stopped</span>
+                                                                                </div>
+                                                                            )}
 
-                                                                        const isAnalyzed = analyzedPaths.has(fullPath) ||
-                                                                            analyzedPaths.has(fullPath.replace(/^\.\//, '')) ||
-                                                                            Array.from(analyzedPaths).some(p => p.endsWith('/' + fullPath) || fullPath.endsWith('/' + p));
+                                                                            {/* Evidence chips: mono, path:line, base name bold, folder muted */}
+                                                                            {msg.evidence && msg.evidence.length > 0 && (
+                                                                                <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                                    <span className="text-[10px] text-[#8A918C]">Evidence:</span>
+                                                                                    {msg.evidence.map((item, eIdx) => {
+                                                                                        const fullPath = item.path;
+                                                                                        const lastSlash = fullPath.lastIndexOf('/');
+                                                                                        const folder = lastSlash !== -1 ? fullPath.slice(0, lastSlash + 1) : '';
+                                                                                        const baseName = lastSlash !== -1 ? fullPath.slice(lastSlash + 1) : fullPath;
+                                                                                        const linePart = item.line !== undefined
+                                                                                            ? (item.endLine && item.endLine !== item.line ? `:${item.line}-${item.endLine}` : `:${item.line}`)
+                                                                                            : '';
 
-                                                                        const tooltip = isAnalyzed
-                                                                            ? `${fullPath}${linePart}${item.snippet ? `\n\n${item.snippet}` : ''}`
-                                                                            : 'Not analyzed';
+                                                                                        const isAnalyzed = analyzedPaths.has(fullPath) ||
+                                                                                            analyzedPaths.has(fullPath.replace(/^\.\//, '')) ||
+                                                                                            Array.from(analyzedPaths).some(p => p.endsWith('/' + fullPath) || fullPath.endsWith('/' + p));
 
-                                                                        return (
-                                                                            <button
-                                                                                key={eIdx}
-                                                                                disabled={!isAnalyzed}
-                                                                                onClick={() => {
-                                                                                    if (!isAnalyzed) return;
-                                                                                    selectFile(fullPath);
-                                                                                    if (item.line !== undefined) {
-                                                                                        setCodeHighlightLine(item.line);
-                                                                                    }
-                                                                                    setActiveTab('Code');
-                                                                                }}
-                                                                                className={cn(
-                                                                                    "font-mono text-[10px] px-2 py-0.5 rounded-md border transition-colors inline-flex items-center",
-                                                                                    isAnalyzed
-                                                                                        ? "border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer"
-                                                                                        : "border-white/5 bg-white/[0.01] text-[#8A918C]/40 cursor-not-allowed opacity-60"
-                                                                                )}
-                                                                                title={tooltip}
-                                                                            >
-                                                                                {folder && <span className="text-[#8A918C] font-normal">{folder}</span>}
-                                                                                <span className="font-semibold">{baseName}</span>
-                                                                                {linePart && <span className="font-normal">{linePart}</span>}
-                                                                            </button>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            )}
+                                                                                        const tooltip = isAnalyzed
+                                                                                            ? `${fullPath}${linePart}${item.snippet ? `\n\n${item.snippet}` : ''}`
+                                                                                            : 'Not analyzed';
 
-                                                            {/* Status line: muted 12px "Based on N files and M commits" from usedContext, plus "cached" badge */}
-                                                            {msg.usedContext && (
-                                                                <div className="pt-2 text-[12px] text-[#8A918C] flex items-center gap-2 flex-wrap font-sans">
-                                                                    <span>Based on {msg.usedContext.files} {msg.usedContext.files === 1 ? 'file' : 'files'} and {msg.usedContext.commits} {msg.usedContext.commits === 1 ? 'commit' : 'commits'}</span>
-                                                                    {msg.usedContext.cached && (
-                                                                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5]">
-                                                                            cached
-                                                                        </span>
+                                                                                        return (
+                                                                                            <button
+                                                                                                key={eIdx}
+                                                                                                disabled={!isAnalyzed}
+                                                                                                onClick={() => {
+                                                                                                    if (!isAnalyzed) return;
+                                                                                                    selectFile(fullPath);
+                                                                                                    if (item.line !== undefined) {
+                                                                                                        setCodeHighlightLine(item.line);
+                                                                                                    }
+                                                                                                    setActiveTab('Code');
+                                                                                                }}
+                                                                                                className={cn(
+                                                                                                    "font-mono text-[10px] px-2 py-0.5 rounded-md border transition-colors inline-flex items-center",
+                                                                                                    isAnalyzed
+                                                                                                        ? "border-white/10 bg-white/[0.03] text-[#4FD1B5] hover:bg-[#4FD1B5]/10 hover:border-[#4FD1B5]/30 cursor-pointer"
+                                                                                                        : "border-white/5 bg-white/[0.01] text-[#8A918C]/40 cursor-not-allowed opacity-60"
+                                                                                                )}
+                                                                                                title={tooltip}
+                                                                                            >
+                                                                                                {folder && <span className="text-[#8A918C] font-normal">{folder}</span>}
+                                                                                                <span className="font-semibold">{baseName}</span>
+                                                                                                {linePart && <span className="font-normal">{linePart}</span>}
+                                                                                            </button>
+                                                                                        );
+                                                                                    })}
+                                                                                </div>
+                                                                            )}
+
+                                                                            {/* Status line: muted 12px "Based on N files and M commits" from usedContext, plus "cached" badge */}
+                                                                            {msg.usedContext && (
+                                                                                <div className="pt-2 text-[12px] text-[#8A918C] flex items-center gap-2 flex-wrap font-sans">
+                                                                                    <span>Based on {msg.usedContext.files} {msg.usedContext.files === 1 ? 'file' : 'files'} and {msg.usedContext.commits} {msg.usedContext.commits === 1 ? 'commit' : 'commits'}</span>
+                                                                                    {msg.usedContext.cached && (
+                                                                                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5]">
+                                                                                            cached
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
+                                                                            )}
+
+                                                                            {/* Collapsible disclosure "What I could not see" if missingData is non-empty */}
+                                                                            {msg.missingData && msg.missingData.length > 0 && (
+                                                                                <details className="pt-1.5 text-[11px] text-[#8A918C] group cursor-pointer font-sans">
+                                                                                    <summary className="hover:text-[#E8EAE6] transition-colors select-none list-none flex items-center gap-1 font-mono">
+                                                                                        <span className="group-open:rotate-90 transition-transform inline-block">›</span>
+                                                                                        <span>What I could not see</span>
+                                                                                    </summary>
+                                                                                    <ul className="mt-1 pl-4 list-disc space-y-0.5 text-[11px] text-[#8A918C]/80">
+                                                                                        {msg.missingData.map((item, mIdx) => (
+                                                                                            <li key={mIdx}>{item}</li>
+                                                                                        ))}
+                                                                                    </ul>
+                                                                                </details>
+                                                                            )}
+
+                                                                            {/* Follow-up chips */}
+                                                                            {msg.followups && msg.followups.length > 0 && (
+                                                                                <div className="pt-2.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                                    {msg.followups.map((followup, fIdx) => (
+                                                                                        <button
+                                                                                            key={fIdx}
+                                                                                            onClick={() => askAI(followup)}
+                                                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
+                                                                                        >
+                                                                                            {followup}
+                                                                                        </button>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
+
+                                                                            {/* Regenerate under the last answer */}
+                                                                            {idx === chatMessages.length - 1 && !isStreaming && (
+                                                                                <div className="pt-2 flex items-center gap-2">
+                                                                                    <button
+                                                                                        onClick={handleRegenerate}
+                                                                                        className="text-[11px] font-sans px-2 py-0.5 rounded border border-white/10 hover:border-white/20 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer flex items-center gap-1.5"
+                                                                                        title="Regenerate with last question"
+                                                                                    >
+                                                                                        <RefreshCw size={11} />
+                                                                                        <span>Regenerate</span>
+                                                                                    </button>
+                                                                                </div>
+                                                                            )}
+                                                                        </>
                                                                     )}
                                                                 </div>
                                                             )}
+                                                        </div>
+                                                    ))
+                                                )}
+                                                <div ref={messagesEndRef} />
+                                            </div>
+                                        </div>
 
-                                                            {/* Collapsible disclosure "What I could not see" if missingData is non-empty */}
-                                                            {msg.missingData && msg.missingData.length > 0 && (
-                                                                <details className="pt-1.5 text-[11px] text-[#8A918C] group cursor-pointer font-sans">
-                                                                    <summary className="hover:text-[#E8EAE6] transition-colors select-none list-none flex items-center gap-1 font-mono">
-                                                                        <span className="group-open:rotate-90 transition-transform inline-block">›</span>
-                                                                        <span>What I could not see</span>
-                                                                    </summary>
-                                                                    <ul className="mt-1 pl-4 list-disc space-y-0.5 text-[11px] text-[#8A918C]/80">
-                                                                        {msg.missingData.map((item, mIdx) => (
-                                                                            <li key={mIdx}>{item}</li>
-                                                                        ))}
-                                                                    </ul>
-                                                                </details>
-                                                            )}
+                                        {/* Suggested Prompts */}
+                                        <div className="px-3.5 py-2 border-t border-white/[0.06] bg-white/[0.01] shrink-0">
+                                            <div className={cn("flex items-center gap-1.5 flex-wrap", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
+                                                {(() => {
+                                                    const userMessages = chatMessages.filter(m => m.role === 'user');
+                                                    const lastUserText = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : askQ;
+                                                    const isHinglish = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi|isko|tum|aap)\b/i.test(lastUserText);
 
-                                                            {/* Follow-up chips */}
-                                                            {msg.followups && msg.followups.length > 0 && (
-                                                                <div className="pt-2.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                    {msg.followups.map((followup, fIdx) => (
-                                                                        <button
-                                                                            key={fIdx}
-                                                                            onClick={() => askAI(followup)}
-                                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
-                                                                        >
-                                                                            {followup}
-                                                                        </button>
-                                                                    ))}
-                                                                </div>
-                                                            )}
+                                                    const suggestions = isHinglish
+                                                        ? (selectedFile
+                                                            ? ['Is file ko samjhao', 'Isko kaun call karta hai?', 'Changes ka summary do']
+                                                            : ['Kaunsi files sabse risky hain?', 'Repo ka structure kaisa hai?', 'Kahan se padhna shuru karein?'])
+                                                        : (selectedFile
+                                                            ? ['Explain this file', 'Who calls this?', 'Summarize changes']
+                                                            : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']);
 
-                                                            {/* Regenerate under the last answer */}
-                                                            {idx === chatMessages.length - 1 && !isStreaming && (
-                                                                <div className="pt-2 flex items-center gap-2">
-                                                                    <button
-                                                                        onClick={handleRegenerate}
-                                                                        className="text-[11px] font-sans px-2 py-0.5 rounded border border-white/10 hover:border-white/20 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer flex items-center gap-1.5"
-                                                                        title="Regenerate with last question"
-                                                                    >
-                                                                        <RefreshCw size={11} />
-                                                                        <span>Regenerate</span>
-                                                                    </button>
-                                                                </div>
-                                                            )}
-                                                        </>
+                                                    return suggestions.map((suggestion, sIdx) => (
+                                                        <button
+                                                            key={sIdx}
+                                                            onClick={() => {
+                                                                setAskQ('');
+                                                                askAI(suggestion);
+                                                            }}
+                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer"
+                                                        >
+                                                            {suggestion}
+                                                        </button>
+                                                    ));
+                                                })()}
+                                            </div>
+                                        </div>
+
+                                        {/* Composer - pinned at bottom */}
+                                        <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
+                                            <div className={cn(isChatExpanded && "max-w-[920px] mx-auto w-full")}>
+                                                <div className="flex items-center gap-2 glass-surface p-1 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
+                                                    <input
+                                                        value={askQ}
+                                                        onChange={e => setAskQ(e.target.value)}
+                                                        onKeyDown={e => {
+                                                            if (e.key === 'Enter') {
+                                                                e.preventDefault();
+                                                                if (!isStreaming) {
+                                                                    askAI();
+                                                                }
+                                                            }
+                                                        }}
+                                                        placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
+                                                        className="flex-1 bg-transparent px-3 py-1.5 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans"
+                                                    />
+                                                    {isStreaming ? (
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleStopAi}
+                                                            className="px-3 py-1 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors"
+                                                            title="Stop generating"
+                                                        >
+                                                            <Square size={12} className="fill-current" />
+                                                            <span>Stop</span>
+                                                        </button>
+                                                    ) : (
+                                                        <Button
+                                                            onClick={() => askAI()}
+                                                            className="px-3 py-1 text-xs shrink-0"
+                                                            disabled={!askQ.trim() || isStreaming}
+                                                        >
+                                                            Send
+                                                        </Button>
                                                     )}
                                                 </div>
-                                            )}
+                                                <div className="text-center text-[10px] text-[#8A918C]/70 mt-2 font-mono flex items-center justify-center gap-1">
+                                                    <ShieldAlert size={11} /> AI-generated · verify critical paths against code and tests
+                                                </div>
+                                            </div>
                                         </div>
-                                    ))
-                                )}
-                                <div ref={messagesEndRef} />
-                            </div>
+                                    </div>
 
-                            {/* Suggested Prompts */}
-                            <div className="px-3.5 py-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap bg-white/[0.01] shrink-0">
-                                {(() => {
-                                    const userMessages = chatMessages.filter(m => m.role === 'user');
-                                    const lastUserText = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : askQ;
-                                    const isHinglish = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi|isko|tum|aap)\b/i.test(lastUserText);
+                                    {/* Right panel inside expanded chat: collapsible 320px column showing the Evidence list for the latest answer */}
+                                    {isChatExpanded && latestAssistantEvidence.length > 0 && expandedEvidenceOpen && (
+                                        <div className="w-[320px] shrink-0 border-l border-white/10 flex flex-col bg-[#07090A] overflow-hidden">
+                                            <div className="p-3 border-b border-white/10 flex items-center justify-between shrink-0">
+                                                <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-[#E8EAE6]">
+                                                    <MessageSquare size={13} className="text-[#4FD1B5]" />
+                                                    <span>Evidence</span>
+                                                    <span className="text-[10px] text-[#4FD1B5] px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10">
+                                                        {latestAssistantEvidence.length} cited
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    onClick={() => setExpandedEvidenceOpen(false)}
+                                                    className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.05] transition-colors cursor-pointer"
+                                                    title="Collapse evidence panel"
+                                                >
+                                                    <X size={14} />
+                                                </button>
+                                            </div>
+                                            <div className="flex-1 overflow-y-auto scrollbar-custom p-3 space-y-2">
+                                                {latestAssistantEvidence.map((item, idx) => {
+                                                    const filePath = item.path;
+                                                    const fileName = filePath?.split('/').pop() || filePath;
+                                                    const lineRange = item.line !== undefined
+                                                        ? (item.endLine && item.endLine !== item.line ? `${item.line}-${item.endLine}` : `${item.line}`)
+                                                        : '';
+                                                    const isAnalyzed = analyzedPaths.has(filePath) ||
+                                                        analyzedPaths.has(filePath.replace(/^\.\//, '')) ||
+                                                        Array.from(analyzedPaths).some(p => p.endsWith('/' + filePath) || filePath.endsWith('/' + p));
 
-                                    const suggestions = isHinglish
-                                        ? (selectedFile
-                                            ? ['Is file ko samjhao', 'Isko kaun call karta hai?', 'Changes ka summary do']
-                                            : ['Kaunsi files sabse risky hain?', 'Repo ka structure kaisa hai?', 'Kahan se padhna shuru karein?'])
-                                        : (selectedFile
-                                            ? ['Explain this file', 'Who calls this?', 'Summarize changes']
-                                            : ['Which files are riskiest?', 'How is this repo structured?', 'Where should I start reading?']);
-
-                                    return suggestions.map((suggestion, sIdx) => (
-                                        <button
-                                            key={sIdx}
-                                            onClick={() => {
-                                                setAskQ('');
-                                                askAI(suggestion);
-                                            }}
-                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer"
-                                        >
-                                            {suggestion}
-                                        </button>
-                                    ));
-                                })()}
-                            </div>
-
-                            {/* Composer - pinned at bottom */}
-                            <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
-                                <div className="flex items-center gap-2 glass-surface p-1 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
-                                    <input
-                                        value={askQ}
-                                        onChange={e => setAskQ(e.target.value)}
-                                        onKeyDown={e => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault();
-                                                if (!isStreaming) {
-                                                    askAI();
-                                                }
-                                            }
-                                        }}
-                                        placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
-                                        className="flex-1 bg-transparent px-3 py-1.5 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans"
-                                    />
-                                    {isStreaming ? (
-                                        <button
-                                            type="button"
-                                            onClick={handleStopAi}
-                                            className="px-3 py-1 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors"
-                                            title="Stop generating"
-                                        >
-                                            <Square size={12} className="fill-current" />
-                                            <span>Stop</span>
-                                        </button>
-                                    ) : (
-                                        <Button
-                                            onClick={() => askAI()}
-                                            className="px-3 py-1 text-xs shrink-0"
-                                            disabled={!askQ.trim() || isStreaming}
-                                        >
-                                            Send
-                                        </Button>
+                                                    return (
+                                                        <button
+                                                            key={idx}
+                                                            onClick={() => {
+                                                                selectFile(filePath);
+                                                                if (item.line !== undefined) {
+                                                                    setCodeHighlightLine(item.line);
+                                                                }
+                                                                setIsChatExpanded(false);
+                                                                setActiveTab('Code');
+                              }}
+                              className={cn(
+                                                                "w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer space-y-1 block",
+                                                                isAnalyzed
+                                                                    ? "border-white/10 bg-white/[0.02] hover:border-[#4FD1B5]/40 hover:bg-white/[0.05]"
+                                                                    : "border-white/5 bg-white/[0.01] opacity-70"
+                                                            )}
+                                                            title={`Open ${filePath}${lineRange ? `:${lineRange}` : ''} in Code viewer`}
+                                                        >
+                                                            <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
+                                                                <span className="font-semibold truncate">{fileName}</span>
+                                                                {lineRange && <span className="text-[10px] text-[#8A918C] font-normal">{lineRange.includes('-') ? `lines ${lineRange}` : `line ${lineRange}`}</span>}
+                                                            </div>
+                                                            <div className="text-[10px] text-[#8A918C] font-mono truncate">
+                                                                {filePath}
+                                                            </div>
+                                                            {item.snippet && (
+                                                                <div className="text-[10px] text-[#8A918C]/80 font-mono line-clamp-3 bg-white/[0.02] p-1.5 rounded border border-white/[0.05]">
+                                                                    {item.snippet}
+                                                                </div>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
                                     )}
                                 </div>
-                                <div className="text-center text-[10px] text-[#8A918C]/70 mt-2 font-mono flex items-center justify-center gap-1">
-                                    <ShieldAlert size={11} /> AI-generated · verify critical paths against code and tests
-                                </div>
                             </div>
-                        </div>
                         )
                     )}
 

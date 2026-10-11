@@ -21,7 +21,7 @@ export function detectLang(text: string): "hi" | "hinglish" | "en" {
 export function getLanguageDirective(lang: "hi" | "hinglish" | "en"): string {
     let directive = "Reply in English.";
     if (lang === "hinglish") {
-        directive = "Reply in Roman-script Hinglish (natural Hindi in English letters), not English and not Devanagari. Ignore the language of earlier answers.";
+        directive = "Reply in Roman-script Hinglish (natural Hindi in English letters), not English and not Devanagari. Ignore the language of earlier answers. For Hinglish use only Roman script and the ASCII full stop, never the Devanagari danda.";
     } else if (lang === "hi") {
         directive = "Reply in Hindi (Devanagari).";
     }
@@ -35,7 +35,7 @@ export function getModeInstruction(mode?: string): string {
         case "short":
             return "Format: maximum 4 bullets.";
         case "steps":
-            return "Format: numbered step-by-step walkthrough.";
+            return "Format: numbered step-by-step list (1., 2., 3.) with one action per step and no bullets.";
         case "simple":
             return "Format: plain-language explanation for beginner, no jargon, one analogy allowed.";
         case "review":
@@ -58,8 +58,10 @@ export function getSystemInstructions(mode?: string, additionalInstructions?: st
         "The answer text must cite files and lines (format path:line) ONLY for lines shown in context, and NEVER cite lines that are not in the context.",
         'At the end of your answer, output evidence as a delimited block: <<<EVIDENCE>>>[{"path":"filepath","line":12}]<<<END_EVIDENCE>>> with only files and lines that support your answer.',
         'Then output follow-up questions as a delimited block: <<<FOLLOWUPS>>>["question 1","question 2","question 3"]<<<END_FOLLOWUPS>>> (maximum 3 short questions, max 8 words each).',
+        "Never write the words Evidence, Follow-ups or Missing data as headings or lines inside the answer; put them only inside the two delimited blocks at the very end. Example: <<<EVIDENCE>>>[{\"path\":\"file.ts\",\"line\":1}]<<<END_EVIDENCE>>> <<<FOLLOWUPS>>>[\"Question?\"]<<<END_FOLLOWUPS>>>",
         "The answer text must NEVER contain <<< delimiters or delimiter blocks.",
-        "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). Keep file, function and variable names in English. Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.",
+        "Match the script of the user's latest message. Always reply in the language and script of the user's latest message (Roman Hinglish in means Roman Hinglish out, Devanagari in means Devanagari out, English in means English out). For Hinglish use only Roman script and the ASCII full stop, never the Devanagari danda. Keep file, function and variable names in English. Keep code, file names and identifiers unchanged. Apply the same language to the 3 follow-up questions.",
+        "Use inline code only for file names and at most 8 key symbols per answer, list other identifiers as plain text separated by commas.",
         "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
         "For greetings or small talk, reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
         "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file.",
