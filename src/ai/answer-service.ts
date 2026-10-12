@@ -625,6 +625,62 @@ export function parseAndValidateEvidenceAndFollowUps(
     };
 }
 
+export function normalizeQuestionForComparison(q: string): string {
+    return q.toLowerCase().trim().replace(/[^\w\s]/g, "").replace(/\s+/g, " ");
+}
+
+export function getFollowUpCandidatesByFileType(targetPath: string | undefined, isHinglish: boolean): string[] {
+    const pathStr = (targetPath || "").toLowerCase();
+    const fileName = pathStr.split(/[/\\]/).pop() || "";
+
+    const isTest = /\.(test|spec)\.[a-z0-9]+$/i.test(fileName) || /tests?[/\\]|__tests?__[/\\]/i.test(pathStr);
+    const isConfig = /\.(json|ya?ml|toml|ini|env|xml|config|rc|properties)$/i.test(fileName) || /config|\.config\./i.test(fileName);
+    const isApiClient = /api|client|endpoint|router|service|controller|route/i.test(pathStr);
+
+    if (isTest) {
+        return isHinglish
+            ? ["Is test mein kya check hota hai?", "Is test ko kaise run karein?", "Isme kya mock kiya gaya hai?"]
+            : ["What does this test cover?", "How do I run this test?", "What is mocked in this test?"];
+    }
+    if (isConfig) {
+        return isHinglish
+            ? ["Configuration samjhao", "Environment dependencies kya hain?", "Kuch deprecated hai kya?"]
+            : ["Explain this configuration", "What are the environment dependencies?", "Is anything deprecated?"];
+    }
+    if (isApiClient) {
+        return isHinglish
+            ? ["Isko kaun call karta hai?", "Exposed endpoints samjhao", "Error handling patterns"]
+            : ["Who calls this?", "Explain endpoints exposed", "Error handling patterns"];
+    }
+    return isHinglish
+        ? ["Is file ke tests kaun se hain?", "Risk score kyun high hai?", "Recent changes ka summary do"]
+        : ["Which tests cover this file?", "Why is the risk score high?", "Summarize recent changes"];
+}
+
+export function generateFallbackFollowUps(
+    targetPath: string | undefined,
+    question: string,
+    history?: Array<{ role: string; content: string }>,
+    lang?: "hi" | "hinglish" | "en"
+): string[] {
+    const isHinglish = lang === "hinglish" || lang === "hi";
+    const candidates = getFollowUpCandidatesByFileType(targetPath, isHinglish);
+
+    const askedSet = new Set<string>();
+    if (question) {
+        askedSet.add(normalizeQuestionForComparison(question));
+    }
+    if (history) {
+        for (const h of history) {
+            if (h && typeof h.content === "string") {
+                askedSet.add(normalizeQuestionForComparison(h.content));
+            }
+        }
+    }
+
+    return candidates.filter(c => !askedSet.has(normalizeQuestionForComparison(c))).slice(0, 3);
+}
+
 export class LruAnswerCache {
     private cache = new Map<string, { result: AiAnswerResult; expiresAt: number }>();
     private readonly maxSize = 200;
@@ -919,13 +975,31 @@ export class AiAnswerService {
             ? parsed.citations
             : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
 
+        const askedSet = new Set<string>();
+        if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
+        if (cleanHistory) {
+            for (const h of cleanHistory) {
+                if (h && typeof h.content === "string") askedSet.add(normalizeQuestionForComparison(h.content));
+            }
+        }
+
+        let finalFollowUps = parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
+        if (finalFollowUps.length === 0) {
+            finalFollowUps = generateFallbackFollowUps(
+                targetPath,
+                request.question,
+                cleanHistory,
+                lang
+            );
+        }
+
         const finalResult: AiAnswerResult = {
             status: "ok",
             answer: finalAnswer,
             citations: finalCitations,
             confidence: providerResponse.confidence,
             missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
-            followUps: parsed.followUps,
+            followUps: finalFollowUps,
             evidence: parsed.evidence,
             usedContext: providerResponse.usedContext ?? {
                 files: aiContext.files.length,
@@ -1193,13 +1267,31 @@ export class AiAnswerService {
                 ? parsed.citations
                 : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
 
+            const askedSet = new Set<string>();
+            if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
+            if (cleanHistory) {
+                for (const h of cleanHistory) {
+                    if (h && typeof h.content === "string") askedSet.add(normalizeQuestionForComparison(h.content));
+                }
+            }
+
+            let finalFollowUps = parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
+            if (finalFollowUps.length === 0) {
+                finalFollowUps = generateFallbackFollowUps(
+                    targetPath,
+                    request.question,
+                    cleanHistory,
+                    lang
+                );
+            }
+
             const finalResult: AiAnswerResult = {
                 status: "ok",
                 answer: finalAnswer,
                 citations: finalCitations,
                 confidence: providerResponse.confidence,
                 missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
-                followUps: parsed.followUps,
+                followUps: finalFollowUps,
                 evidence: parsed.evidence,
                 usedContext: providerResponse.usedContext ?? {
                     files: aiContext.files.length,

@@ -1,7 +1,8 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip } from 'lucide-react';
-import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import Graph3D, { G3Node } from './Graph3D';
 import '@xyflow/react/dist/style.css';
@@ -127,6 +128,270 @@ export async function processImageFile(file: File): Promise<AttachedImage | null
     });
 }
 
+interface PopoverProps {
+    isOpen: boolean;
+    onClose: () => void;
+    triggerRef: React.RefObject<HTMLElement | null>;
+    children: React.ReactNode;
+    className?: string;
+    role?: 'menu' | 'listbox';
+    align?: 'start' | 'end';
+    width?: number | string;
+}
+
+function Popover({
+    isOpen,
+    onClose,
+    triggerRef,
+    children,
+    className,
+    role = 'menu',
+    align = 'start',
+    width,
+}: PopoverProps) {
+    const popoverRef = useRef<HTMLDivElement | null>(null);
+    const [coords, setCoords] = useState<{ top: number; left: number; maxHeight?: number } | null>(null);
+
+    const updatePosition = useCallback(() => {
+        if (!triggerRef.current || !isOpen) return;
+        const rect = triggerRef.current.getBoundingClientRect();
+        const popEl = popoverRef.current;
+        const popWidth = popEl ? popEl.offsetWidth : (typeof width === 'number' ? width : 200);
+        const popHeight = popEl ? popEl.offsetHeight : 200;
+
+        const spaceBelow = window.innerHeight - rect.bottom - 8;
+        const spaceAbove = rect.top - 8;
+        const flipUp = spaceBelow < Math.min(popHeight, 300) && spaceAbove > spaceBelow;
+
+        let top = flipUp ? rect.top - popHeight - 6 : rect.bottom + 6;
+        let maxHeight = flipUp ? spaceAbove - 8 : spaceBelow - 8;
+        if (maxHeight < 120) maxHeight = 120;
+
+        let left = align === 'end' ? rect.right - popWidth : rect.left;
+        const maxLeft = window.innerWidth - popWidth - 8;
+        if (left > maxLeft) left = maxLeft;
+        if (left < 8) left = 8;
+        if (top < 8) top = 8;
+        if (top + popHeight > window.innerHeight - 8) {
+            top = Math.max(8, window.innerHeight - popHeight - 8);
+        }
+
+        setCoords({ top, left, maxHeight });
+    }, [triggerRef, isOpen, align, width]);
+
+    useLayoutEffect(() => {
+        if (isOpen) {
+            updatePosition();
+        } else {
+            setCoords(null);
+        }
+    }, [isOpen, updatePosition]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+
+        const timer = setTimeout(() => {
+            if (popoverRef.current) {
+                const searchInput = popoverRef.current.querySelector<HTMLInputElement>('input');
+                if (searchInput) {
+                    searchInput.focus();
+                } else {
+                    const firstFocusable = popoverRef.current.querySelector<HTMLElement>(
+                        '[role="menuitem"], [role="option"], button, [tabindex="0"]'
+                    );
+                    firstFocusable?.focus();
+                }
+            }
+        }, 10);
+
+        const handleOutsideClick = (e: MouseEvent | TouchEvent) => {
+            const target = e.target as Node;
+            if (popoverRef.current && !popoverRef.current.contains(target) &&
+                triggerRef.current && !triggerRef.current.contains(target)) {
+                onClose();
+            }
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+                triggerRef.current?.focus();
+                return;
+            }
+
+            if (popoverRef.current && (role === 'menu' || role === 'listbox')) {
+                const focusable = Array.from(
+                    popoverRef.current.querySelectorAll<HTMLElement>(
+                        'button:not([disabled]), [role="menuitem"], [role="option"], input, [tabindex="0"]'
+                    )
+                );
+                if (focusable.length === 0) return;
+
+                const activeIdx = focusable.indexOf(document.activeElement as HTMLElement);
+
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    const nextIdx = activeIdx === -1 ? 0 : (activeIdx + 1) % focusable.length;
+                    focusable[nextIdx]?.focus();
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    const prevIdx = activeIdx === -1 ? focusable.length - 1 : (activeIdx - 1 + focusable.length) % focusable.length;
+                    focusable[prevIdx]?.focus();
+                }
+            }
+        };
+
+        const handleScrollOrResize = () => {
+            onClose();
+        };
+
+        window.addEventListener('mousedown', handleOutsideClick);
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('scroll', handleScrollOrResize, true);
+        window.addEventListener('resize', handleScrollOrResize);
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener('mousedown', handleOutsideClick);
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('scroll', handleScrollOrResize, true);
+            window.removeEventListener('resize', handleScrollOrResize);
+        };
+    }, [isOpen, onClose, triggerRef, role]);
+
+    if (!isOpen) return null;
+
+    return createPortal(
+        <div
+            ref={popoverRef}
+            role={role}
+            style={{
+                position: 'fixed',
+                top: coords?.top ?? -9999,
+                left: coords?.left ?? -9999,
+                zIndex: 1000,
+                width: width !== undefined ? width : undefined,
+                maxHeight: coords?.maxHeight !== undefined ? coords.maxHeight : undefined,
+                visibility: coords ? 'visible' : 'hidden',
+            }}
+            className={cn(
+                "bg-[rgba(14,20,21,0.98)] backdrop-blur-md border border-white/10 rounded-[10px] shadow-2xl text-[13px] text-[#E8EAE6] overflow-y-auto scrollbar-custom outline-none",
+                className
+            )}
+        >
+            {children}
+        </div>,
+        document.body
+    );
+}
+
+interface ThemedSelectOption<T extends string> {
+    value: T;
+    label: string;
+    description: string;
+}
+
+interface ThemedSelectProps<T extends string> {
+    value: T;
+    onChange: (val: T) => void;
+    options: ThemedSelectOption<T>[];
+    title?: string;
+    triggerClassName?: string;
+}
+
+function ThemedSelect<T extends string>({
+    value,
+    onChange,
+    options,
+    title,
+    triggerClassName,
+}: ThemedSelectProps<T>) {
+    const [open, setOpen] = useState(false);
+    const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+    const selectedOption = options.find(o => o.value === value) || options[0];
+
+    return (
+        <div className="relative inline-block">
+            <button
+                ref={triggerRef}
+                type="button"
+                onClick={() => setOpen(!open)}
+                className={cn(
+                    "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
+                    open
+                        ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                        : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20",
+                    triggerClassName
+                )}
+                title={title}
+            >
+                <span>{selectedOption?.label}</span>
+                <ChevronDown size={10} className={cn("transition-transform duration-150", open && "rotate-180")} />
+            </button>
+            <Popover
+                isOpen={open}
+                onClose={() => setOpen(false)}
+                triggerRef={triggerRef}
+                role="listbox"
+                width={260}
+                className="p-1.5 space-y-0.5"
+            >
+                {options.map(opt => {
+                    const isSelected = opt.value === value;
+                    return (
+                        <button
+                            key={opt.value}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            onClick={() => {
+                                onChange(opt.value);
+                                setOpen(false);
+                                triggerRef.current?.focus();
+                            }}
+                            className={cn(
+                                "w-full text-left px-3 py-2 rounded-lg transition-colors cursor-pointer flex items-center justify-between group",
+                                isSelected
+                                    ? "bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                    : "text-[#E8EAE6] hover:bg-white/[0.06]"
+                            )}
+                        >
+                            <div className="min-w-0 pr-2">
+                                <div className={cn("text-[13px] font-medium leading-snug", isSelected ? "text-[#4FD1B5]" : "text-[#E8EAE6]")}>
+                                    {opt.label}
+                                </div>
+                                <div className="text-[11px] text-[#8A918C] leading-tight mt-0.5 font-normal">
+                                    {opt.description}
+                                </div>
+                            </div>
+                            {isSelected && (
+                                <Check size={14} className="text-[#4FD1B5] shrink-0 ml-1" />
+                            )}
+                        </button>
+                    );
+                })}
+            </Popover>
+        </div>
+    );
+}
+
+const ASK_MODE_OPTIONS: ThemedSelectOption<import('../api').AskMode>[] = [
+    { value: 'detailed', label: 'Detailed', description: 'Summary plus bullets' },
+    { value: 'short', label: 'Short', description: 'At most 4 bullets' },
+    { value: 'steps', label: 'Steps', description: 'Numbered walkthrough' },
+    { value: 'simple', label: 'Simple', description: 'Plain language' },
+    { value: 'review', label: 'Review', description: 'Risks and suggestions' },
+];
+
+const ASK_SCOPE_OPTIONS: ThemedSelectOption<import('../api').AskScope>[] = [
+    { value: 'file', label: 'File', description: 'Only this file' },
+    { value: 'dependents', label: 'File and dependents', description: 'Adds direct dependents' },
+    { value: 'repo', label: 'Repository', description: 'Repo-level summary' },
+];
+
 interface ComponentToolbarProps {
     title: React.ReactNode;
     subtitle?: React.ReactNode;
@@ -158,18 +423,7 @@ function ComponentToolbar({
 }: ComponentToolbarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const [copied, setCopied] = useState(false);
-    const menuRef = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        if (!menuOpen) return;
-        const handleClickOutside = (e: MouseEvent) => {
-            if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-                setMenuOpen(false);
-            }
-        };
-        window.addEventListener('mousedown', handleClickOutside);
-        return () => window.removeEventListener('mousedown', handleClickOutside);
-    }, [menuOpen]);
+    const menuBtnRef = useRef<HTMLButtonElement | null>(null);
 
     const handleCopy = () => {
         if (onCopyPRComment) {
@@ -200,8 +454,10 @@ function ComponentToolbar({
                 {primaryAction}
 
                 {/* "..." menu for secondary actions */}
-                <div className="relative" ref={menuRef}>
+                <div className="relative">
                     <button
+                        ref={menuBtnRef}
+                        type="button"
                         onClick={() => setMenuOpen(!menuOpen)}
                         className={cn(
                             "p-1.5 rounded-lg border border-white/10 glass-surface transition-colors cursor-pointer flex items-center justify-center",
@@ -212,77 +468,83 @@ function ComponentToolbar({
                         <MoreHorizontal size={14} />
                     </button>
 
-                    {menuOpen && (
-                        <div className="absolute right-0 top-full mt-1.5 w-52 glass-surface bg-[rgba(16,20,21,0.95)] backdrop-blur-md border border-white/10 rounded-lg p-1.5 shadow-2xl z-50 text-xs font-mono space-y-0.5">
-                            {customMenu ? (
-                                customMenu(() => setMenuOpen(false))
-                            ) : (
-                                <>
-                                    {onDownloadReport && (
-                                        <button
-                                            onClick={() => {
-                                                onDownloadReport();
-                                                setMenuOpen(false);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                        >
-                                            <Download size={13} className="text-[#4FD1B5]" />
-                                            <span>Download report</span>
-                                        </button>
-                                    )}
+                    <Popover
+                        isOpen={menuOpen}
+                        onClose={() => setMenuOpen(false)}
+                        triggerRef={menuBtnRef}
+                        align="end"
+                        role="menu"
+                        width={210}
+                        className="p-1.5 text-xs font-mono space-y-0.5"
+                    >
+                        {customMenu ? (
+                            customMenu(() => setMenuOpen(false))
+                        ) : (
+                            <>
+                                {onDownloadReport && (
+                                    <button
+                                        onClick={() => {
+                                            onDownloadReport();
+                                            setMenuOpen(false);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                    >
+                                        <Download size={13} className="text-[#4FD1B5]" />
+                                        <span>Download report</span>
+                                    </button>
+                                )}
 
-                                    {onCopyPRComment && (
-                                        <button
-                                            onClick={handleCopy}
-                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                        >
-                                            {copied ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} className="text-[#4FD1B5]" />}
-                                            <span>{copied ? "Copied comment" : "Copy as PR comment"}</span>
-                                        </button>
-                                    )}
+                                {onCopyPRComment && (
+                                    <button
+                                        onClick={handleCopy}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                    >
+                                        {copied ? <Check size={13} className="text-[#4FD1B5]" /> : <Copy size={13} className="text-[#4FD1B5]" />}
+                                        <span>{copied ? "Copied comment" : "Copy as PR comment"}</span>
+                                    </button>
+                                )}
 
-                                    {onReanalyze && (
-                                        <button
-                                            onClick={() => {
-                                                onReanalyze();
-                                                setMenuOpen(false);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                        >
-                                            <RefreshCw size={13} className="text-[#4FD1B5]" />
-                                            <span>{reanalyzeLabel || "Re-analyze"}</span>
-                                        </button>
-                                    )}
+                                {onReanalyze && (
+                                    <button
+                                        onClick={() => {
+                                            onReanalyze();
+                                            setMenuOpen(false);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                    >
+                                        <RefreshCw size={13} className="text-[#4FD1B5]" />
+                                        <span>{reanalyzeLabel || "Re-analyze"}</span>
+                                    </button>
+                                )}
 
-                                    {onExport && (
-                                        <button
-                                            onClick={() => {
-                                                onExport();
-                                                setMenuOpen(false);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                        >
-                                            <Layers size={13} className="text-[#4FD1B5]" />
-                                            <span>Export</span>
-                                        </button>
-                                    )}
+                                {onExport && (
+                                    <button
+                                        onClick={() => {
+                                            onExport();
+                                            setMenuOpen(false);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                    >
+                                        <Layers size={13} className="text-[#4FD1B5]" />
+                                        <span>Export</span>
+                                    </button>
+                                )}
 
-                                    {extraMenuItems.map((item, idx) => (
-                                        <button
-                                            key={idx}
-                                            onClick={() => {
-                                                item.onClick();
-                                                setMenuOpen(false);
-                                            }}
-                                            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
-                                        >
-                                            <span>{item.label}</span>
-                                        </button>
-                                    ))}
-                                </>
-                            )}
-                        </div>
-                    )}
+                                {extraMenuItems.map((item, idx) => (
+                                    <button
+                                        key={idx}
+                                        onClick={() => {
+                                            item.onClick();
+                                            setMenuOpen(false);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded text-left hover:bg-white/[0.06] transition-colors cursor-pointer text-[#E8EAE6]"
+                                    >
+                                        <span>{item.label}</span>
+                                    </button>
+                                ))}
+                            </>
+                        )}
+                    </Popover>
                 </div>
             </div>
         </div>
@@ -2361,6 +2623,43 @@ function formatRelativeDate(dateStr: string): string {
     return `${Math.floor(diffDays / 365)}y ago`;
 }
 
+function formatChatDate(timestamp: number): string {
+    if (!timestamp) return '';
+    const d = new Date(timestamp);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    if (isToday) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function getStarterQuestionsForTarget(file: string | null, attachedImagesCount: number): string[] {
+    if (attachedImagesCount > 0) {
+        return [
+            "What error is shown here?",
+            "Where in this file is this UI implemented?",
+            "How do I fix what's shown here?"
+        ];
+    }
+    const lowerFile = (file || '').toLowerCase();
+    const fileName = lowerFile.split('/').pop() || '';
+    const isTest = isTestFile(file || '') || /\.(test|spec)\.[a-z0-9]+$/i.test(fileName) || /tests?\/|__tests?__\//i.test(lowerFile);
+    const isConfig = /\.(json|ya?ml|toml|ini|env|xml|config|rc|properties)$/i.test(fileName) || /config|\.config\./i.test(fileName);
+    const isApiClient = /api|client|endpoint|router|service|controller|route/i.test(lowerFile);
+
+    if (isTest) {
+        return ["What does this test cover?", "How do I run this test?", "What is mocked in this test?"];
+    }
+    if (isConfig) {
+        return ["Explain this configuration", "What are the environment dependencies?", "Is anything deprecated?"];
+    }
+    if (isApiClient) {
+        return ["Who calls this?", "Explain endpoints exposed", "Error handling patterns"];
+    }
+    return ["Which tests cover this file?", "Why is the risk score high?", "Summarize recent changes"];
+}
+
 export function MainPanel({ className }: { className?: string }) {
     const {
         activeTab, setActiveTab, selectedFile, setSelectedFile,
@@ -2369,7 +2668,7 @@ export function MainPanel({ className }: { className?: string }) {
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
         changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
         treeFiles, setTreeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
-        setAiCitations, setAiEvidence, meta
+        setAiCitations, setAiEvidence, setAiEvidenceTitle, meta
     } = useAppStore();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
@@ -2611,7 +2910,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
     const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
-    const normalChatsDropdownRef = useRef<HTMLDivElement | null>(null);
+    const normalChatsBtnRef = useRef<HTMLButtonElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const lastActiveChatByFile = useRef<Record<string, string>>({});
     const isChatsLoadedRef = useRef(false);
@@ -2620,16 +2919,55 @@ export function MainPanel({ className }: { className?: string }) {
     const activeChatIdRef = useRef<string | null>(activeChatId);
     activeChatIdRef.current = activeChatId;
 
-    const latestAssistantEvidence = useMemo(() => {
-        const lastWithEvidence = [...chatMessages].reverse().find(m => m.role === 'assistant' && m.evidence && m.evidence.length > 0);
-        return lastWithEvidence?.evidence || [];
+    const [selectedAnswerIdx, setSelectedAnswerIdx] = useState<number | null>(null);
+
+    const lastAssistantIdx = useMemo(() => {
+        for (let i = chatMessages.length - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'assistant' && !chatMessages[i].isThinking) {
+                return i;
+            }
+        }
+        return -1;
     }, [chatMessages]);
 
+    const activeAssistantIdx = useMemo(() => {
+        if (selectedAnswerIdx !== null && selectedAnswerIdx >= 0 && selectedAnswerIdx < chatMessages.length) {
+            if (chatMessages[selectedAnswerIdx]?.role === 'assistant') {
+                return selectedAnswerIdx;
+            }
+        }
+        return lastAssistantIdx !== -1 ? lastAssistantIdx : null;
+    }, [selectedAnswerIdx, chatMessages, lastAssistantIdx]);
+
+    const getAnswerNumber = useCallback((msgIdx: number) => {
+        let count = 0;
+        for (let i = 0; i <= msgIdx && i < chatMessages.length; i++) {
+            if (chatMessages[i].role === 'assistant') count++;
+        }
+        return count;
+    }, [chatMessages]);
+
+    const activeAnswerNumber = activeAssistantIdx !== null ? getAnswerNumber(activeAssistantIdx) : null;
+    const activeAssistantMsg = activeAssistantIdx !== null ? chatMessages[activeAssistantIdx] : null;
+    const activeEvidence = useMemo(() => activeAssistantMsg?.evidence || [], [activeAssistantMsg]);
+
+    const askedQuestions = useMemo(() => {
+        return chatMessages
+            .filter(m => m.role === 'user')
+            .map(m => m.content.toLowerCase().trim());
+    }, [chatMessages]);
+
+    const isQuestionAlreadyAsked = useCallback((q: string) => {
+        const norm = q.toLowerCase().trim();
+        if (!norm) return false;
+        return askedQuestions.some(asked => asked.includes(norm) || norm.includes(asked));
+    }, [askedQuestions]);
+
     useEffect(() => {
-        if (latestAssistantEvidence.length > 0) {
+        if (activeEvidence.length > 0) {
             setExpandedEvidenceOpen(true);
         }
-    }, [latestAssistantEvidence.length]);
+    }, [activeEvidence.length]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -2661,16 +2999,7 @@ export function MainPanel({ className }: { className?: string }) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [isChatExpanded, activeTab, lightboxImage]);
 
-    useEffect(() => {
-        if (!normalChatsOpen) return;
-        const handleClickOutside = (e: MouseEvent) => {
-            if (normalChatsDropdownRef.current && !normalChatsDropdownRef.current.contains(e.target as Node)) {
-                setNormalChatsOpen(false);
-            }
-        };
-        window.addEventListener('mousedown', handleClickOutside);
-        return () => window.removeEventListener('mousedown', handleClickOutside);
-    }, [normalChatsOpen]);
+
 
     useEffect(() => {
         if (isChatExpanded) {
@@ -2869,17 +3198,21 @@ export function MainPanel({ className }: { className?: string }) {
         }
     }, [chats, chatsStorageKey]);
 
-    // 4. Keep aiEvidence in sync with the latest assistant message
+    // 4. Keep aiEvidence in sync with the active assistant message
     useEffect(() => {
-        const lastAssistant = chatMessages.slice().reverse().find(m => m.role === 'assistant' && !m.isThinking);
-        if (lastAssistant && lastAssistant.evidence && lastAssistant.evidence.length > 0) {
-            setAiEvidence(lastAssistant.evidence);
-            setAiCitations(lastAssistant.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
+        if (activeAssistantMsg && activeAssistantMsg.evidence && activeAssistantMsg.evidence.length > 0) {
+            setAiEvidence(activeAssistantMsg.evidence);
+            setAiCitations(activeAssistantMsg.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
         } else {
             setAiEvidence([]);
             setAiCitations([]);
         }
-    }, [chatMessages, setAiEvidence, setAiCitations]);
+        if (activeAnswerNumber) {
+            setAiEvidenceTitle?.(`Evidence for answer #${activeAnswerNumber}`);
+        } else {
+            setAiEvidenceTitle?.(null);
+        }
+    }, [activeAssistantIdx, activeAssistantMsg, activeAnswerNumber, setAiEvidence, setAiCitations, setAiEvidenceTitle]);
 
     const handleAttachFiles = useCallback(async (files: FileList | File[]) => {
         setImageWarning(null);
@@ -3939,7 +4272,11 @@ ${lastAssistant.content}${evidenceList}
                         <span>Chats ({chats.length})</span>
                     </span>
                     <button
-                        onClick={handleNewChat}
+                        type="button"
+                        onClick={() => {
+                            handleNewChat();
+                            if (!isSidebar) setNormalChatsOpen(false);
+                        }}
                         className="px-2 py-1 rounded text-[11px] font-mono border border-white/10 bg-white/[0.03] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer flex items-center gap-1"
                         title="New chat for current file"
                     >
@@ -3968,12 +4305,13 @@ ${lastAssistant.content}${evidenceList}
                         const fileName = filePath.split('/').pop() || filePath;
                         return (
                             <div key={filePath} className="space-y-1">
-                                <div className="text-[10px] font-mono text-[#8A918C] uppercase tracking-wider px-2 py-0.5 truncate flex items-center gap-1" title={filePath}>
-                                    <FileCode size={10} className="shrink-0 text-[#8A918C]/60" />
+                                <div className="text-[11px] font-mono text-[#8A918C] px-2 py-1 truncate flex items-center gap-1.5" title={filePath}>
+                                    <FileCode size={11} className="shrink-0 text-[#4FD1B5]/70" />
                                     <span className="truncate">{fileName}</span>
                                 </div>
                                 {fileChats.map(chat => {
                                     const isActive = chat.id === activeChatId;
+                                    const msgCount = chat.messages?.length || 0;
                                     return (
                                         <div
                                             key={chat.id}
@@ -3981,6 +4319,7 @@ ${lastAssistant.content}${evidenceList}
                                                 setActiveChatId(chat.id);
                                                 activeChatIdRef.current = chat.id;
                                                 setChatMessages(chat.messages || []);
+                                                setSelectedAnswerIdx(null);
                                                 setAiError(null);
                                                 if (chat.file !== selectedFile) {
                                                     selectFile(chat.file);
@@ -3995,26 +4334,35 @@ ${lastAssistant.content}${evidenceList}
                                                     : "text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.04] border border-transparent"
                                             )}
                                         >
-                                            <span className="truncate flex-1 pr-2 text-[11px] font-sans" title={chat.title}>
-                                                {chat.title || 'Untitled chat'}
-                                            </span>
+                                            <div className="min-w-0 flex-1 pr-2">
+                                                <div className="truncate text-[12px] font-sans" title={chat.title}>
+                                                    {chat.title || 'Untitled chat'}
+                                                </div>
+                                                <div className="flex items-center gap-1.5 text-[10px] text-[#8A918C]/80 mt-0.5 font-mono">
+                                                    <span>{msgCount} {msgCount === 1 ? 'msg' : 'msgs'}</span>
+                                                    <span>•</span>
+                                                    <span>{formatChatDate(chat.updatedAt || chat.createdAt)}</span>
+                                                </div>
+                                            </div>
                                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                                                 <button
+                                                    type="button"
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         handleRenameChat(chat.id, chat.title);
                                                     }}
-                                                    className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08]"
+                                                    className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08] cursor-pointer"
                                                     title="Rename chat"
                                                 >
                                                     <FileText size={11} />
                                                 </button>
                                                 <button
+                                                    type="button"
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         handleDeleteChat(chat.id);
                                                     }}
-                                                    className="p-1 rounded text-[#8A918C] hover:text-red-400 hover:bg-red-500/10"
+                                                    className="p-1 rounded text-[#8A918C] hover:text-red-400 hover:bg-red-500/10 cursor-pointer"
                                                     title="Delete chat"
                                                 >
                                                     <Trash2 size={11} />
@@ -5155,53 +5503,52 @@ ${lastAssistant.content}${evidenceList}
                                                 }
                                                 middle={
                                                     <div className="flex items-center gap-1.5">
-                                                        <select
+                                                        <ThemedSelect
                                                             value={askMode}
-                                                            onChange={e => setAskMode(e.target.value as import('../api').AskMode)}
-                                                            className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                            onChange={setAskMode}
+                                                            options={ASK_MODE_OPTIONS}
                                                             title="Answer mode"
-                                                        >
-                                                            <option value="detailed">Detailed</option>
-                                                            <option value="short">Short</option>
-                                                            <option value="steps">Steps</option>
-                                                            <option value="simple">Simple</option>
-                                                            <option value="review">Review</option>
-                                                        </select>
-                                                        <select
+                                                        />
+                                                        <ThemedSelect
                                                             value={askScope}
-                                                            onChange={e => setAskScope(e.target.value as import('../api').AskScope)}
-                                                            className="bg-black/30 border border-white/10 rounded px-2 py-0.5 text-[11px] font-mono text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer outline-none"
+                                                            onChange={setAskScope}
+                                                            options={ASK_SCOPE_OPTIONS}
                                                             title="Analysis scope"
-                                                        >
-                                                            <option value="file">File</option>
-                                                            <option value="dependents">Dependents</option>
-                                                            <option value="repo">Repo</option>
-                                                        </select>
+                                                        />
                                                         {!isChatExpanded && (
-                                                            <div className="relative" ref={normalChatsDropdownRef}>
+                                                            <div className="relative">
                                                                 <button
+                                                                    ref={normalChatsBtnRef}
+                                                                    type="button"
                                                                     onClick={() => setNormalChatsOpen(!normalChatsOpen)}
                                                                     className={cn(
                                                                         "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
                                                                         normalChatsOpen
                                                                             ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
-                                                                            : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6]"
+                                                                            : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20"
                                                                     )}
                                                                     title="Open chats"
                                                                 >
                                                                     <MessageSquare size={11} />
                                                                     <span>Chats ({chats.length})</span>
-                                                                    <ChevronDown size={10} className={cn("transition-transform", normalChatsOpen && "rotate-180")} />
+                                                                    <ChevronDown size={10} className={cn("transition-transform duration-150", normalChatsOpen && "rotate-180")} />
                                                                 </button>
-                                                                {normalChatsOpen && (
-                                                                    <div className="absolute left-0 top-full mt-1.5 w-72 max-h-96 glass-surface bg-[rgba(16,20,21,0.98)] backdrop-blur-md border border-white/10 rounded-lg shadow-2xl z-50 flex flex-col overflow-hidden">
-                                                                        {renderChatsList(false)}
-                                                                    </div>
-                                                                )}
+                                                                <Popover
+                                                                    isOpen={normalChatsOpen}
+                                                                    onClose={() => setNormalChatsOpen(false)}
+                                                                    triggerRef={normalChatsBtnRef}
+                                                                    width={340}
+                                                                    align="start"
+                                                                    role="menu"
+                                                                    className="w-[340px] max-h-[60vh] flex flex-col overflow-hidden"
+                                                                >
+                                                                    {renderChatsList(false)}
+                                                                </Popover>
                                                             </div>
                                                         )}
-                                                        {isChatExpanded && latestAssistantEvidence.length > 0 && (
+                                                        {isChatExpanded && (
                                                             <button
+                                                                type="button"
                                                                 onClick={() => setExpandedEvidenceOpen(!expandedEvidenceOpen)}
                                                                 className={cn(
                                                                     "px-2 py-0.5 rounded text-[11px] font-mono border transition-colors flex items-center gap-1 cursor-pointer",
@@ -5211,7 +5558,7 @@ ${lastAssistant.content}${evidenceList}
                                                                 )}
                                                                 title="Toggle evidence panel"
                                                             >
-                                                                <span>Evidence ({latestAssistantEvidence.length})</span>
+                                                                <span>Evidence ({activeEvidence.length})</span>
                                                             </button>
                                                         )}
                                                     </div>
@@ -5393,8 +5740,23 @@ ${lastAssistant.content}${evidenceList}
                                                         <div className="text-xs font-medium text-[#E8EAE6] mb-1">
                                                             Ask about {selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'this repository')}
                                                         </div>
-                                                        <div className="text-[11px] text-[#8A918C] max-w-[280px]">
+                                                        <div className="text-[11px] text-[#8A918C] max-w-[280px] mb-4">
                                                             Questions are answered with the symbols and files that prove them. Type a prompt below or pick a suggestion.
+                                                        </div>
+                                                        <div className="flex flex-wrap items-center justify-center gap-2 max-w-[420px]">
+                                                            {getStarterQuestionsForTarget(selectedFile, attachedImages.length).map((starter, sIdx) => (
+                                                                <button
+                                                                    key={sIdx}
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setAskQ('');
+                                                                        askAI(starter);
+                                                                    }}
+                                                                    className="text-[11px] font-mono px-3 py-1.5 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-[#4FD1B5]/40 hover:bg-[#4FD1B5]/[0.05] transition-colors cursor-pointer text-left"
+                                                                >
+                                                                    {starter}
+                                                                </button>
+                                                            ))}
                                                         </div>
                                                     </div>
                                                 ) : (
@@ -5452,7 +5814,22 @@ ${lastAssistant.content}${evidenceList}
                                                                             {/* Evidence chips: mono, path:line, base name bold, folder muted */}
                                                                             {msg.evidence && msg.evidence.length > 0 && (
                                                                                 <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                                    <span className="text-[10px] text-[#8A918C]">Evidence:</span>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => {
+                                                                                            setSelectedAnswerIdx(idx);
+                                                                                            if (isChatExpanded) setExpandedEvidenceOpen(true);
+                                                                                        }}
+                                                                                        className={cn(
+                                                                                            "text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors cursor-pointer flex items-center gap-1",
+                                                                                            activeAssistantIdx === idx
+                                                                                                ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5] font-semibold"
+                                                                                                : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.05]"
+                                                                                        )}
+                                                                                        title={`Select answer #${getAnswerNumber(idx)} evidence`}
+                                                                                    >
+                                                                                        <span>Evidence ({msg.evidence.length})</span>
+                                                                                    </button>
                                                                                     {msg.evidence.map((item, eIdx) => {
                                                                                         const fullPath = item.path;
                                                                                         const lastSlash = fullPath.lastIndexOf('/');
@@ -5475,6 +5852,8 @@ ${lastAssistant.content}${evidenceList}
                                                                                                 key={eIdx}
                                                                                                 disabled={!isAnalyzed}
                                                                                                 onClick={() => {
+                                                                                                    setSelectedAnswerIdx(idx);
+                                                                                                    if (isChatExpanded) setExpandedEvidenceOpen(true);
                                                                                                     if (!isAnalyzed) return;
                                                                                                     selectFile(fullPath);
                                                                                                     if (item.line !== undefined) {
@@ -5529,20 +5908,24 @@ ${lastAssistant.content}${evidenceList}
                                                                                 </details>
                                                                             )}
 
-                                                                            {/* Follow-up chips */}
-                                                                            {msg.followups && msg.followups.length > 0 && (
-                                                                                <div className="pt-2.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
-                                                                                    {msg.followups.map((followup, fIdx) => (
-                                                                                        <button
-                                                                                            key={fIdx}
-                                                                                            onClick={() => askAI(followup)}
-                                                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
-                                                                                        >
-                                                                                            {followup}
-                                                                                        </button>
-                                                                                    ))}
-                                                                                </div>
-                                                                            )}
+                                                                            {/* Follow-up chips: only under last assistant answer, never while streaming */}
+                                                                            {idx === lastAssistantIdx && !isStreaming && msg.followups && msg.followups.length > 0 && (() => {
+                                                                                const visibleFollowups = msg.followups.filter(f => !isQuestionAlreadyAsked(f));
+                                                                                if (visibleFollowups.length === 0) return null;
+                                                                                return (
+                                                                                    <div className="pt-2.5 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
+                                                                                        {visibleFollowups.map((followup, fIdx) => (
+                                                                                            <button
+                                                                                                key={fIdx}
+                                                                                                onClick={() => askAI(followup)}
+                                                                                                className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
+                                                                                            >
+                                                                                                {followup}
+                                                                                            </button>
+                                                                                        ))}
+                                                                                    </div>
+                                                                                );
+                                                                            })()}
 
                                                                             {/* Per-answer actions row */}
                                                                             <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.04]">
@@ -5614,90 +5997,6 @@ ${lastAssistant.content}${evidenceList}
                                             </div>
                                         </div>
 
-                                        {/* Suggested Prompts / Follow-ups */}
-                                        <div className="px-3.5 py-2 border-t border-white/[0.06] bg-white/[0.01] shrink-0">
-                                            <div className={cn("flex items-center gap-1.5 flex-wrap", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
-                                                {(() => {
-                                                    if (attachedImages.length > 0) {
-                                                        const imageStarters = [
-                                                            "What error is shown here?",
-                                                            "Where in this file is this UI implemented?",
-                                                            "How do I fix what's shown here?"
-                                                        ];
-                                                        return imageStarters.map((starter, sIdx) => (
-                                                            <button
-                                                                key={sIdx}
-                                                                onClick={() => {
-                                                                    setAskQ('');
-                                                                    askAI(starter);
-                                                                }}
-                                                                className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
-                                                            >
-                                                                {starter}
-                                                            </button>
-                                                        ));
-                                                    }
-
-                                                    const lastAssistantMsg = [...chatMessages].reverse().find(m => m.role === 'assistant' && !m.isThinking);
-                                                    if (chatMessages.length > 0 && lastAssistantMsg?.followups && lastAssistantMsg.followups.length > 0) {
-                                                        return lastAssistantMsg.followups.slice(0, 3).map((f, fIdx) => (
-                                                            <button
-                                                                key={fIdx}
-                                                                onClick={() => {
-                                                                    setAskQ('');
-                                                                    askAI(f);
-                                                                }}
-                                                                className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
-                                                            >
-                                                                {f}
-                                                            </button>
-                                                        ));
-                                                    }
-
-                                                    const userMessages = chatMessages.filter(m => m.role === 'user');
-                                                    const lastUserText = userMessages.length > 0 ? userMessages[userMessages.length - 1].content : askQ;
-                                                    const isHinglish = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi|isko|tum|aap)\b/i.test(lastUserText);
-
-                                                    const lowerFile = (selectedFile || '').toLowerCase();
-                                                    const fileName = lowerFile.split('/').pop() || '';
-                                                    const isTest = isTestFile(selectedFile || '') || /\.(test|spec)\.[a-z0-9]+$/i.test(fileName) || /tests?\/|__tests?__\//i.test(lowerFile);
-                                                    const isConfig = /\.(json|ya?ml|toml|ini|env|xml|config|rc|properties)$/i.test(fileName) || /config|\.config\./i.test(fileName);
-                                                    const isApiClient = /api|client|endpoint|router|service|controller|route/i.test(lowerFile);
-
-                                                    let starters: string[];
-                                                    if (isTest) {
-                                                        starters = isHinglish
-                                                            ? ['Yeh kya test karta hai samjhao', 'Cover na huye edge cases dhundo', 'Test case kaise add karein?', 'Yeh test run karne ka command']
-                                                            : ['Explain what this tests', 'Find edge cases not covered', 'How to add a test case?', 'Run command for this test'];
-                                                    } else if (isConfig) {
-                                                        starters = isHinglish
-                                                            ? ['Configuration samjhao', 'Environment dependencies kya hain?', 'Kuch deprecated hai kya?', 'Safe changes checklist']
-                                                            : ['Explain this configuration', 'What are the environment dependencies?', 'Is anything deprecated?', 'Safe changes checklist'];
-                                                    } else if (isApiClient) {
-                                                        starters = isHinglish
-                                                            ? ['Exposed endpoints samjhao', 'Auth yahan kaise kaam karta hai?', 'Error handling patterns', 'Backward compatibility risks']
-                                                            : ['Explain endpoints exposed', 'How does auth work here?', 'Error handling patterns', 'Backward compatibility risks'];
-                                                    } else {
-                                                        starters = isHinglish
-                                                            ? ['Yeh file kya karti hai samjhao', 'Isko kaun call karta hai?', 'Recent changes ka summary do', 'Risk analysis']
-                                                            : ['Explain what this file does', 'Who calls this file?', 'Summarize recent changes', 'Risk analysis'];
-                                                    }
-
-                                                    return starters.map((suggestion, sIdx) => (
-                                                        <button
-                                                            key={sIdx}
-                                                            onClick={() => {
-                                                                setAskQ('');
-                                                                askAI(suggestion);
-                                                            }}
-                                                            className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20 transition-colors cursor-pointer"
-                                                        >
-                                                            {suggestion}
-                                                        </button>
-                                                    ));
-                                                })()}
-                                            </div>
-                                        </div>
 
                                         {/* Composer - pinned at bottom */}
                                         <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
@@ -5842,16 +6141,18 @@ ${lastAssistant.content}${evidenceList}
                                         </div>
                                     </div>
 
-                                    {/* Right panel inside expanded chat: collapsible 320px column showing the Evidence list for the latest answer */}
-                                    {isChatExpanded && latestAssistantEvidence.length > 0 && expandedEvidenceOpen && (
+                                    {/* Right panel inside expanded chat: collapsible 320px column showing the Evidence list for active answer */}
+                                    {isChatExpanded && expandedEvidenceOpen && (
                                         <div className="w-[320px] shrink-0 border-l border-white/10 flex flex-col bg-[#07090A] overflow-hidden">
                                             <div className="p-3 border-b border-white/10 flex items-center justify-between shrink-0">
                                                 <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-[#E8EAE6]">
                                                     <MessageSquare size={13} className="text-[#4FD1B5]" />
-                                                    <span>Evidence</span>
-                                                    <span className="text-[10px] text-[#4FD1B5] px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10">
-                                                        {latestAssistantEvidence.length} cited
-                                                    </span>
+                                                    <span>{activeAnswerNumber ? `Evidence for answer #${activeAnswerNumber}` : "Evidence"}</span>
+                                                    {activeEvidence.length > 0 && (
+                                                        <span className="text-[10px] text-[#4FD1B5] px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10">
+                                                            {activeEvidence.length} cited
+                                                        </span>
+                                                    )}
                                                 </div>
                                                 <button
                                                     onClick={() => setExpandedEvidenceOpen(false)}
@@ -5862,50 +6163,56 @@ ${lastAssistant.content}${evidenceList}
                                                 </button>
                                             </div>
                                             <div className="flex-1 overflow-y-auto scrollbar-custom p-3 space-y-2">
-                                                {latestAssistantEvidence.map((item, idx) => {
-                                                    const filePath = item.path;
-                                                    const fileName = filePath?.split('/').pop() || filePath;
-                                                    const rangeLabel = item.line !== undefined
-                                                        ? (item.endLine && item.endLine !== item.line ? `L${item.line}-L${item.endLine}` : `L${item.line}`)
-                                                        : '';
-                                                    const isAnalyzed = analyzedPaths.has(filePath) ||
-                                                        analyzedPaths.has(filePath.replace(/^\.\//, '')) ||
-                                                        Array.from(analyzedPaths).some(p => p.endsWith('/' + filePath) || filePath.endsWith('/' + p));
+                                                {activeEvidence.length === 0 ? (
+                                                    <div className="text-center py-8 text-xs text-[#8A918C] font-mono">
+                                                        No evidence for this answer
+                                                    </div>
+                                                ) : (
+                                                    activeEvidence.map((item, idx) => {
+                                                        const filePath = item.path;
+                                                        const fileName = filePath?.split('/').pop() || filePath;
+                                                        const rangeLabel = item.line !== undefined
+                                                            ? (item.endLine && item.endLine !== item.line ? `L${item.line}-L${item.endLine}` : `L${item.line}`)
+                                                            : '';
+                                                        const isAnalyzed = analyzedPaths.has(filePath) ||
+                                                            analyzedPaths.has(filePath.replace(/^\.\//, '')) ||
+                                                            Array.from(analyzedPaths).some(p => p.endsWith('/' + filePath) || filePath.endsWith('/' + p));
 
-                                                    return (
-                                                        <button
-                                                            key={idx}
-                                                            onClick={() => {
-                                                                selectFile(filePath);
-                                                                if (item.line !== undefined) {
-                                                                    setCodeHighlightLine(item.line, item.endLine);
-                                                                }
-                                                                setIsChatExpanded(false);
-                                                                setActiveTab('Code');
-                                                            }}
-                                                            className={cn(
-                                                                "w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer space-y-1 block",
-                                                                isAnalyzed
-                                                                    ? "border-white/10 bg-white/[0.02] hover:border-[#4FD1B5]/40 hover:bg-white/[0.05]"
-                                                                    : "border-white/5 bg-white/[0.01] opacity-70"
-                                                            )}
-                                                            title={`Open ${filePath}${rangeLabel ? `:${rangeLabel}` : ''} in Code viewer`}
-                                                        >
-                                                            <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
-                                                                <span className="font-semibold truncate">{fileName}</span>
-                                                                {rangeLabel && <span className="text-[10px] text-[#8A918C] font-normal">{rangeLabel}</span>}
-                                                            </div>
-                                                            <div className="text-[10px] text-[#8A918C] font-mono truncate">
-                                                                {filePath}
-                                                            </div>
-                                                            {item.snippet && (
-                                                                <div className="text-[10px] text-[#8A918C]/80 font-mono line-clamp-3 bg-white/[0.02] p-1.5 rounded border border-white/[0.05]">
-                                                                    {item.snippet}
+                                                        return (
+                                                            <button
+                                                                key={idx}
+                                                                onClick={() => {
+                                                                    selectFile(filePath);
+                                                                    if (item.line !== undefined) {
+                                                                        setCodeHighlightLine(item.line, item.endLine);
+                                                                    }
+                                                                    setIsChatExpanded(false);
+                                                                    setActiveTab('Code');
+                                                                }}
+                                                                className={cn(
+                                                                    "w-full text-left p-2.5 rounded-lg border transition-colors cursor-pointer space-y-1 block",
+                                                                    isAnalyzed
+                                                                        ? "border-white/10 bg-white/[0.02] hover:border-[#4FD1B5]/40 hover:bg-white/[0.05]"
+                                                                        : "border-white/5 bg-white/[0.01] opacity-70"
+                                                                )}
+                                                                title={`Open ${filePath}${rangeLabel ? `:${rangeLabel}` : ''} in Code viewer`}
+                                                            >
+                                                                <div className="flex justify-between items-center font-mono text-[11px] text-[#4FD1B5]">
+                                                                    <span className="font-semibold truncate">{fileName}</span>
+                                                                    {rangeLabel && <span className="text-[10px] text-[#8A918C] font-normal">{rangeLabel}</span>}
                                                                 </div>
-                                                            )}
-                                                        </button>
-                                                    );
-                                                })}
+                                                                <div className="text-[10px] text-[#8A918C] font-mono truncate">
+                                                                    {filePath}
+                                                                </div>
+                                                                {item.snippet && (
+                                                                    <div className="text-[10px] text-[#8A918C]/80 font-mono line-clamp-3 bg-white/[0.02] p-1.5 rounded border border-white/[0.05]">
+                                                                        {item.snippet}
+                                                                    </div>
+                                                                )}
+                                                            </button>
+                                                        );
+                                                    })
+                                                )}
                                             </div>
                                         </div>
                                     )}

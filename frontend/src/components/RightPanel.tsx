@@ -152,16 +152,16 @@ function CommitDetails({ className }: { className?: string }) {
 }
 
 function EvidenceList({ className }: { className?: string }) {
-    const { aiEvidence, selectFile, setCodeHighlightLine, setActiveTab } = useAppStore();
+    const { aiEvidence, aiEvidenceTitle, selectFile, setCodeHighlightLine, setActiveTab } = useAppStore();
 
     const evidence = aiEvidence || [];
     return (
         <div className={cn("flex flex-col bg-[#07090A] border-l border-white/10 select-none text-[#E8EAE6] h-full", className)}>
             <div className="p-3.5 border-b border-white/10">
                 <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5">
-                        <MessageSquare size={13} className="text-[#4FD1B5]" />
-                        <span>Evidence list</span>
+                    <h3 className="text-xs font-semibold text-[#E8EAE6] flex items-center gap-1.5 truncate">
+                        <MessageSquare size={13} className="text-[#4FD1B5] shrink-0" />
+                        <span className="truncate">{aiEvidenceTitle || "Evidence list"}</span>
                     </h3>
                     <Badge variant="default">{evidence.length} cited</Badge>
                 </div>

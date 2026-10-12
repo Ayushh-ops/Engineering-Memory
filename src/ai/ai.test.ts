@@ -6,7 +6,7 @@ import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
 import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction } from "./prompt-builder";
-import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps } from "./answer-service";
+import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison } from "./answer-service";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
@@ -1254,6 +1254,52 @@ async function main(): Promise<void> {
             assert.ok(h.content.includes("[image attached]"), "Marker [image attached] should replace image data");
         }
     }
+
+    // 7. Follow-up fallback and exclusion tests
+    const testFallbackEn = generateFallbackFollowUps("tests/auth.test.ts", "Explain this test", undefined, "en");
+    assert.ok(testFallbackEn.length > 0 && testFallbackEn.length <= 3);
+    assert.equal(testFallbackEn[0], "What does this test cover?");
+
+    const testFallbackHi = generateFallbackFollowUps("tests/auth.test.ts", "Yeh test samjhao", undefined, "hinglish");
+    assert.equal(testFallbackHi[0], "Is test mein kya check hota hai?");
+
+    const configFallbackEn = generateFallbackFollowUps("tsconfig.json", "What is this?", undefined, "en");
+    assert.equal(configFallbackEn[0], "Explain this configuration");
+
+    const apiFallbackEn = generateFallbackFollowUps("src/api/client.ts", "What does this do?", undefined, "en");
+    assert.equal(apiFallbackEn[0], "Who calls this?");
+
+    const generalFallbackEn = generateFallbackFollowUps("src/utils.ts", "What is this?", undefined, "en");
+    assert.equal(generalFallbackEn[0], "Which tests cover this file?");
+
+    // Exclusion of current question and history questions
+    const excludedFallback = generateFallbackFollowUps(
+        "tests/auth.test.ts",
+        "What does this test cover?", // exactly equal to candidate 1
+        [{ role: "user", content: "How do I run this test?" }], // exactly equal to candidate 2
+        "en"
+    );
+    assert.ok(!excludedFallback.includes("What does this test cover?"));
+    assert.ok(!excludedFallback.includes("How do I run this test?"));
+    assert.ok(excludedFallback.includes("What is mocked in this test?"));
+
+    // End-to-end fallback when provider response has no followUps
+    const noFollowUpsProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "This is auth file without follow-up block.",
+        citations: [],
+        confidence: "high"
+    });
+    const fallbackService = new AiAnswerService(noFollowUpsProvider);
+    const fallbackAnswerRes = await fallbackService.answer({
+        repository: "example/repository",
+        target: { type: "file" as const, path: "src/auth.ts" },
+        question: "Explain what auth does",
+        graph
+    });
+    assert.equal(fallbackAnswerRes.status, "ok");
+    assert.ok(fallbackAnswerRes.followUps && fallbackAnswerRes.followUps.length > 0);
+    assert.equal(fallbackAnswerRes.followUps[0], "Which tests cover this file?");
 
     console.log("AI fixtures passed");
 }

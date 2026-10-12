@@ -57,6 +57,8 @@ export interface AppState {
     // AI Evidence (from last Ask AI answer)
     aiEvidence: import('./api').AskEvidenceItem[];
     setAiEvidence: (evidence: import('./api').AskEvidenceItem[]) => void;
+    aiEvidenceTitle?: string | null;
+    setAiEvidenceTitle?: (title: string | null) => void;
 
     // Change Set (in-memory)
     changeSet: string[];
@@ -153,6 +155,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             return state;
         }
         return { aiEvidence: evidence };
+    }),
+    aiEvidenceTitle: null,
+    setAiEvidenceTitle: (title) => set((state) => {
+        if (state.aiEvidenceTitle === title) return state;
+        return { aiEvidenceTitle: title };
     }),
 
     changeSet: [],
