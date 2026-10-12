@@ -6,6 +6,7 @@ import {
     type OpenAIConfig
 } from "./config";
 import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
+import { classifyQuestion } from "./question-class";
 
 export interface OpenAIMessage {
     role: "system" | "user" | "assistant";
@@ -270,7 +271,13 @@ export class OpenAIProvider implements LlmProvider {
         const url = this.buildUrl(candidate.baseUrl);
 
         const isReasoning = this.isReasoningModel(candidate.model);
-        const tokenLimit = request.responseOptions?.maxTokens ?? 1500;
+        const classification = request.classification || classifyQuestion(
+            request.question,
+            request.mode,
+            Boolean(request.images && request.images.length > 0),
+            candidate.model
+        );
+        const tokenLimit = request.responseOptions?.maxTokens ?? classification.maxTokens;
 
         const bodyPayload: Record<string, unknown> = {
             model: candidate.model,
@@ -283,7 +290,7 @@ export class OpenAIProvider implements LlmProvider {
 
         if (isReasoning) {
             bodyPayload.max_completion_tokens = tokenLimit;
-            bodyPayload.reasoning_effort = "low";
+            bodyPayload.reasoning_effort = classification.reasoningEffort;
         } else {
             bodyPayload.max_tokens = tokenLimit;
             bodyPayload.temperature = request.responseOptions?.temperature ?? 0.2;
@@ -327,7 +334,8 @@ export class OpenAIProvider implements LlmProvider {
         }
 
         const hasImages = Boolean(request.images && request.images.length > 0);
-        const instructions = getSystemInstructions(request.mode, request.instructions, hasImages);
+        const classification = request.classification || classifyQuestion(request.question, request.mode, hasImages);
+        const instructions = getSystemInstructions(request.mode, request.instructions, hasImages, classification, request.scope);
 
         const messages: OpenAIMessage[] = [
             {

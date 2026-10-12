@@ -47,9 +47,39 @@ export interface AiRiskContext {
     commitCount: number;
     ownersCount: number;
     reasons: Array<{ label: string; value: string }>;
+    directTests?: number;
+    indirectTests?: number;
+    totalTests?: number;
+}
+
+export interface AiFactsBlock {
+    selectedFilePath: string;
+    riskScore: number;
+    riskReason: string;
+    directDependentsTotal: number;
+    transitiveDependentsTotal: number;
+    importsTotal: number;
+    testsCount: {
+        direct: number;
+        indirect: number;
+        total: number;
+    };
+    commitsTotal: number;
+    owners: Array<{ name: string; share?: number }>;
+    directDependents?: {
+        label: string;
+        items: string[];
+    };
+    directDependentsLabel?: string;
+    directImports?: {
+        label: string;
+        items: string[];
+    };
+    directImportsLabel?: string;
 }
 
 export interface AiRepositoryContext {
+    factsBlock?: AiFactsBlock;
     repository: string;
     target: AiTarget;
     files: AiFileContext[];
@@ -64,10 +94,31 @@ export interface AiRepositoryContext {
     fileTruncated?: boolean;
     fileTruncatedLines?: number;
     directImports?: string[];
+    directImportsLabel?: string;
     directDependents?: string[];
+    directDependentsLabel?: string;
     risk?: AiRiskContext;
     recentCommits?: Array<{ sha: string; message: string; author: string; date: string }>;
     owners?: any;
+    repoFacts?: RepoFacts;
+    namedFiles?: Array<{ path: string; snippet: string }>;
+    fileRiskBreakdown?: {
+        dependents?: number;
+        tests?: boolean;
+        churn?: number;
+        score?: number;
+        reasons?: Array<{ label: string; value: string }>;
+    };
+}
+
+export interface RepoFacts {
+    analyzedFiles: number;
+    totalFiles: number;
+    symbols: number;
+    links: number;
+    topRisk: Array<{ path: string; score: number; dependents: number }>; // max 10
+    health: { circular: number; unused: number; godFiles: number };
+    owners?: Array<{ name: string; share: number }>; // max 5
 }
 
 /**
@@ -81,6 +132,7 @@ export interface BuildAiContextOptions {
     question?: string;
     scope?: "file" | "dependents" | "repo";
     dependentFiles?: Array<{ path: string; content: string }>;
+    repoFacts?: RepoFacts;
 }
 
 export function extractKeywords(question?: string): string[] {
@@ -222,7 +274,10 @@ export function computeFileRisk(
         hasTests,
         commitCount,
         ownersCount,
-        reasons
+        reasons,
+        directTests,
+        indirectTests,
+        totalTests
     };
 }
 
@@ -310,21 +365,21 @@ export function buildAiContext(
             ? context.target.request.symbol.path
             : undefined;
 
-    const directImportPaths = targetPath
+    const allDirectImports = targetPath
         ? context.imports
             .filter((edge) => (decodeGraphFileId(edge.from) ?? edge.from) === targetPath)
             .map((edge) => decodeGraphFileId(edge.to) ?? edge.to)
             .filter((p, idx, arr) => arr.indexOf(p) === idx)
-            .slice(0, 15)
         : [];
+    const directImportPaths = allDirectImports.slice(0, 15);
 
-    const directDependentPaths = targetPath
+    const allDirectDependents = targetPath
         ? context.imports
             .filter((edge) => (decodeGraphFileId(edge.to) ?? edge.to) === targetPath)
             .map((edge) => decodeGraphFileId(edge.from) ?? edge.from)
             .filter((p, idx, arr) => arr.indexOf(p) === idx)
-            .slice(0, 15)
         : [];
+    const directDependentPaths = allDirectDependents.slice(0, 15);
 
     let cappedContent: string | undefined = undefined;
     let fileTruncated: boolean | undefined = undefined;
@@ -425,8 +480,8 @@ export function buildAiContext(
         }
 
         const outlineText = outlineEntries.length > 0 ? `Outline:\n${outlineEntries.join("\n")}` : "";
-        const importsText = directImportPaths.length > 0 ? `Direct imports: ${directImportPaths.join(", ")}` : "";
-        const dependentsText = directDependentPaths.length > 0 ? `Direct dependents: ${directDependentPaths.join(", ")}` : "";
+        const importsText = directImportPaths.length > 0 ? `Direct imports (showing ${directImportPaths.length} of ${allDirectImports.length}): ${directImportPaths.join(", ")}` : "";
+        const dependentsText = directDependentPaths.length > 0 ? `Direct dependents (showing ${directDependentPaths.length} of ${allDirectDependents.length}): ${directDependentPaths.join(", ")}` : "";
 
         if (snippetText.length > 6000) {
             snippetText = snippetText.slice(0, 6000);
@@ -476,7 +531,10 @@ export function buildAiContext(
             hasTests,
             commitCount,
             ownersCount,
-            reasons
+            reasons,
+            directTests: typeof providedRisk.directTests === "number" ? providedRisk.directTests : (hasTests ? 1 : 0),
+            indirectTests: typeof providedRisk.indirectTests === "number" ? providedRisk.indirectTests : 0,
+            totalTests: typeof providedRisk.totalTests === "number" ? providedRisk.totalTests : (hasTests ? 1 : 0)
         };
     } else if (targetPath) {
         risk = computeFileRisk(targetPath, graph, context.commits);
@@ -486,19 +544,149 @@ export function buildAiContext(
         ? providedDependents.slice(0, 15)
         : directDependentPaths.slice(0, 15);
 
+    const directDependentsTotal = typeof risk?.directDependents === "number"
+        ? risk.directDependents
+        : (providedDependents ? providedDependents.length : allDirectDependents.length);
+    const transitiveDependentsTotal = typeof risk?.transitiveDependents === "number"
+        ? risk.transitiveDependents
+        : 0;
+    const importsTotal = allDirectImports.length;
+    const commitsTotal = Math.max(context.commits.length, risk?.commitCount ?? 0, recentCommits?.length ?? 0);
+    const riskScore = risk ? risk.score : 0;
+    const riskReason = (risk?.reasons && risk.reasons.length > 0)
+        ? risk.reasons.map((r: any) => `${r.label}: ${r.value}`).join("; ")
+        : "Calculated risk score";
+
+    let ownersWithShares: Array<{ name: string; share?: number }> = [];
+    if (Array.isArray(owners)) {
+        ownersWithShares = owners.slice(0, 3).map((o: any) => ({
+            name: typeof o === "string" ? o : (o.name || "Author"),
+            share: typeof o?.share === "number" ? o.share : undefined
+        }));
+    } else if (owners && Array.isArray(owners.owners)) {
+        ownersWithShares = owners.owners.slice(0, 3).map((o: any) => ({
+            name: o.name || "Author",
+            share: typeof o?.share === "number" ? o.share : undefined
+        }));
+    } else if (context.commits.length > 0) {
+        const counts = new Map<string, number>();
+        for (const c of context.commits) {
+            const author = c.authorName || (c as any).author;
+            if (author) counts.set(author, (counts.get(author) || 0) + 1);
+        }
+        const total = Math.max(1, context.commits.length);
+        ownersWithShares = Array.from(counts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([name, count]) => ({
+                name,
+                share: Math.round((count / total) * 100)
+            }));
+    } else if (options?.repoFacts?.owners) {
+        ownersWithShares = options.repoFacts.owners.slice(0, 3);
+    }
+
+    const testsCount = {
+        direct: risk?.directTests ?? (risk?.hasTests ? 1 : 0),
+        indirect: risk?.indirectTests ?? 0,
+        total: risk?.totalTests ?? (risk?.hasTests ? 1 : 0)
+    };
+
+    const directDependentsLabel = `showing ${effectiveDirectDependents.length} of ${directDependentsTotal}`;
+    const directImportsLabel = `showing ${directImportPaths.length} of ${importsTotal}`;
+
+    const factsBlock: AiFactsBlock = {
+        selectedFilePath: targetPath || "",
+        riskScore,
+        riskReason,
+        directDependentsTotal,
+        transitiveDependentsTotal,
+        importsTotal,
+        testsCount,
+        commitsTotal,
+        owners: ownersWithShares,
+        directDependents: {
+            label: directDependentsLabel,
+            items: effectiveDirectDependents
+        },
+        directDependentsLabel,
+        directImports: {
+            label: directImportsLabel,
+            items: directImportPaths
+        },
+        directImportsLabel
+    };
+
     const cappedOwners = owners
         ? (Array.isArray(owners)
             ? owners.slice(0, 3)
             : (Array.isArray(owners.owners)
                 ? { ...owners, owners: owners.owners.slice(0, 3) }
                 : owners))
-        : undefined;
+        : (ownersWithShares.length > 0 ? ownersWithShares : undefined);
 
     const dependentsSnippets = (options?.scope === "dependents" && options?.dependentFiles)
         ? options.dependentFiles.slice(0, 3).map((dep) => {
             const depLines = dep.content.split("\n").slice(0, 40).map((l, idx) => `L${idx + 1}: ${l}`).join("\n");
             return { path: dep.path, snippet: depLines };
         })
+        : undefined;
+
+    // Check if the question names another analyzed file (exact base name match)
+    const namedFilesSnippets: Array<{ path: string; snippet: string }> = [];
+    if (options?.question) {
+        const qLower = options.question.toLowerCase();
+        const candidateFilesMap = new Map<string, string | undefined>();
+        if (options.dependentFiles) {
+            for (const df of options.dependentFiles) {
+                if (df.path && df.content) candidateFilesMap.set(df.path, df.content);
+            }
+        }
+        for (const f of files) {
+            if (!candidateFilesMap.has(f.path)) candidateFilesMap.set(f.path, undefined);
+        }
+        if (options.repoFacts?.topRisk) {
+            for (const r of options.repoFacts.topRisk) {
+                if (!candidateFilesMap.has(r.path)) candidateFilesMap.set(r.path, undefined);
+            }
+        }
+
+        for (const [candidatePath, content] of candidateFilesMap.entries()) {
+            if (targetPath && candidatePath.toLowerCase() === targetPath.toLowerCase()) continue;
+            const base = candidatePath.split(/[/\\]/).pop()?.toLowerCase();
+            if (!base) continue;
+            const baseRegex = new RegExp(`(^|[^a-zA-Z0-9_.-])${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-zA-Z0-9_.-]|$)`, "i");
+            if (baseRegex.test(qLower)) {
+                let snippet = `L1: // Reference to ${candidatePath}`;
+                if (content) {
+                    snippet = content.split("\n").slice(0, 40).map((l, idx) => `L${idx + 1}: ${l}`).join("\n");
+                }
+                namedFilesSnippets.push({ path: candidatePath, snippet });
+                if (namedFilesSnippets.length >= 2) break;
+            }
+        }
+    }
+
+    const sanitizedRepoFacts = options?.repoFacts
+        ? {
+            analyzedFiles: options.repoFacts.analyzedFiles,
+            totalFiles: options.repoFacts.totalFiles,
+            symbols: options.repoFacts.symbols,
+            links: options.repoFacts.links,
+            topRisk: Array.isArray(options.repoFacts.topRisk) ? options.repoFacts.topRisk.slice(0, 10) : [],
+            health: options.repoFacts.health,
+            ...(options.repoFacts.owners ? { owners: options.repoFacts.owners.slice(0, 5) } : {})
+        }
+        : undefined;
+
+    const fileRiskBreakdown = isRepoScope && risk
+        ? {
+            dependents: risk.directDependents,
+            tests: risk.hasTests,
+            churn: risk.commitCount,
+            score: risk.score,
+            reasons: risk.reasons
+        }
         : undefined;
 
     const repoSummary = isRepoScope
@@ -511,6 +699,7 @@ export function buildAiContext(
         : undefined;
 
     const base: AiRepositoryContext = {
+        factsBlock,
         repository,
         target: toTarget(context.target.request),
         files,
@@ -526,15 +715,20 @@ export function buildAiContext(
         symbolChanges,
         ...(risk ? { risk } : {}),
         ...(effectiveDirectDependents.length > 0 ? { directDependents: effectiveDirectDependents } : {}),
+        directDependentsLabel,
         ...(normalizedRecentCommits ? { recentCommits: normalizedRecentCommits } : {}),
         ...(cappedOwners ? { owners: cappedOwners } : {}),
         ...(!isRepoScope && fileContent && directImportPaths.length > 0 ? { directImports: directImportPaths } : {}),
+        directImportsLabel,
         ...(!isRepoScope && evidence.length > 0 ? { evidence } : {}),
         ...(cappedContent !== undefined ? { fileContent: cappedContent } : {}),
         ...(fileTruncated !== undefined ? { fileTruncated } : {}),
         ...(fileTruncatedLines !== undefined ? { fileTruncatedLines } : {}),
         ...(dependentsSnippets ? { dependentsSnippets } : {}),
-        ...(repoSummary ? { repoSummary } : {})
+        ...(namedFilesSnippets.length > 0 ? { namedFiles: namedFilesSnippets } : {}),
+        ...(repoSummary ? { repoSummary } : {}),
+        ...(isRepoScope && sanitizedRepoFacts ? { repoFacts: sanitizedRepoFacts } : {}),
+        ...(isRepoScope && fileRiskBreakdown ? { fileRiskBreakdown } : {})
     };
 
     if (!impact) return base;

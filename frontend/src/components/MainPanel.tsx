@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info } from 'lucide-react';
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
@@ -379,6 +379,7 @@ function ThemedSelect<T extends string>({
 }
 
 const ASK_MODE_OPTIONS: ThemedSelectOption<import('../api').AskMode>[] = [
+    { value: 'auto', label: 'Auto', description: 'Smart length and format' },
     { value: 'detailed', label: 'Detailed', description: 'Summary plus bullets' },
     { value: 'short', label: 'Short', description: 'At most 4 bullets' },
     { value: 'steps', label: 'Steps', description: 'Numbered walkthrough' },
@@ -2871,8 +2872,8 @@ export function MainPanel({ className }: { className?: string }) {
     const [askQ, setAskQ] = useState('');
     const [aiError, setAiError] = useState<{ message: string; code?: string; retryAfterSeconds?: number } | null>(null);
     const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
-    const [askMode, setAskMode] = useState<import('../api').AskMode>('detailed');
-    const [askScope, setAskScope] = useState<import('../api').AskScope>('file');
+    const [askMode, setAskMode] = useState<import('../api').AskMode>('auto');
+    const [askScope, setAskScope] = useState<import('../api').AskScope>('auto');
     const [isChatExpanded, setIsChatExpanded] = useState(false);
     const [expandedEvidenceOpen, setExpandedEvidenceOpen] = useState(true);
     type AskChatMessage = {
@@ -3250,8 +3251,13 @@ export function MainPanel({ className }: { className?: string }) {
             return m;
         });
         const now = Date.now();
-        const firstUserQ = cleanMsgs.find(m => m.role === 'user')?.content.trim() || '';
-        const generatedTitle = firstUserQ ? firstUserQ.slice(0, 40) : 'New chat';
+        const firstUserMsg = cleanMsgs.find(m => m.role === 'user');
+        const firstUserQ = firstUserMsg?.content.trim() || '';
+        const hasFirstUserImages = Boolean(firstUserMsg?.images && firstUserMsg.images.length > 0);
+        const fileBaseName = selectedFile ? selectedFile.split(/[/\\]/).pop() || 'file' : 'file';
+        const generatedTitle = firstUserQ
+            ? firstUserQ.slice(0, 40)
+            : (hasFirstUserImages ? `Image: ${fileBaseName}` : 'New chat');
 
         setChats(prevChats => {
             let updated: AskChat[];
@@ -3774,12 +3780,8 @@ ${lastAssistant.content}${evidenceList}
         imagesToPass?: AttachedImage[]
     ) => {
         const imagesToSend = imagesToPass !== undefined ? imagesToPass : attachedImages;
-        let q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
-        if (!q && imagesToSend.length > 0) {
-            const fileName = selectedSymbol?.name ? `${selectedSymbol.name}()` : (selectedFile ? selectedFile.split('/').pop() : 'the repository');
-            q = `Explain the issue or code shown in the attached image(s) in the context of ${fileName}`;
-        }
-        if (!q || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
+        const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
+        if ((!q && imagesToSend.length === 0) || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
         setAskQ('');
         setAttachedImages([]);
@@ -3787,7 +3789,7 @@ ${lastAssistant.content}${evidenceList}
         setAiError(null);
 
         const currentMode = requestedMode || askMode;
-        const currentScope = requestedScope || askScope;
+        const currentScope = requestedScope || 'auto';
 
         const pool = baseMessages !== undefined ? baseMessages : chatMessages;
         const userMsg: AskChatMessage = {
@@ -3813,12 +3815,18 @@ ${lastAssistant.content}${evidenceList}
         setIsStreaming(true);
 
         const historyToSend = pool
-            .filter(m => !m.isThinking && m.content.trim().length > 0)
+            .filter(m => !m.isThinking && (m.content.trim().length > 0 || (m.images && m.images.length > 0)))
             .slice(-4)
-            .map(m => ({
-                role: m.role,
-                content: m.role === 'assistant' && m.content.length > 600 ? m.content.slice(0, 600) : m.content
-            }));
+            .map(m => {
+                let text = m.content;
+                if (!text && m.images && m.images.length > 0) {
+                    text = '[image attached]';
+                }
+                return {
+                    role: m.role,
+                    content: m.role === 'assistant' && text.length > 600 ? text.slice(0, 600) : text
+                };
+            });
 
         let totalHistoryChars = historyToSend.reduce((acc, m) => acc + m.content.length, 0);
         while (totalHistoryChars > 4000 && historyToSend.length > 0) {
@@ -3885,6 +3893,52 @@ ${lastAssistant.content}${evidenceList}
 
         const imagesPayload = imagesToSend.map(img => ({ mime: img.mime, data: img.data }));
 
+        const topRiskFiles = (graph ? graph.nodes.filter(n => n.type === 'file') : [])
+            .map(fn => {
+                const p = (fn as any).path || fn.id || '';
+                const r = computeRisk(p, graph, commits);
+                const deps = getFileDependents(graph, p);
+                return {
+                    path: p,
+                    score: r.score,
+                    dependents: deps.directCount
+                };
+            })
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
+
+        const ownerCounts: Record<string, number> = {};
+        if (commits && commits.length > 0) {
+            for (const c of commits) {
+                const authorName = (c as any).commit?.author?.name || (c as any).author?.name || (typeof (c as any).author === 'string' ? (c as any).author : '');
+                if (authorName) {
+                    ownerCounts[authorName] = (ownerCounts[authorName] || 0) + 1;
+                }
+            }
+        }
+        const totalCommitsCount = Math.max(1, commits?.length || 0);
+        const topOwners = Object.entries(ownerCounts)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([name, count]) => ({
+                name,
+                share: Math.round((count / totalCommitsCount) * 100)
+            }));
+
+        const repoFacts = {
+            analyzedFiles: stats.analyzedFiles,
+            totalFiles: stats.totalFiles,
+            symbols: stats.symbols,
+            links: stats.links,
+            topRisk: topRiskFiles,
+            health: {
+                circular: healthData?.circularImports?.length || 0,
+                unused: healthData?.unusedFiles?.length || 0,
+                godFiles: healthData?.godFiles?.length || 0
+            },
+            ...(topOwners.length > 0 ? { owners: topOwners } : {})
+        };
+
         const extraContext = {
             risk: currentRisk,
             dependents: currentDependents,
@@ -3892,7 +3946,8 @@ ${lastAssistant.content}${evidenceList}
             owners: fileOwners,
             mode: currentMode,
             scope: currentScope,
-            images: imagesPayload.length > 0 ? imagesPayload : undefined
+            images: imagesPayload.length > 0 ? imagesPayload : undefined,
+            repoFacts
         };
 
         let accumulatedStreamedText = '';
@@ -4032,7 +4087,7 @@ ${lastAssistant.content}${evidenceList}
                 break;
             }
         }
-        if (!userQ || userIdx === -1) return;
+        if (userIdx === -1 || (!userQ && (!userImages || userImages.length === 0))) return;
         const baseHistory = chatMessages.slice(0, userIdx);
         askAI(userQ, askMode, askScope, baseHistory, userImages);
     }, [chatMessages, isStreaming, askMode, askScope]);
@@ -5509,12 +5564,6 @@ ${lastAssistant.content}${evidenceList}
                                                             options={ASK_MODE_OPTIONS}
                                                             title="Answer mode"
                                                         />
-                                                        <ThemedSelect
-                                                            value={askScope}
-                                                            onChange={setAskScope}
-                                                            options={ASK_SCOPE_OPTIONS}
-                                                            title="Analysis scope"
-                                                        />
                                                         {!isChatExpanded && (
                                                             <div className="relative">
                                                                 <button
@@ -5788,7 +5837,7 @@ ${lastAssistant.content}${evidenceList}
                                                                             })}
                                                                         </div>
                                                                     )}
-                                                                    <div>{msg.content}</div>
+                                                                    {msg.content ? <div>{msg.content}</div> : null}
                                                                 </div>
                                                             ) : (
                                                                 <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
@@ -5858,6 +5907,8 @@ ${lastAssistant.content}${evidenceList}
                                                                                                     selectFile(fullPath);
                                                                                                     if (item.line !== undefined) {
                                                                                                         setCodeHighlightLine(item.line, item.endLine);
+                                                                                                    } else {
+                                                                                                        setCodeHighlightLine(null);
                                                                                                     }
                                                                                                     setActiveTab('Code');
                                                                                                 }}
@@ -5875,21 +5926,6 @@ ${lastAssistant.content}${evidenceList}
                                                                                             </button>
                                                                                         );
                                                                                     })}
-                                                                                </div>
-                                                                            )}
-
-                                                                            {/* Status line: muted 12px "Based on N files and M commits" from usedContext, plus "cached" badge */}
-                                                                            {msg.usedContext && (
-                                                                                <div className="pt-2 text-[12px] text-[#8A918C] flex items-center gap-2 flex-wrap font-sans">
-                                                                                    <span>Based on {msg.usedContext.files} {msg.usedContext.files === 1 ? 'file' : 'files'} and {msg.usedContext.commits} {msg.usedContext.commits === 1 ? 'commit' : 'commits'}</span>
-                                                                                    {typeof msg.usedContext.images === 'number' && msg.usedContext.images > 0 && (
-                                                                                        <span>• {msg.usedContext.images} {msg.usedContext.images === 1 ? 'image' : 'images'} analyzed by {msg.usedContext.model || 'vision model'}</span>
-                                                                                    )}
-                                                                                    {msg.usedContext.cached && (
-                                                                                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5]">
-                                                                                            cached
-                                                                                        </span>
-                                                                                    )}
                                                                                 </div>
                                                                             )}
 
@@ -5955,36 +5991,47 @@ ${lastAssistant.content}${evidenceList}
                                                                                     </button>
                                                                                 </div>
 
-                                                                                {(() => {
-                                                                                    const citedFiles = Array.from(new Set([
-                                                                                        ...(msg.evidence?.map(e => e.path) || []),
-                                                                                        ...(selectedFile ? [selectedFile] : [])
-                                                                                    ])).filter(Boolean);
-                                                                                    if (citedFiles.length === 0) return null;
-                                                                                    const allInPlan = citedFiles.every(f => changeSet.includes(f));
+                                                                                <div className="flex items-center gap-2">
+                                                                                    {(() => {
+                                                                                        const citedFiles = Array.from(new Set([
+                                                                                            ...(msg.evidence?.map(e => e.path) || []),
+                                                                                            ...(selectedFile ? [selectedFile] : [])
+                                                                                        ])).filter(Boolean);
+                                                                                        if (citedFiles.length === 0) return null;
+                                                                                        const allInPlan = citedFiles.every(f => changeSet.includes(f));
 
-                                                                                    return (
-                                                                                        <button
-                                                                                            onClick={() => {
-                                                                                                if (allInPlan) {
-                                                                                                    citedFiles.forEach(f => removeFromChangeSet(f));
-                                                                                                } else {
-                                                                                                    citedFiles.forEach(f => addToChangeSet(f));
-                                                                                                }
-                                                                                            }}
-                                                                                            className={cn(
-                                                                                                "text-[10px] font-mono px-2 py-0.5 rounded border transition-colors flex items-center gap-1 cursor-pointer",
-                                                                                                allInPlan
-                                                                                                    ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
-                                                                                                    : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.05]"
-                                                                                            )}
-                                                                                            title={allInPlan ? "Remove cited files from plan" : "Add cited files to change set plan"}
+                                                                                        return (
+                                                                                            <button
+                                                                                                onClick={() => {
+                                                                                                    if (allInPlan) {
+                                                                                                        citedFiles.forEach(f => removeFromChangeSet(f));
+                                                                                                    } else {
+                                                                                                        citedFiles.forEach(f => addToChangeSet(f));
+                                                                                                    }
+                                                                                                }}
+                                                                                                className={cn(
+                                                                                                    "text-[10px] font-mono px-2 py-0.5 rounded border transition-colors flex items-center gap-1 cursor-pointer",
+                                                                                                    allInPlan
+                                                                                                        ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
+                                                                                                        : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.05]"
+                                                                                                )}
+                                                                                                title={allInPlan ? "Remove cited files from plan" : "Add cited files to change set plan"}
+                                                                                            >
+                                                                                                {allInPlan ? <Check size={10} className="text-[#4FD1B5]" /> : <Plus size={10} />}
+                                                                                                <span>{allInPlan ? 'In plan' : 'Add to plan'}</span>
+                                                                                            </button>
+                                                                                        );
+                                                                                    })()}
+
+                                                                                    {msg.usedContext && msg.usedContext.provider !== 'greeting' && (
+                                                                                        <span
+                                                                                            className="p-1 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-help inline-flex items-center"
+                                                                                            title={`Context: ${msg.usedContext.scope === 'repo' ? 'repository summary' : (selectedFile || 'file')}, ${msg.usedContext.commits} ${msg.usedContext.commits === 1 ? 'commit' : 'commits'}, ${[msg.usedContext.provider, msg.usedContext.model].filter(Boolean).join(' ') || 'AI'}`}
                                                                                         >
-                                                                                            {allInPlan ? <Check size={10} className="text-[#4FD1B5]" /> : <Plus size={10} />}
-                                                                                            <span>{allInPlan ? 'In plan' : 'Add to plan'}</span>
-                                                                                        </button>
-                                                                                    );
-                                                                                })()}
+                                                                                            <Info size={12} />
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
                                                                             </div>
                                                                         </>
                                                                     )}
@@ -6185,6 +6232,8 @@ ${lastAssistant.content}${evidenceList}
                                                                     selectFile(filePath);
                                                                     if (item.line !== undefined) {
                                                                         setCodeHighlightLine(item.line, item.endLine);
+                                                                    } else {
+                                                                        setCodeHighlightLine(null);
                                                                     }
                                                                     setIsChatExpanded(false);
                                                                     setActiveTab('Code');

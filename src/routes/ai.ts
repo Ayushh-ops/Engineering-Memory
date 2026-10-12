@@ -111,7 +111,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners, mode, scope, images } = req.body as Record<string, unknown>;
+        const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners, mode, scope, images, repoFacts } = req.body as Record<string, unknown>;
 
         const imageValidation = validateImages(images);
         if (!imageValidation.valid) {
@@ -122,13 +122,13 @@ export function createAiRouter(
             return res.status(400).json({ error: "Repository is required." });
         }
 
-        const resolvedQuestion = typeof question === "string" && question.trim().length > 0
-            ? question.trim()
-            : (imageValidation.parsed && imageValidation.parsed.length > 0 ? "Explain the attached image(s) in the context of this repository." : "");
+        const rawQuestion = typeof question === "string" ? question.trim() : "";
+        const hasImages = Boolean(imageValidation.parsed && imageValidation.parsed.length > 0);
 
-        if (!resolvedQuestion) {
+        if (!rawQuestion && !hasImages) {
             return res.status(400).json({ error: "Question is required." });
         }
+        const resolvedQuestion = rawQuestion;
 
         if (!isValidRepositoryTarget(target)) {
             return res.status(400).json({ error: "Invalid target." });
@@ -161,9 +161,10 @@ export function createAiRouter(
                 dependents: Array.isArray(dependents) ? (dependents as string[]) : undefined,
                 recentCommits: Array.isArray(recentCommits) ? (recentCommits as any[]) : undefined,
                 owners,
-                mode: typeof mode === "string" ? (mode as any) : "detailed",
-                scope: typeof scope === "string" ? (scope as any) : "file",
-                images: imageValidation.parsed
+                mode: typeof mode === "string" ? (mode as any) : "auto",
+                scope: (typeof scope === "string" && ["file", "dependents", "repo", "auto"].includes(scope)) ? (scope as any) : "auto",
+                images: imageValidation.parsed,
+                repoFacts: repoFacts as any
             });
 
             if (result.retryAfterSeconds) {
@@ -210,7 +211,7 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners, mode, scope, images } = req.body as Record<string, unknown>;
+        const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners, mode, scope, images, repoFacts } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
@@ -247,13 +248,13 @@ export function createAiRouter(
             return res.status(400).json({ error: "Every path must be unique." });
         }
 
-        const resolvedQuestion = typeof question === "string" && question.trim().length > 0
-            ? question.trim()
-            : (imageValidation.parsed && imageValidation.parsed.length > 0 ? "Explain the attached image(s) in the context of this repository." : "");
+        const rawQuestion = typeof question === "string" ? question.trim() : "";
+        const hasImages = Boolean(imageValidation.parsed && imageValidation.parsed.length > 0);
 
-        if (!resolvedQuestion) {
+        if (!rawQuestion && !hasImages) {
             return res.status(400).json({ error: "Question is required." });
         }
+        const resolvedQuestion = rawQuestion;
 
         if (!isValidRepositoryTarget(target)) {
             return res.status(400).json({ error: "Invalid target." });
@@ -266,8 +267,8 @@ export function createAiRouter(
         const parsedHistory = parseAndTrimHistory(history);
         const parsedDependents = Array.isArray(dependents) ? (dependents as string[]) : undefined;
         const parsedRecentCommits = Array.isArray(recentCommits) ? (recentCommits as any[]) : undefined;
-        const parsedMode = typeof mode === "string" ? mode : "detailed";
-        const parsedScope = typeof scope === "string" ? scope : "file";
+        const parsedMode = typeof mode === "string" ? mode : "auto";
+        const parsedScope = (typeof scope === "string" && ["file", "dependents", "repo", "auto"].includes(scope)) ? (scope as any) : "auto";
         const isSse = req.headers.accept?.includes("text/event-stream");
 
         if (isSse) {
@@ -299,7 +300,8 @@ export function createAiRouter(
                             owners,
                             mode: parsedMode,
                             scope: parsedScope,
-                            images: imageValidation.parsed
+                            images: imageValidation.parsed,
+                            repoFacts: repoFacts as any
                         } as any,
                         (token: string) => {
                             sendEvent("token", { token });
@@ -322,7 +324,8 @@ export function createAiRouter(
                         owners,
                         mode: parsedMode,
                         scope: parsedScope,
-                        images: imageValidation.parsed
+                        images: imageValidation.parsed,
+                        repoFacts: repoFacts as any
                     } as any);
                 }
 
@@ -379,7 +382,8 @@ export function createAiRouter(
                 owners,
                 mode: parsedMode,
                 scope: parsedScope,
-                images: imageValidation.parsed
+                images: imageValidation.parsed,
+                repoFacts: repoFacts as any
             } as any);
 
             if (result.retryAfterSeconds) {

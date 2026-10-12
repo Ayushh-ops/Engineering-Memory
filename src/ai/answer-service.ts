@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
 import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
-import { buildAiContext, MAX_AI_CONTEXT_BYTES, type AiRepositoryContext } from "./context";
+import { buildAiContext, MAX_AI_CONTEXT_BYTES, type AiRepositoryContext, type RepoFacts } from "./context";
 import { validateRepositoryContextConsistency } from "./consistency-validator";
 import type { LlmCitation, LlmEvidence, LlmMode, LlmProvider, LlmRequest, LlmResponse, LlmScope, LlmUsedContext } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
+import { classifyQuestion, classifyScope, type QuestionClassification } from "./question-class";
 
 export { detectLang, getLanguageDirective };
 
@@ -51,6 +52,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     dependentFiles?: Array<{ path: string; content: string }>;
     repoSha?: string;
     images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
+    repoFacts?: RepoFacts;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -136,6 +138,9 @@ export function getGreetingOrSmallTalkResponse(question: string): string | null 
     }
     if (/^(धन्यवाद|शुक्रिया)$/.test(q)) {
         return "आपका स्वागत है! यदि आपको कुछ और जानना हो तो बताएं।";
+    }
+    if (/^(ok|okay)$/.test(q)) {
+        return "Got it! Let me know if you have any questions about this codebase.";
     }
 
     return null;
@@ -681,6 +686,133 @@ export function generateFallbackFollowUps(
     return candidates.filter(c => !askedSet.has(normalizeQuestionForComparison(c))).slice(0, 3);
 }
 
+export function extractBackendChosenEvidence(
+    answer: string,
+    question: string,
+    targetPath: string,
+    fileContent: string,
+    existingEvidence: LlmEvidence[] = []
+): LlmEvidence[] {
+    const lines = fileContent.split("\n");
+    const totalLines = lines.length;
+    if (totalLines === 0) return existingEvidence;
+
+    // (a) Identifiers in backticks in the answer
+    const backtickMatches = answer.matchAll(/`([^`\r\n]+)`/g);
+    const identifiers: string[] = [];
+    for (const m of backtickMatches) {
+        const id = m[1].trim();
+        if (/^[a-zA-Z_$][a-zA-Z0-9_$:-]*$/.test(id) && id.length >= 2) {
+            identifiers.push(id.toLowerCase());
+        }
+    }
+
+    // (b) Words from the question (>=4 chars, not stopwords)
+    const questionTokens = question.match(/[a-zA-Z_$][a-zA-Z0-9_$]{3,}/g) || [];
+    const stopWords = new Set([
+        "what", "does", "this", "file", "with", "from", "that", "have", "here",
+        "explain", "describe", "show", "tell", "which", "when", "where", "about",
+        "code", "karta", "karti", "samjhao", "kaise", "karein", "please", "help",
+        "there", "their", "them", "then", "than", "will", "would", "should", "could"
+    ]);
+    const questionWords = questionTokens
+        .map((t) => t.toLowerCase())
+        .filter((t) => t.length >= 4 && !stopWords.has(t));
+
+    const searchTerms = Array.from(new Set([...identifiers, ...questionWords]));
+    if (searchTerms.length === 0) return existingEvidence;
+
+    // Find matching lines
+    const matchedLineIndices: number[] = [];
+    for (let i = 0; i < totalLines; i++) {
+        const lineText = lines[i].toLowerCase();
+        for (const term of searchTerms) {
+            if (lineText.includes(term)) {
+                matchedLineIndices.push(i + 1); // 1-indexed
+                break;
+            }
+        }
+    }
+
+    if (matchedLineIndices.length === 0) return existingEvidence;
+
+    interface Range {
+        start: number;
+        end: number;
+        firstMatch: number;
+    }
+
+    const rawRanges: Range[] = matchedLineIndices.map((lineNum) => ({
+        start: Math.max(1, lineNum - 2),
+        end: Math.min(totalLines, lineNum + 2),
+        firstMatch: lineNum
+    }));
+
+    // Merge overlapping or adjacent ranges
+    const merged: Range[] = [];
+    for (const r of rawRanges) {
+        const last = merged[merged.length - 1];
+        if (last && r.start <= last.end + 1) {
+            last.end = Math.max(last.end, r.end);
+        } else {
+            merged.push({ ...r });
+        }
+    }
+
+    // Order by first match, pick up to 4 ranges
+    const chosenRanges = merged.slice(0, 4);
+
+    const result: LlmEvidence[] = [...existingEvidence];
+    const seen = new Set(result.map((e) => `${e.path}:${e.line}:${e.endLine}`));
+
+    for (const r of chosenRanges) {
+        const dedupKey = `${targetPath}:${r.start}:${r.end}`;
+        if (!seen.has(dedupKey)) {
+            seen.add(dedupKey);
+            const lineText = lines[r.start - 1] ?? "";
+            result.push({
+                path: targetPath,
+                line: r.start,
+                endLine: r.end,
+                snippet: lineText.trim().slice(0, 160)
+            });
+        }
+        if (result.length >= 4) break;
+    }
+
+    return result;
+}
+
+export function extractRepoScopeEvidence(
+    answer: string,
+    repoFacts?: RepoFacts
+): LlmEvidence[] {
+    if (!repoFacts || !Array.isArray(repoFacts.topRisk) || repoFacts.topRisk.length === 0) {
+        return [];
+    }
+
+    const answerLower = answer.toLowerCase();
+    const mentioned: Array<{ path: string; score: number; dependents: number }> = [];
+    const notMentioned: Array<{ path: string; score: number; dependents: number }> = [];
+
+    for (const item of repoFacts.topRisk) {
+        const fileName = item.path.split(/[/\\]/).pop()?.toLowerCase();
+        const fullPath = item.path.toLowerCase();
+        if (answerLower.includes(fullPath) || (fileName && answerLower.includes(fileName))) {
+            mentioned.push(item);
+        } else {
+            notMentioned.push(item);
+        }
+    }
+
+    const selected = [...mentioned, ...notMentioned].slice(0, 3);
+
+    return selected.map((item) => ({
+        path: item.path,
+        snippet: `risk ${item.score}, ${item.dependents} dependents`
+    }));
+}
+
 export class LruAnswerCache {
     private cache = new Map<string, { result: AiAnswerResult; expiresAt: number }>();
     private readonly maxSize = 200;
@@ -724,21 +856,33 @@ export class AiAnswerService {
 
     constructor(private readonly provider: LlmProvider) {}
 
-    private buildCacheKey(request: AiAnswerRequest, targetPath?: string): string {
-        const mode = request.mode || "detailed";
-        const scope = request.scope || "file";
-        const lang = detectLang(request.question);
+    private buildCacheKey(
+        request: AiAnswerRequest,
+        targetPath?: string,
+        classification?: QuestionClassification,
+        effectiveScope?: string,
+        effectiveQuestion?: string
+    ): string {
+        const mode = request.mode || "auto";
+        const scope = effectiveScope || request.scope || "file";
+        const q = effectiveQuestion !== undefined ? effectiveQuestion : (request.question || "");
+        const lang = detectLang(q);
         const directive = getLanguageDirective(lang);
-        const normQ = request.question.trim().toLowerCase();
+        const normQ = q.trim().toLowerCase();
         const repo = request.repoSha || request.repository;
+        const len = classification?.length || "standard";
+        const fmt = classification?.format || "prose";
         return crypto
             .createHash("sha256")
-            .update([repo, targetPath || "", normQ, mode, scope, directive].join("|"))
+            .update([repo, targetPath || "", normQ, mode, scope, directive, len, fmt].join("|"))
             .digest("hex");
     }
 
     async answer(request: AiAnswerRequest): Promise<AiAnswerResult> {
-        if (!request || typeof request.question !== "string" || request.question.trim().length === 0) {
+        const rawQ = (request && typeof request.question === "string") ? request.question.trim() : "";
+        const hasImages = Boolean(request.images && request.images.length > 0);
+
+        if (!rawQ && !hasImages) {
             return {
                 status: "error",
                 answer: "",
@@ -751,19 +895,60 @@ export class AiAnswerService {
             };
         }
 
-        const greetingReply = getGreetingOrSmallTalkResponse(request.question);
-        if (greetingReply) {
+        const effectiveMode = request.mode || "auto";
+
+        const targetPath = request.target?.type === "file"
+            ? request.target.path
+            : request.target?.type === "symbol"
+                ? request.target.symbol.path
+                : undefined;
+
+        const targetDisplayName = targetPath || (request.target?.type === "file" ? request.target.path : "the selected file");
+        const cleanHistory = sanitizeHistory(request.history);
+
+        let questionForLLM = rawQ;
+        let detectedLang: "hi" | "hinglish" | "en" = "en";
+
+        if (!rawQ && hasImages) {
+            const internalInstruction = `Explain what the attached image(s) show and relate them to ${targetDisplayName} and the repository context`;
+            const lastUserMsg = cleanHistory?.filter(h => h.role === "user" && h.content?.trim()).slice(-1)[0];
+            detectedLang = lastUserMsg ? detectLang(lastUserMsg.content) : "en";
+            questionForLLM = internalInstruction;
+        } else {
+            detectedLang = detectLang(rawQ);
+        }
+
+        const isExplicitScope = request.scope === "file" || request.scope === "dependents" || request.scope === "repo";
+        const effectiveScope: LlmScope = isExplicitScope
+            ? request.scope!
+            : classifyScope(rawQ || questionForLLM, Boolean(request.repoFacts));
+
+        const classification = classifyQuestion(rawQ, effectiveMode, hasImages);
+
+        const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
+        if (greetingReply || (classification.isGreetingOrThanks && rawQ)) {
+            const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
             return {
                 status: "ok",
-                answer: greetingReply,
+                answer: finalGreeting,
                 citations: [],
                 confidence: "high",
                 followUps: [],
-                evidence: []
+                evidence: [],
+                usedContext: {
+                    files: 0,
+                    commits: 0,
+                    provider: "internal",
+                    model: "deterministic",
+                    cached: false,
+                    length: "brief",
+                    format: "prose",
+                    scope: effectiveScope
+                }
             };
         }
 
-        const capabilityReply = getCapabilityResponse(request.question);
+        const capabilityReply = rawQ ? getCapabilityResponse(rawQ) : null;
         if (capabilityReply) {
             return {
                 status: "ok",
@@ -771,20 +956,22 @@ export class AiAnswerService {
                 citations: [],
                 confidence: "high",
                 followUps: [],
-                evidence: []
+                evidence: [],
+                usedContext: {
+                    files: 0,
+                    commits: 0,
+                    provider: "internal",
+                    model: "deterministic",
+                    cached: false,
+                    length: "standard",
+                    format: "list",
+                    scope: effectiveScope
+                }
             };
         }
 
-        const targetPath = request.target.type === "file"
-            ? request.target.path
-            : request.target.type === "symbol"
-                ? request.target.symbol.path
-                : undefined;
-
-        const cleanHistory = sanitizeHistory(request.history);
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
-        const cacheKey = this.buildCacheKey(request, targetPath);
-        const hasImages = Boolean(request.images && request.images.length > 0);
+        const cacheKey = this.buildCacheKey(request, targetPath, classification, effectiveScope, questionForLLM);
 
         if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);
@@ -794,7 +981,24 @@ export class AiAnswerService {
         }
 
         const result = assembleRepositoryContext(request.graph, { target: request.target, limits: request.limits });
-        if (result.status !== "ok") {
+        let context: any;
+        if (result.status === "ok") {
+            context = result.context;
+        } else if (effectiveScope === "repo") {
+            const dummyTarget = request.target || { type: "file", path: "" };
+            context = {
+                target: {
+                    request: dummyTarget,
+                    node: { id: "repo:root", type: "file", path: "" } as any
+                },
+                files: [],
+                symbols: [],
+                imports: [],
+                callers: [],
+                commits: [],
+                symbolChanges: []
+            };
+        } else {
             return {
                 status: request.allowInsufficientContext ? "insufficient_context" : "error",
                 answer: "The supplied repository context does not contain a valid target for this question.",
@@ -810,42 +1014,45 @@ export class AiAnswerService {
             };
         }
 
-        const consistency = validateRepositoryContextConsistency({
-            graph: request.graph,
-            evidence: request.evidence,
-            impact: request.impact
-        });
-        if (consistency.status === "invalid") {
-            return {
-                status: "error",
-                answer: "The assembled repository context contradicts the repository graph, so it was not sent to the AI provider.",
-                citations: [],
-                confidence: "low",
-                error: {
-                    code: "invalid_graph",
-                    message: "Impact paths or source evidence do not match the repository graph."
-                },
-                missingData: consistency.missingData ?? ["inconsistent_context"],
-                followUps: [],
-                evidence: []
-            };
+        if (effectiveScope !== "repo") {
+            const consistency = validateRepositoryContextConsistency({
+                graph: request.graph,
+                evidence: request.evidence,
+                impact: request.impact
+            });
+            if (consistency.status === "invalid") {
+                return {
+                    status: "error",
+                    answer: "The assembled repository context contradicts the repository graph, so it was not sent to the AI provider.",
+                    citations: [],
+                    confidence: "low",
+                    error: {
+                        code: "invalid_graph",
+                        message: "Impact paths or source evidence do not match the repository graph."
+                    },
+                    missingData: consistency.missingData ?? ["inconsistent_context"],
+                    followUps: [],
+                    evidence: []
+                };
+            }
         }
 
         let aiContext = buildAiContext(
-            result.context,
+            context,
             request.repository,
             request.evidence,
             request.impact,
-            request.fileContent,
+            effectiveScope === "repo" ? undefined : request.fileContent,
             request.graph,
             request.risk,
             request.dependents,
             request.recentCommits,
             request.owners,
             {
-                question: request.question,
-                scope: request.scope,
-                dependentFiles: request.dependentFiles
+                question: questionForLLM,
+                scope: effectiveScope,
+                dependentFiles: request.dependentFiles,
+                repoFacts: request.repoFacts
             }
         );
 
@@ -863,8 +1070,8 @@ export class AiAnswerService {
             }
         }
 
-        const isFileSelected = request.target.type === "file" || aiContext.target.type === "file";
-        if (request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
+        const isFileSelected = request.target?.type === "file" || aiContext.target.type === "file";
+        if (rawQ && effectiveScope !== "repo" && request.allowInsufficientContext && !isGroundedQuestion(rawQ, aiContext.target)) {
             return {
                 status: "insufficient_context",
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
@@ -876,15 +1083,18 @@ export class AiAnswerService {
             };
         }
 
-        const lang = detectLang(request.question);
-        const directive = getLanguageDirective(lang);
-        const promptQuestion = request.question.includes(directive)
-            ? request.question
-            : `${request.question}\n${directive}`;
+        const directive = getLanguageDirective(detectedLang);
+        const promptQuestion = questionForLLM.includes(directive)
+            ? questionForLLM
+            : `${questionForLLM}\n${directive}`;
 
-        const instructions = getSystemInstructions(request.mode, [
-            directive
-        ]);
+        const instructions = getSystemInstructions(
+            effectiveMode,
+            [directive],
+            hasImages,
+            classification,
+            effectiveScope
+        );
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
@@ -896,22 +1106,34 @@ export class AiAnswerService {
             },
             instructions,
             history: cleanHistory,
-            mode: request.mode,
-            scope: request.scope,
-            images: request.images
+            mode: effectiveMode as LlmMode,
+            scope: effectiveScope,
+            images: request.images,
+            classification,
+            repoFacts: request.repoFacts
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
 
         if (providerResponse.status === "insufficient_context") {
-            if (isFileSelected) {
+            if (isFileSelected || effectiveScope === "repo") {
                 return {
                     status: "ok",
-                    answer: providerResponse.answer || "Based on the selected file context.",
+                    answer: providerResponse.answer || "Based on the available context.",
                     citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
                     confidence: "medium",
                     followUps: [],
-                    evidence: []
+                    evidence: [],
+                    usedContext: {
+                        files: aiContext.files.length,
+                        commits: aiContext.commits.length,
+                        provider: "internal",
+                        model: "fallback",
+                        cached: false,
+                        length: classification.length,
+                        format: classification.format,
+                        scope: effectiveScope
+                    }
                 };
             }
             return {
@@ -971,9 +1193,24 @@ export class AiAnswerService {
             }
         }
 
-        const finalCitations = parsed.citations.length > 0
-            ? parsed.citations
-            : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
+        let finalEvidence: LlmEvidence[] = parsed.evidence;
+        if (effectiveScope === "repo") {
+            finalEvidence = extractRepoScopeEvidence(finalAnswer, request.repoFacts);
+        } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
+            finalEvidence = extractBackendChosenEvidence(
+                finalAnswer,
+                request.question,
+                targetPath,
+                request.fileContent,
+                finalEvidence
+            );
+        }
+
+        const finalCitations = finalEvidence.length > 0
+            ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
+            : (parsed.citations.length > 0
+                ? parsed.citations
+                : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])));
 
         const askedSet = new Set<string>();
         if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -989,7 +1226,7 @@ export class AiAnswerService {
                 targetPath,
                 request.question,
                 cleanHistory,
-                lang
+                detectedLang
             );
         }
 
@@ -1000,14 +1237,19 @@ export class AiAnswerService {
             confidence: providerResponse.confidence,
             missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
             followUps: finalFollowUps,
-            evidence: parsed.evidence,
-            usedContext: providerResponse.usedContext ?? {
-                files: aiContext.files.length,
-                commits: aiContext.commits.length,
-                provider: "groq",
-                model: "openai/gpt-oss-120b",
-                cached: false,
-                images: request.images ? request.images.length : 0
+            evidence: finalEvidence,
+            usedContext: {
+                ...(providerResponse.usedContext ?? {
+                    files: aiContext.files.length,
+                    commits: aiContext.commits.length,
+                    provider: "groq",
+                    model: "openai/gpt-oss-120b",
+                    cached: false,
+                    images: request.images ? request.images.length : 0
+                }),
+                length: classification.length,
+                format: classification.format,
+                scope: effectiveScope
             }
         };
 
@@ -1039,16 +1281,33 @@ export class AiAnswerService {
             };
         }
 
+        const effectiveMode = request.mode || "auto";
+        const hasImages = Boolean(request.images && request.images.length > 0);
+        const isRepoLevelQuestion = /\b(repo|repository|whole\s+project|poore\s+project|overall|project\s+level|repo\s+level|codebase)\b/i.test(request.question);
+        const effectiveScope: LlmScope = request.scope === "repo" || (isRepoLevelQuestion && Boolean(request.repoFacts)) ? "repo" : (request.scope || "file");
+        const classification = classifyQuestion(request.question, effectiveMode, hasImages);
+
         const greetingReply = getGreetingOrSmallTalkResponse(request.question);
-        if (greetingReply) {
-            onToken(greetingReply);
+        if (greetingReply || classification.isGreetingOrThanks) {
+            const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
+            onToken(finalGreeting);
             return {
                 status: "ok",
-                answer: greetingReply,
+                answer: finalGreeting,
                 citations: [],
                 confidence: "high",
                 followUps: [],
-                evidence: []
+                evidence: [],
+                usedContext: {
+                    files: 0,
+                    commits: 0,
+                    provider: "internal",
+                    model: "deterministic",
+                    cached: false,
+                    length: "brief",
+                    format: "prose",
+                    scope: effectiveScope
+                }
             };
         }
 
@@ -1061,20 +1320,29 @@ export class AiAnswerService {
                 citations: [],
                 confidence: "high",
                 followUps: [],
-                evidence: []
+                evidence: [],
+                usedContext: {
+                    files: 0,
+                    commits: 0,
+                    provider: "internal",
+                    model: "deterministic",
+                    cached: false,
+                    length: "standard",
+                    format: "list",
+                    scope: effectiveScope
+                }
             };
         }
 
-        const targetPath = request.target.type === "file"
+        const targetPath = request.target?.type === "file"
             ? request.target.path
-            : request.target.type === "symbol"
+            : request.target?.type === "symbol"
                 ? request.target.symbol.path
                 : undefined;
 
         const cleanHistory = sanitizeHistory(request.history);
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
-        const cacheKey = this.buildCacheKey(request, targetPath);
-        const hasImages = Boolean(request.images && request.images.length > 0);
+        const cacheKey = this.buildCacheKey(request, targetPath, classification, effectiveScope);
 
         if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);
@@ -1085,7 +1353,24 @@ export class AiAnswerService {
         }
 
         const result = assembleRepositoryContext(request.graph, { target: request.target, limits: request.limits });
-        if (result.status !== "ok") {
+        let context: any;
+        if (result.status === "ok") {
+            context = result.context;
+        } else if (effectiveScope === "repo") {
+            const dummyTarget = request.target || { type: "file", path: "" };
+            context = {
+                target: {
+                    request: dummyTarget,
+                    node: { id: "repo:root", type: "file", path: "" } as any
+                },
+                files: [],
+                symbols: [],
+                imports: [],
+                callers: [],
+                commits: [],
+                symbolChanges: []
+            };
+        } else {
             return {
                 status: request.allowInsufficientContext ? "insufficient_context" : "error",
                 answer: "The supplied repository context does not contain a valid target for this question.",
@@ -1101,33 +1386,35 @@ export class AiAnswerService {
             };
         }
 
-        const consistency = validateRepositoryContextConsistency({
-            graph: request.graph,
-            evidence: request.evidence,
-            impact: request.impact
-        });
-        if (consistency.status === "invalid") {
-            return {
-                status: "error",
-                answer: "The assembled repository context contradicts the repository graph, so it was not sent to the AI provider.",
-                citations: [],
-                confidence: "low",
-                error: {
-                    code: "invalid_graph",
-                    message: "Impact paths or source evidence do not match the repository graph."
-                },
-                missingData: consistency.missingData ?? ["inconsistent_context"],
-                followUps: [],
-                evidence: []
-            };
+        if (effectiveScope !== "repo") {
+            const consistency = validateRepositoryContextConsistency({
+                graph: request.graph,
+                evidence: request.evidence,
+                impact: request.impact
+            });
+            if (consistency.status === "invalid") {
+                return {
+                    status: "error",
+                    answer: "The assembled repository context contradicts the repository graph, so it was not sent to the AI provider.",
+                    citations: [],
+                    confidence: "low",
+                    error: {
+                        code: "invalid_graph",
+                        message: "Impact paths or source evidence do not match the repository graph."
+                    },
+                    missingData: consistency.missingData ?? ["inconsistent_context"],
+                    followUps: [],
+                    evidence: []
+                };
+            }
         }
 
         let aiContext = buildAiContext(
-            result.context,
+            context,
             request.repository,
             request.evidence,
             request.impact,
-            request.fileContent,
+            effectiveScope === "repo" ? undefined : request.fileContent,
             request.graph,
             request.risk,
             request.dependents,
@@ -1135,8 +1422,9 @@ export class AiAnswerService {
             request.owners,
             {
                 question: request.question,
-                scope: request.scope,
-                dependentFiles: request.dependentFiles
+                scope: effectiveScope,
+                dependentFiles: request.dependentFiles,
+                repoFacts: request.repoFacts
             }
         );
 
@@ -1154,8 +1442,8 @@ export class AiAnswerService {
             }
         }
 
-        const isFileSelected = request.target.type === "file" || aiContext.target.type === "file";
-        if (!isFileSelected && request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
+        const isFileSelected = request.target?.type === "file" || aiContext.target.type === "file";
+        if (effectiveScope !== "repo" && !isFileSelected && request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
             return {
                 status: "insufficient_context",
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
@@ -1173,9 +1461,13 @@ export class AiAnswerService {
             ? request.question
             : `${request.question}\n${directive}`;
 
-        const instructions = getSystemInstructions(request.mode, [
-            directive
-        ]);
+        const instructions = getSystemInstructions(
+            effectiveMode,
+            [directive],
+            hasImages,
+            classification,
+            effectiveScope
+        );
 
         const providerRequest: LlmRequest = {
             repository: request.repository,
@@ -1187,23 +1479,35 @@ export class AiAnswerService {
             },
             instructions,
             history: cleanHistory,
-            mode: request.mode,
-            scope: request.scope,
-            images: request.images
+            mode: effectiveMode as LlmMode,
+            scope: effectiveScope,
+            images: request.images,
+            classification,
+            repoFacts: request.repoFacts
         };
 
         try {
             const providerResponse = await this.provider.streamAnswer(providerRequest, onToken);
 
             if (providerResponse.status === "insufficient_context") {
-                if (isFileSelected) {
+                if (isFileSelected || effectiveScope === "repo") {
                     return {
                         status: "ok",
-                        answer: providerResponse.answer || "Based on the selected file context.",
+                        answer: providerResponse.answer || "Based on the available context.",
                         citations: providerResponse.citations ?? (aiContext.target.path ? [{ type: "file", path: aiContext.target.path }] : []),
                         confidence: "medium",
                         followUps: [],
-                        evidence: []
+                        evidence: [],
+                        usedContext: {
+                            files: aiContext.files.length,
+                            commits: aiContext.commits.length,
+                            provider: "internal",
+                            model: "fallback",
+                            cached: false,
+                            length: classification.length,
+                            format: classification.format,
+                            scope: effectiveScope
+                        }
                     };
                 }
                 return {
@@ -1263,9 +1567,24 @@ export class AiAnswerService {
                 }
             }
 
-            const finalCitations = parsed.citations.length > 0
-                ? parsed.citations
-                : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []));
+            let finalEvidence: LlmEvidence[] = parsed.evidence;
+            if (effectiveScope === "repo") {
+                finalEvidence = extractRepoScopeEvidence(finalAnswer, request.repoFacts);
+            } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
+                finalEvidence = extractBackendChosenEvidence(
+                    finalAnswer,
+                    request.question,
+                    targetPath,
+                    request.fileContent,
+                    finalEvidence
+                );
+            }
+
+            const finalCitations = finalEvidence.length > 0
+                ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
+                : (parsed.citations.length > 0
+                    ? parsed.citations
+                    : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])));
 
             const askedSet = new Set<string>();
             if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -1292,14 +1611,19 @@ export class AiAnswerService {
                 confidence: providerResponse.confidence,
                 missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
                 followUps: finalFollowUps,
-                evidence: parsed.evidence,
-                usedContext: providerResponse.usedContext ?? {
-                    files: aiContext.files.length,
-                    commits: aiContext.commits.length,
-                    provider: "groq",
-                    model: "openai/gpt-oss-120b",
-                    cached: false,
-                    images: request.images ? request.images.length : 0
+                evidence: finalEvidence,
+                usedContext: {
+                    ...(providerResponse.usedContext ?? {
+                        files: aiContext.files.length,
+                        commits: aiContext.commits.length,
+                        provider: "groq",
+                        model: "openai/gpt-oss-120b",
+                        cached: false,
+                        images: request.images ? request.images.length : 0
+                    }),
+                    length: classification.length,
+                    format: classification.format,
+                    scope: effectiveScope
                 }
             };
 

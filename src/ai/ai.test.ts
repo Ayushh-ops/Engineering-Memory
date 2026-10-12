@@ -5,8 +5,9 @@ import { buildRepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
-import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction } from "./prompt-builder";
-import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison } from "./answer-service";
+import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction, getSystemInstructions } from "./prompt-builder";
+import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison, extractBackendChosenEvidence, extractRepoScopeEvidence } from "./answer-service";
+import { classifyQuestion, classifyScope } from "./question-class";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
@@ -446,7 +447,7 @@ async function main(): Promise<void> {
     ) as Record<string, unknown>;
     assert.deepEqual(
         Object.keys(nonImpactFacts),
-        ["repository", "target", "files", "symbols", "imports", "callers", "commits", "symbolChanges", "risk"]
+        ["factsBlock", "repository", "target", "files", "symbols", "imports", "callers", "commits", "symbolChanges", "risk", "directDependentsLabel", "owners", "directImportsLabel"]
     );
     const inconsistentProvider = new FakeLlmProvider({
         status: "ok",
@@ -653,6 +654,23 @@ async function main(): Promise<void> {
     assert.equal(invalidResponse.status, 400);
     const invalidBody = await invalidResponse.json() as { error: string };
     assert.match(invalidBody.error, /question/i);
+
+    const imageOnlyRouteResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "",
+            images: [{
+                id: "img-test",
+                mime: "image/png",
+                data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            }],
+            graph
+        })
+    });
+    assert.equal(imageOnlyRouteResponse.status, 200);
 
     server.close();
 
@@ -1090,11 +1108,11 @@ async function main(): Promise<void> {
     assert.equal(cachingProvider.calls.length, 1);
 
     // 5. Mode prompt inclusion
-    assert.ok(getModeInstruction("short").includes("maximum 4 bullets"));
-    assert.ok(getModeInstruction("detailed").includes("short summary followed by bullets"));
-    assert.ok(getModeInstruction("steps").includes("numbered step-by-step"));
-    assert.ok(getModeInstruction("simple").includes("plain-language explanation for beginner"));
-    assert.ok(getModeInstruction("review").includes("list risks, bugs and suggestions"));
+    assert.ok(getModeInstruction("short").includes("Answer in 1 to 3 sentences"));
+    assert.ok(getModeInstruction("detailed").includes("roughly 200 to 400 words"));
+    assert.ok(getModeInstruction("steps").includes("numbered list, one action per step"));
+    assert.ok(getModeInstruction("simple").includes("Answer in 1 to 2 short paragraphs"));
+    assert.ok(getModeInstruction("review").includes("Answer in 1 to 2 short paragraphs"));
 
     const shortProvider = new FakeLlmProvider({
         status: "ok",
@@ -1113,7 +1131,7 @@ async function main(): Promise<void> {
     });
     const shortInstructions = shortProvider.calls[0]?.instructions;
     assert.ok(
-        shortInstructions?.some((inst) => inst.includes("maximum 4 bullets")),
+        shortInstructions?.some((inst) => inst.includes("Answer in 1 to 3 sentences")),
         "Expected mode instruction for 'short' mode"
     );
 
@@ -1300,6 +1318,286 @@ async function main(): Promise<void> {
     assert.equal(fallbackAnswerRes.status, "ok");
     assert.ok(fallbackAnswerRes.followUps && fallbackAnswerRes.followUps.length > 0);
     assert.equal(fallbackAnswerRes.followUps[0], "Which tests cover this file?");
+
+    // 8. Phase 6 Question Classification Tests
+    const cGreeting = classifyQuestion("hi", "auto");
+    assert.equal(cGreeting.length, "brief");
+    assert.equal(cGreeting.format, "prose");
+    assert.equal(cGreeting.maxTokens, 200);
+    assert.equal(cGreeting.isGreetingOrThanks, true);
+
+    const cThanks = classifyQuestion("shukriya", "auto");
+    assert.equal(cThanks.length, "brief");
+    assert.equal(cThanks.format, "prose");
+    assert.equal(cThanks.maxTokens, 200);
+    assert.equal(cThanks.isGreetingOrThanks, true);
+
+    const cBrief = classifyQuestion("who calls this function?", "auto");
+    assert.equal(cBrief.length, "brief");
+    assert.equal(cBrief.format, "prose");
+    assert.equal(cBrief.maxTokens, 400);
+
+    const cBriefHinglish = classifyQuestion("kaun call karta hai?", "auto");
+    assert.equal(cBriefHinglish.length, "brief");
+
+    const cDeep = classifyQuestion("explain the architecture and flow in detail", "auto");
+    assert.equal(cDeep.length, "deep");
+    assert.equal(cDeep.maxTokens, 2400);
+    assert.equal(cDeep.reasoningEffort, "medium");
+
+    const cDeepHinglish = classifyQuestion("poora flow detail mein samjhao", "auto");
+    assert.equal(cDeepHinglish.length, "deep");
+
+    const cSteps = classifyQuestion("how do I deploy this step by step?", "auto");
+    assert.equal(cSteps.format, "steps");
+
+    const cList = classifyQuestion("list which files import auth", "auto");
+    assert.equal(cList.format, "list");
+
+    const cReasoning = classifyQuestion("explain the architecture", "auto", false, "openai/gpt-oss-120b");
+    assert.equal(cReasoning.maxTokens, 3100); // 2400 + 700
+
+    const cOverrideShort = classifyQuestion("explain the architecture in detail", "short");
+    assert.equal(cOverrideShort.length, "brief");
+
+    const cOverrideDetailed = classifyQuestion("who calls this?", "detailed");
+    assert.equal(cOverrideDetailed.length, "deep");
+
+    // 9. Prompt Builder Instruction Tests
+    const instructionsBrief = getSystemInstructions("auto", [], false, cBrief, "file");
+    assert.ok(instructionsBrief.some((i) => i.includes("Answer in 1 to 3 sentences")));
+    assert.ok(!instructionsBrief.some((i) => i.includes("Answer in short bullets")));
+    assert.ok(!instructionsBrief.some((i) => i.includes("Never enumerate more than 8")));
+
+    const instructionsDeep = getSystemInstructions("auto", [], false, cDeep, "file");
+    assert.ok(instructionsDeep.some((i) => i.includes("roughly 200 to 400 words")));
+
+    const instructionsRepo = getSystemInstructions("auto", [], false, cBrief, "repo");
+    assert.ok(instructionsRepo.some((i) => i.includes("Answer at repository level using these facts and relate the selected file to them.")));
+
+    // 10. Context Tests with Repo Scope and RepoFacts
+    const mockRepoFacts = {
+        analyzedFiles: 10,
+        totalFiles: 20,
+        symbols: 45,
+        links: 30,
+        topRisk: [
+            { path: "src/auth.ts", score: 85, dependents: 5 },
+            { path: "src/api.ts", score: 65, dependents: 3 }
+        ],
+        health: { circular: 0, unused: 1, godFiles: 0 },
+        owners: [{ name: "Alice", share: 80 }]
+    };
+
+    const repoContextResult = assembleRepositoryContext(graph, { target: { type: "file", path: "src/auth.ts" } });
+    assert.equal(repoContextResult.status, "ok");
+    const aiRepoContext = buildAiContext(
+        repoContextResult.context,
+        "example/repository",
+        [],
+        undefined,
+        "export function auth() {}",
+        graph,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+            question: "repo level summary",
+            scope: "repo",
+            repoFacts: mockRepoFacts
+        }
+    );
+    assert.equal(aiRepoContext.fileContent, undefined, "fileContent must be omitted in repo scope");
+    assert.ok(aiRepoContext.repoFacts, "repoFacts must be present");
+    assert.equal(aiRepoContext.repoFacts.totalFiles, 20);
+    assert.ok(aiRepoContext.fileRiskBreakdown, "fileRiskBreakdown must be present in repo scope");
+
+    // 11. Backend-chosen evidence extraction
+    const sampleCode = [
+        "import { helper } from './helper';",
+        "export function validateUser(token: string) {",
+        "    if (!token) throw new Error('missing token');",
+        "    return token === 'secret';",
+        "}",
+        "export function logout() {",
+        "    return true;",
+        "}"
+    ].join("\n");
+
+    const answerWithBackticks = "We call `validateUser` to check token credentials.";
+    const backendEvidence = extractBackendChosenEvidence(
+        answerWithBackticks,
+        "how does validation work?",
+        "src/auth.ts",
+        sampleCode,
+        []
+    );
+    assert.ok(backendEvidence.length > 0);
+    assert.equal(backendEvidence[0].path, "src/auth.ts");
+    assert.ok(backendEvidence[0].line !== undefined);
+    assert.ok(backendEvidence[0].snippet !== undefined);
+
+    // Repo scope evidence extraction from topRisk
+    const repoAnswer = "src/auth.ts is the highest risk component.";
+    const repoEvidence = extractRepoScopeEvidence(repoAnswer, mockRepoFacts);
+    assert.ok(repoEvidence.length > 0);
+    assert.equal(repoEvidence[0].path, "src/auth.ts");
+    assert.ok(repoEvidence[0].snippet?.includes("risk 85, 5 dependents"));
+
+    // 12. End-to-end AiAnswerService with Auto Mode & Repo Facts
+    const autoProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "This is a brief summary of the repo.",
+        citations: [],
+        confidence: "high"
+    });
+    const autoService = new AiAnswerService(autoProvider);
+
+    // (a) Greeting early return
+    const greetingRes = await autoService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "hi",
+        graph
+    });
+    assert.equal(greetingRes.status, "ok");
+    assert.equal(greetingRes.usedContext?.length, "brief");
+    assert.equal(greetingRes.usedContext?.format, "prose");
+    assert.equal(greetingRes.evidence?.length, 0);
+
+    // (b) Repo-level question auto promotion & repo scope evidence
+    const repoQuestionRes = await autoService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "Explain the whole repo architecture",
+        graph,
+        repoFacts: mockRepoFacts
+    });
+    assert.equal(repoQuestionRes.status, "ok");
+    assert.equal(repoQuestionRes.usedContext?.scope, "repo");
+    assert.equal(repoQuestionRes.usedContext?.length, "deep");
+    assert.ok(repoQuestionRes.evidence && repoQuestionRes.evidence.length > 0);
+    assert.equal(autoProvider.calls.length, 1);
+    assert.equal(autoProvider.calls[0].scope, "repo");
+    assert.ok(autoProvider.calls[0].classification);
+
+    // 13. Phase 7: Scope classification table test (English & Hinglish)
+    const scopeTestCases: Array<{ question: string; hasRepoFacts?: boolean; expected: 'file' | 'dependents' | 'repo' }> = [
+        { question: "Explain the repository architecture", hasRepoFacts: true, expected: "repo" },
+        { question: "poore project ka structure samjhao", hasRepoFacts: true, expected: "repo" },
+        { question: "What are the most risky files in the repo?", hasRepoFacts: true, expected: "repo" },
+        { question: "Show project level health and hotspot", hasRepoFacts: true, expected: "repo" },
+        { question: "Repo level summary do", hasRepoFacts: true, expected: "repo" },
+        { question: "Who calls this function?", expected: "dependents" },
+        { question: "Isko kaun call karta hai?", expected: "dependents" },
+        { question: "How many files depend on this?", expected: "dependents" },
+        { question: "What breaks if I change this file?", expected: "dependents" },
+        { question: "Is par depend karne wale kaun use karte hain?", expected: "dependents" },
+        { question: "What does this file do?", expected: "file" },
+        { question: "Is file ka main purpose kya hai?", expected: "file" },
+        { question: "Explain the repository architecture", hasRepoFacts: false, expected: "file" }
+    ];
+
+    for (const tc of scopeTestCases) {
+        const actual = classifyScope(tc.question, tc.hasRepoFacts);
+        assert.equal(actual, tc.expected, `Failed classifyScope for "${tc.question}"`);
+    }
+
+    // 14. Phase 7: FactsBlock with exact totals & "showing N of TOTAL" labels
+    const contextWithFacts = buildAiContext(
+        contextResult.context,
+        "example/repository",
+        [],
+        undefined,
+        "export function auth() { return true; }",
+        graph,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+            question: "How many files depend on this and compare with user.ts?",
+            scope: "dependents",
+            dependentFiles: [
+                { path: "src/user.ts", content: "export const user = 'Ada';" }
+            ]
+        }
+    );
+    assert.ok(contextWithFacts.factsBlock, "factsBlock should be defined");
+    assert.equal(contextWithFacts.factsBlock.selectedFilePath, "src/auth.ts");
+    assert.equal(typeof contextWithFacts.factsBlock.riskScore, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.directDependentsTotal, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.transitiveDependentsTotal, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.importsTotal, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.testsCount.total, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.testsCount.direct, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.testsCount.indirect, "number");
+    assert.equal(typeof contextWithFacts.factsBlock.commitsTotal, "number");
+    assert.ok(Array.isArray(contextWithFacts.factsBlock.owners));
+    assert.ok(contextWithFacts.directDependentsLabel?.startsWith("showing "), "directDependentsLabel should show N of TOTAL");
+    assert.ok(contextWithFacts.directImportsLabel?.startsWith("showing "), "directImportsLabel should show N of TOTAL");
+
+    // Named files reference test (up to 2 files, first 40 numbered lines)
+    assert.ok(contextWithFacts.namedFiles, "namedFiles should be extracted when mentioned in question");
+    assert.ok(contextWithFacts.namedFiles.some(nf => nf.path === "src/user.ts"));
+    assert.ok(contextWithFacts.namedFiles.some(nf => nf.snippet.includes("L1: export const user = 'Ada';")));
+
+    // 15. Phase 7: Image-only messages & language adherence from history
+    const imageProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "This diagram shows auth and user interaction.",
+        citations: [],
+        confidence: "high"
+    });
+    const imageService = new AiAnswerService(imageProvider);
+
+    // Empty question with images uses internal instruction with target file
+    const imageOnlyResult = await imageService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "",
+        images: [{
+            mime: "image/png",
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        }],
+        graph
+    });
+    assert.equal(imageOnlyResult.status, "ok");
+    assert.ok(imageProvider.calls.length > 0);
+    const imgLastCall = imageProvider.calls[imageProvider.calls.length - 1];
+    assert.ok(imgLastCall.question.includes("Explain what the attached image(s) show and relate them to src/auth.ts"));
+    assert.ok(imgLastCall.instructions?.some(i => i.includes("English")));
+
+    // Image-only question adheres to last user message language in history
+    await imageService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "   ",
+        images: [{
+            mime: "image/png",
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        }],
+        history: [
+            { role: "user", content: "Is diagram mein components kaise connect ho rahe hain?" },
+            { role: "assistant", content: "Auth aur user models connected hain." }
+        ],
+        graph
+    });
+    const hinglishCall = imageProvider.calls[imageProvider.calls.length - 1];
+    assert.ok(hinglishCall.instructions?.some(i => i.toLowerCase().includes("hinglish") || i.toLowerCase().includes("hindi")));
+
+    // 16. Phase 7: Explicit scope override
+    await imageService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "Explain the whole repository architecture", // auto would be 'repo'
+        scope: "file", // explicit override
+        graph,
+        repoFacts: mockRepoFacts
+    });
+    const explicitCall = imageProvider.calls[imageProvider.calls.length - 1];
+    assert.equal(explicitCall.scope, "file");
 
     console.log("AI fixtures passed");
 }

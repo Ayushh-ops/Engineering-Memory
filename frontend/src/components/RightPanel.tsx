@@ -187,6 +187,8 @@ function EvidenceList({ className }: { className?: string }) {
                                     }
                                     if (item.line !== undefined) {
                                         setCodeHighlightLine(item.line, item.endLine);
+                                    } else {
+                                        setCodeHighlightLine(null);
                                     }
                                     setActiveTab('Code');
                                 }}

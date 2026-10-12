@@ -26,6 +26,7 @@ export interface RepositoryAiOrchestrationRequest {
     mode?: any;
     scope?: any;
     images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
+    repoFacts?: any;
 }
 
 export class RepositoryAiOrchestrationService {
@@ -159,7 +160,8 @@ export class RepositoryAiOrchestrationService {
             owners: request.owners,
             mode: request.mode,
             scope: request.scope,
-            images: request.images
+            images: request.images,
+            repoFacts: request.repoFacts
         };
 
         return { aiRequest };

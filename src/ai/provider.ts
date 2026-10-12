@@ -7,9 +7,11 @@ export interface LlmCitation {
     sha?: string;
 }
 
+import type { QuestionClassification } from "./question-class";
+
 export type LlmStatus = "ok" | "insufficient_context" | "error";
 export type LlmConfidence = "low" | "medium" | "high";
-export type LlmMode = "short" | "detailed" | "steps" | "simple" | "review";
+export type LlmMode = "auto" | "short" | "detailed" | "steps" | "simple" | "review";
 export type LlmScope = "file" | "dependents" | "repo";
 
 export interface LlmEvidence {
@@ -31,6 +33,9 @@ export interface LlmUsedContext {
     model: string;
     cached: boolean;
     images?: number;
+    length?: string;
+    format?: string;
+    scope?: string;
 }
 
 export interface LlmProviderError {
@@ -71,6 +76,8 @@ export interface LlmRequest {
     mode?: LlmMode;
     scope?: LlmScope;
     images?: LlmImage[];
+    classification?: QuestionClassification;
+    repoFacts?: any;
 }
 
 export interface LlmProvider {

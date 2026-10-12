@@ -140,8 +140,8 @@ export interface BatchImpactResult {
     affectedByInput: Record<string, string[]>;
 }
 
-export type AskMode = 'short' | 'detailed' | 'steps' | 'simple' | 'review';
-export type AskScope = 'file' | 'dependents' | 'repo';
+export type AskMode = 'auto' | 'short' | 'detailed' | 'steps' | 'simple' | 'review';
+export type AskScope = 'auto' | 'file' | 'dependents' | 'repo';
 
 export interface AskEvidenceItem {
     path: string;
@@ -155,6 +155,16 @@ export interface AskImage {
     data: string;
 }
 
+export interface AskRepoFacts {
+    analyzedFiles: number;
+    totalFiles: number;
+    symbols: number;
+    links: number;
+    topRisk: Array<{ path: string; score: number; dependents: number }>;
+    health: { circular: number; unused: number; godFiles: number };
+    owners?: Array<{ name: string; share: number }>;
+}
+
 export interface AskUsedContext {
     files: number;
     commits: number;
@@ -162,6 +172,9 @@ export interface AskUsedContext {
     model: string;
     cached: boolean;
     images?: number;
+    length?: string;
+    format?: string;
+    scope?: string;
 }
 
 export interface AskPayload {
@@ -296,9 +309,10 @@ export const api = {
                 mode?: AskMode;
                 scope?: AskScope;
                 images?: AskImage[];
+                repoFacts?: AskRepoFacts;
             },
-            mode: AskMode = 'detailed',
-            scope: AskScope = 'file',
+            mode: AskMode = 'auto',
+            scope: AskScope = 'auto',
             images?: AskImage[]
         ) {
             const effectiveImages = images || extraContext?.images;
@@ -315,7 +329,8 @@ export const api = {
                 owners: extraContext?.owners,
                 mode: extraContext?.mode || mode,
                 scope: extraContext?.scope || scope,
-                ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
+                ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+                ...(extraContext?.repoFacts ? { repoFacts: extraContext.repoFacts } : {})
             });
         },
         async askStream(
@@ -335,9 +350,10 @@ export const api = {
                 mode?: AskMode;
                 scope?: AskScope;
                 images?: AskImage[];
+                repoFacts?: AskRepoFacts;
             },
-            mode: AskMode = 'detailed',
-            scope: AskScope = 'file',
+            mode: AskMode = 'auto',
+            scope: AskScope = 'auto',
             images?: AskImage[]
         ): Promise<AskPayload> {
             const effectiveMode = extraContext?.mode || mode;
@@ -363,7 +379,8 @@ export const api = {
                         owners: extraContext?.owners,
                         mode: effectiveMode,
                         scope: effectiveScope,
-                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
+                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+                        ...(extraContext?.repoFacts ? { repoFacts: extraContext.repoFacts } : {})
                     }),
                     signal
                 });
@@ -391,7 +408,8 @@ export const api = {
                         owners: extraContext?.owners,
                         mode: effectiveMode,
                         scope: effectiveScope,
-                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
+                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+                        ...(extraContext?.repoFacts ? { repoFacts: extraContext.repoFacts } : {})
                     });
                 }
 
@@ -404,7 +422,6 @@ export const api = {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
@@ -472,7 +489,8 @@ export const api = {
                     owners: extraContext?.owners,
                     mode: effectiveMode,
                     scope: effectiveScope,
-                    ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
+                    ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {}),
+                    ...(extraContext?.repoFacts ? { repoFacts: extraContext.repoFacts } : {})
                 });
             }
         }
