@@ -1,32 +1,45 @@
-# React + TypeScript + Vite
+# Engineering Memory — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The web interface for Engineering Memory provides interactive code graph exploration, change-impact analysis, and context-grounded AI assistance for public GitHub repositories.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Framework**: React 19 & TypeScript
+- **Bundler & Tooling**: Vite 8 & Oxlint
+- **Styling**: Tailwind CSS & Lucide Icons
+- **Graph Visualizations**:
+  - `@xyflow/react` (React Flow) for 2D interactive dependency graphs
+  - `three` & `react-force-graph-3d` for 3D repository topology
+- **State Management**: Zustand with persistent local repository caching
 
-## React Compiler
+## Key Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Landing Page**: Real-time canvas network animation, repository input validation (`owner/repo` and full GitHub URLs), recent history, and resilient progress tracking with cancel and timeout handling.
+- **Dependency Graph Exploration**: Toggle between 2D and 3D graph representations. Inspect files, classes, functions, calls, and imports with risk highlights.
+- **Change Impact Analysis**: Blast-radius exploration identifying downstream dependents, direct callers, transitive consumers, and affected test suites.
+- **Ask AI Panel**: Streaming conversational assistant with token-by-token rendering, markdown code citations, image attachment support, and automatic offline detection.
+- **Repository Health & Ownership**: Visual indicators for circular dependencies, god files, bus-factor risks, and author commit share.
 
-## Expanding the Oxlint configuration
+## Development
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+Install dependencies:
+```bash
+npm install
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Start development server:
+```bash
+npm run dev
+```
+The application runs on `http://localhost:5173`. API requests to `/api` are automatically proxied to the backend at `http://localhost:3000`.
+
+Build for production:
+```bash
+npm run build
+```
+Type-checks with `tsc -b` and bundles with Vite into `dist/`.
+
+Preview production build:
+```bash
+npm run preview
+```

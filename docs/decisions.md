@@ -1,70 +1,66 @@
 # Technical decisions
 
-This document describes decisions evidenced by the current repository.
+This document describes architectural and engineering decisions evidenced by the repository.
 
-## TypeScript
+## TypeScript across the full stack
 
-The application is written in TypeScript. It uses strict compiler settings and types Express application objects, requests, responses, and the GitHub API data used by the repository endpoint. This provides compile-time checking for the server code and its external-response mapping.
+Both backend and frontend are written in TypeScript with strict compiler settings. Express request and response payloads, GitHub API models, in-memory graph schemas, impact analysis contracts, and Zustand store states are strongly typed end-to-end.
 
-## Express
+## Express HTTP server with modular route boundaries
 
-Express is the HTTP framework. It provides application setup, JSON parsing, routers, route handlers, and HTTP responses. Routes are separated into modules and mounted by the application under the `/api` prefix.
+Express provides HTTP routing, JSON payload parsing (with a 15 MB limit for graph payloads), and Server-Sent Events (SSE) streaming. Routes are separated by domain (`/api/health`, `/api/repositories`, `/api/file`, `/api/analyze`, `/api/impact`, `/api/ai`) and delegate business logic to pure domain services.
 
-## Node's built-in `fetch` instead of Axios
+## Node's built-in `fetch` with 15-second timeouts
 
-The GitHub integration uses the global `fetch` API supplied by Node.js. Axios is not listed as a dependency. This keeps the current service's HTTP-client needs within the Node runtime and avoids adding another package for a single external API request.
+The GitHub and LLM integrations use the native `fetch` API supplied by Node.js 20+ rather than external HTTP client libraries. Every GitHub API call enforces a 15-second timeout via `AbortSignal.timeout(15_000)` to ensure upstream network stalls never leave requests hanging.
 
-## Public GitHub API without authentication for the first version
+## Structured GitHub error mapping
 
-The repository lookup calls GitHub's public `repos/{owner}/{repository}` endpoint without an authorization header. The first version therefore supports publicly accessible repository metadata and does not require token configuration or credential storage.
+GitHub API responses and network failures are mapped through `mapGitHubErrorToHttp` into deterministic JSON payloads containing HTTP status, machine-readable `code`, `message`, and optional `retryAfterSeconds`:
+- `404` -> `repo_not_found` ("Repository not found. Check the URL, or it may be private.")
+- `403` / `429` with exhausted rate-limit headers -> `github_rate_limited` (computes `retryAfterSeconds` from `x-ratelimit-reset`)
+- `401` -> `github_auth_failed` ("The GitHub token is invalid. Check GITHUB_TOKEN in .env.")
+- `AbortError` / `TimeoutError` / network fetch errors -> `github_unreachable` ("Cannot reach GitHub. Check your internet connection.")
+- Empty tree or zero supported source files -> `repo_empty` ("No supported source files found in this repository.")
 
 ## Optional GitHub authentication without automatic retries
 
-GitHub authentication is opt-in through the `GITHUB_TOKEN` process environment variable. A shared request-options helper adds a Bearer authorization header only when a non-empty token is present, preserving unauthenticated behavior otherwise. Rate-limit responses are surfaced as controlled errors rather than triggering automatic retries, avoiding request amplification and keeping the service's behavior predictable. Tokens are not returned, logged, or included in error messages.
+GitHub authentication is opt-in through the `GITHUB_TOKEN` environment variable. A shared request-options helper adds a Bearer authorization header only when a non-empty token is configured, preserving unauthenticated public access otherwise. Rate-limit responses are surfaced immediately as structured errors rather than triggering automatic retries, avoiding request amplification. Tokens are never logged or echoed in error payloads.
 
-## Ignoring `node_modules` in Git
+## Multi-language source analyzers without native binary dependencies
 
-`node_modules/` is ignored by Git because it is generated from the dependency manifests and lockfile during installation. Tracking it would add a large, platform-dependent dependency tree to source control; `package.json` and `package-lock.json` define the dependencies needed to reproduce it.
+Rather than requiring native language toolchains or external parser binaries at runtime, `src/analyzers/registry.ts` combines the TypeScript Compiler API (for `.ts`, `.tsx`, `.js`, `.jsx`) with lightweight, deterministic structural analyzers for Python (`.py`), Go (`.go`), Java (`.java`), and C/C++ (`.c`, `.cc`, `.cpp`, `.h`, `.hpp`). All analyzers emit a unified `FileAnalysis` contract (`imports`, `classes`, `functions`, `variables`, `relationships`) so downstream graph construction and impact analysis remain language-agnostic.
 
 ## Querying supplied graphs without persistence
 
-Repository graph queries operate on a graph supplied in the request rather than introducing storage or a graph identifier. This preserves the current bounded, request-scoped architecture and makes the query layer a pure read-only projection over existing node and edge semantics. Queries are direct only; they do not crawl repositories, resolve additional modules, or traverse dependencies transitively.
+Repository graph queries, impact calculations, and context assembly operate on a `RepositoryGraph` supplied in the request rather than requiring a database. This keeps the backend stateless and reproducible while allowing the frontend to hold the active repository graph in memory.
 
 ## Deterministic bounded context assembly
 
-Milestone 15 context assembly is a pure module over an existing `RepositoryGraph`. It composes the existing direct query functions instead of defining another graph-resolution model. It supports file, symbol, and commit targets and performs only fixed one-hop selection. Results preserve graph insertion order, deduplicate node IDs, and apply independent configurable limits with hard maximums. The additive context endpoint accepts the graph in the request and does not contact GitHub or introduce persistence, AI, embeddings, or vector search.
-
-Historical context uses existing commit and `symbol-change` nodes. Removed symbols are historical events only because the graph intentionally does not create structural nodes for removed declarations. Missing and ambiguous target identities are reported as client errors at the HTTP boundary.
-
+Context assembly (`src/graph/context.ts`) is a pure module over an existing `RepositoryGraph`. It composes direct query functions, supports file, symbol, and commit targets, and performs bounded selection with configurable limits and hard maximums. Historical context uses commit and `symbol-change` nodes without creating phantom structural nodes for removed declarations.
 
 ## Rejecting inconsistent AI context before provider calls
 
-The repository graph is the single source of truth for AI context. `validateRepositoryContextConsistency` is a pure, deterministic check that runs in `AiAnswerService` after repository context assembly and before `buildAiContext`, and any deterministic contradiction (`status: "invalid"`) stops the request with a controlled `invalid_graph` error instead of sending unverifiable facts to a provider. Failure codes are stable and ordered so results remain reproducible and testable.
+The repository graph is the single source of truth for AI context. `validateRepositoryContextConsistency` runs in `AiAnswerService` after repository context assembly and before `buildAiContext`. Any deterministic contradiction (`status: "invalid"`) stops the request with a controlled `invalid_graph` error instead of sending unverifiable facts to an LLM provider. Call-site evidence must be reachable through an impact path relationship, and validation is fail-closed.
 
-The check deliberately avoids LLM calls, GitHub access, caching, mutation, graph indexing, embeddings, and cross-file semantic resolution. It only re-derives facts the graph already contains, which keeps `RepositoryGraph`, `ChangeImpactAnalysisService`, `RepositorySourceEvidenceService`, and existing public contracts unchanged. Call-site evidence must be reachable through an impact path relationship (`relationshipId` to graph edge to `edge.callSites` to a derived `callSiteId`), so a real call site that exists elsewhere in the graph cannot justify an impact citation. Legacy `calls` edges without explicit IDs stay valid because validation reuses the same synthesized relationship ID that the impact service emits, and existing call-site evidence IDs continue to resolve. Missing and ambiguous impact targets keep their existing domain behavior and are never reported as consistency failures.
+## Bounded compact impact projection for AI context
 
-Validation is fail-closed, so a caller that supplies impact or evidence data must supply data derived from the same graph. Hand-built facts that contradict the graph are rejected before the provider is called.
+`ChangeImpactAnalysisResult` remains the deterministic source of truth for API consumers, while `src/ai/impact-context.ts` normalizes impact results into a compact consumer-centric projection (`consumers`, pooled relationships, per-consumer chains, nested call sites) bounded to the remaining character budget in `buildAiContext`. When the budget binds, whole consumers lose path and call-site detail as a unit while `compaction` counters, `totals`, and explicit limitation strings preserve transparency without truncating strings or dropping consumers.
 
-## Bounded compact impact projection for the AI context
+## Serving change-impact results directly over HTTP
 
-`ChangeImpactAnalysisResult` remains the deterministic source of truth for backend and future frontend consumers, but serializing it verbatim into the LLM payload made impact questions fail once a symbol had roughly nine in-file callers. M26.1 therefore adds `src/ai/impact-context.ts`, a pure projection that normalizes the rich result into a consumer-centric form (consumers, pooled relationships, per-consumer chains, nested call sites) and bounds itself to the budget that `buildAiContext` derives from the assembled non-impact context.
+`POST /api/repositories/graph/impact` and `POST /api/impact/batch` expose `ChangeImpactAnalysisService` directly over HTTP. Single-target impact responses run through `validateRepositoryContextConsistency` before returning, and batch impact calculations compute risk summaries (`high`, `medium`, `low`) across up to 200 files in a single round-trip for the frontend explorer.
 
-The projection joins against identifiers that already exist in the validated result and derives none of its own, so identity has exactly one source. Representing impact as consumers plus ordered relationship chains instead of repeated path and node objects is a measured deduplication: a chain scenario repeats 81 relationships across 28 paths where only 28 are distinct, and impact data accounted for roughly 90 to 98 percent of the payload before compaction.
+## Question-aware AI routing, greeting fast-path, and fact-based fallback
 
-When the budget binds, whole consumers lose their path and call-site detail as a unit. The counts are reported in `compaction`, `totals` preserves the true scale of the full result, and a limitation sentence is appended, so nothing is dropped silently. Truncating strings, sampling call sites, omitting evidence to save space, or removing consumers from the list is never acceptable.
+`POST /api/ai/ask-repository` classifies user questions (`greeting`, `Quick`, `Symbol / file`, `Impact`, `History`, `Architecture`, `General`) before planning context:
+- **Greetings and small talk**: Answered immediately using cached `repoFacts` and the selected file path without fetching any file content from GitHub or running the context builder, ensuring instant responses even when GitHub is unreachable.
+- **Resilient file-content fallback**: For non-greeting questions where fetching the selected file from GitHub fails, the route degrades gracefully by answering from the request's existing `repoFacts` (risk level, dependents, owners, commits) and appending a single-sentence note (`Note: The file content could not be loaded from GitHub, so this answer is based on the repository facts already loaded.`) rather than failing the request.
+- **Dual-provider LLM fallback chain**: Primary OpenAI-compatible provider (`LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`, defaulting to Groq `llama-3.3-70b-versatile`) automatically falls back to Gemini (`LLM_FALLBACK_API_KEY` / `LLM_FALLBACK_MODEL`) with runtime model discovery if the primary provider is rate-limited, unreachable, or unconfigured.
 
-The 16,000-character limit is unchanged and remains the outer safety check, re-applied to the assembled context. If the payload cannot fit even at the consumer-only floor, the answer service returns a controlled `insufficient_context` result carrying `context_too_large` instead of a provider-style failure. The consistency validator still runs on the full result before compaction, and the projection is only ever applied to an already-validated object.
+## Resilient frontend analysis lifecycle and offline handling
 
-## Serving the change-impact result directly over HTTP
-
-M26.2 exposes `POST /api/repositories/graph/impact` so a client can request deterministic impact facts without going through the AI endpoint. The endpoint takes a caller-supplied graph, exactly like `graph/query` and `graph/context`, and performs no GitHub loading, persistence, or LLM call. `ChangeImpactAnalysisService` stays the single source of truth: the route validates the request and delegates, so no second engine and no duplicated target resolution exist.
-
-The 200 response is `ChangeImpactAnalysisResult` itself. No response DTO was introduced, because the result is already the declared public semantic contract, is plain JSON-serializable data, carries its own `bounds`, `limitations`, and `status`, and exposes no raw `RepositoryGraph` - only the focused node, relationship, and call-site projections it already contains. Reusing it keeps one contract for backend, frontend, and AI consumers and avoids the drift that a parallel response model would create. The M26.1 compact projection is deliberately not reused here: it is a budget-bounded, lossy representation built for the provider payload, and it was never intended to be an API contract. No separate serializer was added either, since the only transformation needed is JSON's omission of unset optional keys.
-
-`status: "missing"` and `"ambiguous"` return `200`, unlike `graph/context`, which maps the equivalent conditions to `400`. The result type models both as domain outcomes with a full payload (echoed target, effective bounds, honest limitations), and M25.5 already treats them as valid rather than contradictory. Collapsing them into an error string would discard structured, deterministic information that the caller can act on, so `400` is reserved for request defects.
-
-Every response runs through `validateRepositoryContextConsistency` before it is returned. M25.5 framed that check as a gate before facts reach the LLM, but the underlying invariant is that graph-consistent facts are the only ones that may cross a trust boundary, and an HTTP client is such a boundary. The check is pure and cheap, so the endpoint reuses it unchanged and fails closed with `400` plus the validator's stable `missingData` codes instead of ever serving an unverified result. Passing the result as `impact` is sufficient because the validator already includes `impact.sourceEvidence`.
-
-Requested bounds keep the service's meaning. Defaults stay 3 and 50, `maxDepth` and `maxResults` are passed through unmerged so `bounds` always echoes the effective values, and `truncated` keeps its existing meaning. The route adds transport-level boundary limits of `maxDepth` 1-10 and `maxResults` 0-500 and rejects unknown limit keys; these are safety policy on the HTTP surface, chosen because a caller-supplied graph can otherwise amplify a modest request into a large response, and they deliberately do not change `ChangeImpactAnalysisService`, which continues to accept any positive `maxDepth` and any non-negative `maxResults` (including `0`) with no upper bound for direct callers. Unknown limit keys are rejected rather than ignored because the service spreads requested limits into `bounds`.
-
-All expected validation, input, and service-contract failures are answered explicitly, and the route adds no catch-all handler: an unexpected runtime exception propagates to the existing Express error handling, exactly as on the other routes. The endpoint therefore makes no promise about never returning a server error - only that every anticipated failure mode is handled deliberately and that no unverified impact result is served.
+- **Client-side URL validation**: `validateRepoInput` validates GitHub URLs (`https://github.com/owner/repo`, `.git`, `/tree/...`, `/blob/...`) and `owner/repo` shorthand before opening the analyzing progress view or calling the backend.
+- **Non-destructive error handling**: Failed or cancelled repository analyses display an inline error card in place of the progress box while preserving any previously loaded repository in the Zustand store.
+- **Timeout and cancellation**: Analysis requests wire an `AbortController` to a Cancel button available throughout analysis and display a warning ("This is taking longer than expected") after 90 seconds.
+- **Offline detection in Ask AI**: When `navigator.onLine` is false or a fetch network error occurs, the UI immediately renders a "You are offline" state with a Retry button without dispatching a doomed network request.
