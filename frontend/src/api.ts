@@ -31,25 +31,32 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
     });
 
     if (!res.ok) {
-        let msg = 'An unexpected error occurred';
+        let msg = res.status === 413
+            ? 'The repository is too large to check at once. Try again after the analysis finishes.'
+            : `Something went wrong (status ${res.status})`;
         let missing = undefined;
-        let code = undefined;
+        let code = res.status === 413 ? 'payload_too_large' : undefined;
         try {
             const text = await res.text();
             try {
                 const body = JSON.parse(text) as any;
-                if (body.message) {
-                    msg = typeof body.message === 'string' ? body.message : JSON.stringify(body.message);
-                } else if (body.error) {
-                    msg = typeof body.error === 'string' ? body.error : JSON.stringify(body.error);
+                if (body && typeof body === 'object') {
+                    if (body.message) {
+                        msg = typeof body.message === 'string' ? body.message : JSON.stringify(body.message);
+                    } else if (body.error) {
+                        msg = typeof body.error === 'string' ? body.error : JSON.stringify(body.error);
+                    }
+                    if (body.code) {
+                        code = body.code;
+                    }
+                    missing = body.missingData;
                 }
-                code = body.code;
-                missing = body.missingData;
             } catch {
-                if (text) msg = text;
+                // If the response is not JSON, do not put the body text into the error message;
+                // keep the friendly message (413 or "Something went wrong (status N)").
             }
-        } catch (e) {
-            msg = 'Failed to read response body';
+        } catch {
+            // Failed to read response body; keep friendly message
         }
         throw new ApiError(res.status, msg, missing, code);
     }

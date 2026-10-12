@@ -3039,6 +3039,10 @@ export function MainPanel({ className }: { className?: string }) {
     const [historyData, setHistoryData] = useState<any[] | null>(null);
     const [healthData, setHealthData] = useState<import('../api').HealthSummaryResult | null>(null);
     const [healthLoading, setHealthLoading] = useState(false);
+    const [healthError, setHealthError] = useState<{ message: string; status?: number; code?: string } | null>(null);
+    const [analyzeError, setAnalyzeError] = useState<{ message: string; status?: number; code?: string } | null>(null);
+    const [impactError, setImpactError] = useState<{ message: string; status?: number; code?: string } | null>(null);
+    const [changeSetError, setChangeSetError] = useState<{ message: string; status?: number; code?: string } | null>(null);
     const [openHealthSections, setOpenHealthSections] = useState({ circular: true, unused: true, god: true });
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const [showImpactReasons, setShowImpactReasons] = useState(true);
@@ -3647,6 +3651,7 @@ ${lastAssistant.content}${evidenceList}
     const reanalyzeRepo = async () => {
         if (!repoUrl || !selectedSha) return;
         setAnalyzing(true);
+        setAnalyzeError(null);
         try {
             const treeRes = await api.repositories.getTree(repoUrl, selectedSha);
             setTreeFiles(treeRes.files);
@@ -3661,8 +3666,13 @@ ${lastAssistant.content}${evidenceList}
                 state.cacheShaAnalysis(repoUrl, selectedSha, data.graph, stats);
                 setGraph(data.graph);
             }
-        } catch (e) {
+        } catch (e: any) {
             console.error('Re-analyze repo failed', e);
+            setAnalyzeError({
+                message: typeof e?.message === 'string' ? e.message : 'Re-analyze repository failed',
+                status: e?.status,
+                code: e?.code
+            });
         } finally {
             setAnalyzing(false);
         }
@@ -3671,11 +3681,17 @@ ${lastAssistant.content}${evidenceList}
     const analyzeChangeSet = async () => {
         if (!graph || changeSet.length === 0) return;
         setChangeSetLoading(true);
+        setChangeSetError(null);
         try {
             const res = await api.graph.impactBatch(graph, changeSet);
             setChangeSetResult(res);
-        } catch (err) {
+        } catch (err: any) {
             console.error("Batch impact failed", err);
+            setChangeSetError({
+                message: typeof err?.message === 'string' ? err?.message : 'Failed to analyze plan',
+                status: err?.status,
+                code: err?.code
+            });
         } finally {
             setChangeSetLoading(false);
         }
@@ -4194,14 +4210,20 @@ ${lastAssistant.content}${evidenceList}
     const reanalyze = useCallback(async () => {
         if (!graph || !selectedFile) return;
         setAnalyzing(true);
+        setImpactError(null);
         try {
             const target = selectedSymbol
                 ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
                 : { type: 'file', path: selectedFile };
             const res = await api.graph.impact(graph, target as any, { maxDepth: 3, maxResults: 50 });
             setImpactResult(res);
-        } catch (e) {
+        } catch (e: any) {
             console.error(e);
+            setImpactError({
+                message: typeof e?.message === 'string' ? e.message : 'Failed to calculate impact',
+                status: e?.status,
+                code: e?.code
+            });
         } finally {
             setAnalyzing(false);
         }
@@ -4277,12 +4299,17 @@ ${lastAssistant.content}${evidenceList}
     const fetchHealth = useCallback(async () => {
         if (!graph) return;
         setHealthLoading(true);
+        setHealthError(null);
         try {
             const res = await api.graph.health(graph);
             setHealthData(res);
-        } catch (e) {
+        } catch (e: any) {
             console.error(e);
-            setHealthData({ circularImports: [], unusedFiles: [], godFiles: [] });
+            setHealthError({
+                message: typeof e?.message === 'string' ? e.message : 'Failed to analyze repository health',
+                status: e?.status,
+                code: e?.code
+            });
         } finally {
             setHealthLoading(false);
         }
@@ -4592,7 +4619,30 @@ ${lastAssistant.content}${evidenceList}
                     {/* Overview Tab: Editorial Ledger layout & Drawer */}
                     {activeTab === 'Overview' && (
                         <div className="relative flex-1 min-h-0 -m-4 overflow-hidden flex flex-col">
-                            {(!graph || stats.analyzedFiles === 0) ? (
+                            {analyzing ? (
+                                <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] py-24 gap-2.5">
+                                    <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
+                                    <span className="text-xs font-mono">Analyzing repository...</span>
+                                </div>
+                            ) : analyzeError ? (
+                                <div className="p-6 m-6 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 space-y-3 max-w-lg mx-auto">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                <ShieldAlert size={15} className="text-red-400 shrink-0" />
+                                                <span>{analyzeError.message}</span>
+                                            </div>
+                                        </div>
+                                        <Button
+                                            onClick={reanalyzeRepo}
+                                            className="px-3 py-1.5 text-xs bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 flex items-center gap-1.5 shrink-0"
+                                        >
+                                            <RefreshCw size={12} />
+                                            <span>Retry</span>
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : (!graph || stats.analyzedFiles === 0) ? (
                                 <div className="h-full flex flex-col items-center justify-center text-center text-[#8A918C] py-24 gap-1.5">
                                     <div className="text-sm font-medium text-[#E8EAE6]">No files have been analyzed yet.</div>
                                     <div className="text-xs">Pick a file or re-analyze the repository to explore risk and dependencies.</div>
@@ -4736,11 +4786,31 @@ ${lastAssistant.content}${evidenceList}
 
                                             <div className={cn("overview-hl", (healthData?.circularImports?.length || 0) > 0 && "w")}>
                                                 <i />
-                                                <span><b>{healthData?.circularImports?.length || 0}</b> circular imports</span>
+                                                <span>
+                                                    {healthLoading ? (
+                                                        <span className="text-[#8A918C]">Checking circular imports...</span>
+                                                    ) : healthError ? (
+                                                        <span className="text-amber-400">Health check failed</span>
+                                                    ) : healthData ? (
+                                                        <><b>{healthData.circularImports?.length || 0}</b> circular imports</>
+                                                    ) : (
+                                                        <span className="text-[#8A918C]">Circular imports</span>
+                                                    )}
+                                                </span>
                                             </div>
                                             <div className={cn("overview-hl", (healthData?.unusedFiles?.length || 0) > 0 && "w")}>
                                                 <i />
-                                                <span><b>{healthData?.unusedFiles?.length || 0}</b> files nothing imports</span>
+                                                <span>
+                                                    {healthLoading ? (
+                                                        <span className="text-[#8A918C]">Checking unused files...</span>
+                                                    ) : healthError ? (
+                                                        <span className="text-amber-400">Health check failed</span>
+                                                    ) : healthData ? (
+                                                        <><b>{healthData.unusedFiles?.length || 0}</b> files nothing imports</>
+                                                    ) : (
+                                                        <span className="text-[#8A918C]">Unused files</span>
+                                                    )}
+                                                </span>
                                             </div>
                                         </div>
                                     </div>
@@ -4876,6 +4946,30 @@ ${lastAssistant.content}${evidenceList}
                                 <div className="flex-1 text-[#8A918C] py-20 flex flex-col items-center justify-center gap-3">
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Calculating impact paths...</span>
+                                </div>
+                            ) : impactError ? (
+                                <div className="p-4 m-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="space-y-1 flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                <ShieldAlert size={15} className="text-red-400 shrink-0" />
+                                                <span>{impactError.message}</span>
+                                            </div>
+                                            {(impactError.status !== undefined || impactError.code) && (
+                                                <div className="font-mono text-[10px] text-red-400/80 pl-6 space-y-0.5">
+                                                    {impactError.status !== undefined && <div>Status: {impactError.status}</div>}
+                                                    {impactError.code && <div>Code: {impactError.code}</div>}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <Button
+                                            onClick={reanalyze}
+                                            className="px-3 py-1.5 text-xs bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 flex items-center gap-1.5 shrink-0"
+                                        >
+                                            <RefreshCw size={12} />
+                                            <span>Retry</span>
+                                        </Button>
+                                    </div>
                                 </div>
                             ) : (() => {
                                 const directCount = directList.length;
@@ -6606,10 +6700,34 @@ ${lastAssistant.content}${evidenceList}
                                 onExport={() => downloadTextFile('repository-health.json', JSON.stringify(healthData || {}, null, 2), 'application/json')}
                             />
 
-                            {healthLoading && !healthData ? (
+                            {healthLoading ? (
                                 <div className="text-[#8A918C] py-16 flex flex-col items-center justify-center gap-2.5">
                                     <Loader2 size={20} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Analyzing repository health...</span>
+                                </div>
+                            ) : healthError ? (
+                                <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="space-y-1.5 flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                <ShieldAlert size={15} className="text-red-400 shrink-0" />
+                                                <span>{healthError.message}</span>
+                                            </div>
+                                            {(healthError.status !== undefined || healthError.code) && (
+                                                <div className="font-mono text-[10px] text-red-400/80 pl-6 space-y-0.5">
+                                                    {healthError.status !== undefined && <div>Status: {healthError.status}</div>}
+                                                    {healthError.code && <div>Code: {healthError.code}</div>}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <Button
+                                            onClick={fetchHealth}
+                                            className="px-3 py-1.5 text-xs bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 flex items-center gap-1.5 shrink-0"
+                                        >
+                                            <RefreshCw size={12} />
+                                            <span>Retry</span>
+                                        </Button>
+                                    </div>
                                 </div>
                             ) : !healthData ? (
                                 <div className="glass-surface p-12 rounded-xl border-white/10 text-center flex flex-col items-center justify-center gap-2">
@@ -6918,6 +7036,30 @@ ${lastAssistant.content}${evidenceList}
                                 <div className="py-20 flex flex-col items-center justify-center gap-3 text-[#8A918C]">
                                     <Loader2 size={24} className="animate-spin text-[#4FD1B5]" />
                                     <span className="text-xs font-mono">Analyzing combined impact across {changeSet.length} {changeSet.length === 1 ? 'file' : 'files'}...</span>
+                                </div>
+                            ) : changeSetError ? (
+                                <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-300 space-y-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="space-y-1.5 flex-1 min-w-0">
+                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                <ShieldAlert size={15} className="text-red-400 shrink-0" />
+                                                <span>{changeSetError.message}</span>
+                                            </div>
+                                            {(changeSetError.status !== undefined || changeSetError.code) && (
+                                                <div className="font-mono text-[10px] text-red-400/80 pl-6 space-y-0.5">
+                                                    {changeSetError.status !== undefined && <div>Status: {changeSetError.status}</div>}
+                                                    {changeSetError.code && <div>Code: {changeSetError.code}</div>}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <Button
+                                            onClick={analyzeChangeSet}
+                                            className="px-3 py-1.5 text-xs bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 flex items-center gap-1.5 shrink-0"
+                                        >
+                                            <RefreshCw size={12} />
+                                            <span>Retry</span>
+                                        </Button>
+                                    </div>
                                 </div>
                             ) : !changeSetResult ? (
                                 <div className="space-y-4">
