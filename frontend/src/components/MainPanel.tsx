@@ -1,4 +1,4 @@
-import { useAppStore } from '../store';
+import { useAppStore, type AskChatMessage, type AskChat, type AttachedImage } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info, Pencil } from 'lucide-react';
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo, Fragment } from 'react';
@@ -14,6 +14,8 @@ import { ConnectedFilesList } from './ConnectedFilesList';
 import { RightPanel } from './RightPanel';
 import { ErrorBoundary } from './ErrorBoundary';
 
+export type { AttachedImage };
+
 function downloadTextFile(filename: string, content: string, mime = 'text/markdown;charset=utf-8;') {
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
@@ -24,14 +26,6 @@ function downloadTextFile(filename: string, content: string, mime = 'text/markdo
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-}
-
-export interface AttachedImage {
-    id: string;
-    mime: 'image/jpeg' | 'image/png' | 'image/webp';
-    data: string;
-    thumbUrl: string;
-    name: string;
 }
 
 export async function processImageFile(file: File): Promise<AttachedImage | null> {
@@ -2669,7 +2663,16 @@ export function MainPanel({ className }: { className?: string }) {
         changeSet, addToChangeSet, removeFromChangeSet, clearChangeSet,
         changeSetResult, setChangeSetResult, changeSetLoading, setChangeSetLoading,
         treeFiles, setTreeFiles, commits, selectedHistoryCommit, setSelectedHistoryCommit,
-        setAiCitations, setAiEvidence, setAiEvidenceTitle, meta
+        setAiCitations, setAiEvidence, setAiEvidenceTitle, meta,
+        getAskAiState, loadAskAiChatsFromStorage, switchAskAiFile,
+        setActiveAskAiChat, setAskAiMessages, saveAskAiMessages,
+        setAskAiDraft, setAskAiScrollPos, setAskAiAttachedImages,
+        setAskAiMode, setAskAiScope, setAskAiChatExpanded,
+        setAskAiSelectedAnswerIdx, setAskAiExpandedEvidenceOpen,
+        setAskAiError, setAskAiRateLimitCountdown,
+        startAskAiStreaming, appendAskAiStreamingToken, finishAskAiStreaming,
+        handleAskAiStreamError, stopAskAiStreaming, newAskAiChat,
+        deleteAskAiChat, renameAskAiChat, clearAskAiMessages
     } = useAppStore();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
@@ -2869,61 +2872,87 @@ export function MainPanel({ className }: { className?: string }) {
     const [depth, setDepth] = useState(3);
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
-    const [askQ, setAskQ] = useState('');
-    const [aiError, setAiError] = useState<{ message: string; backendMessage?: string; status?: number; code?: string; retryAfterSeconds?: number } | null>(null);
-    const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
-    const [askMode, setAskMode] = useState<import('../api').AskMode>('auto');
-    const [askScope, setAskScope] = useState<import('../api').AskScope>('auto');
-    const [isChatExpanded, setIsChatExpanded] = useState(false);
-    const [expandedEvidenceOpen, setExpandedEvidenceOpen] = useState(true);
-    type AskChatMessage = {
-        role: 'user' | 'assistant';
-        content: string;
-        images?: Array<{ mime: string; data?: string; thumbUrl: string; name?: string }>;
-        followups?: string[];
-        evidence?: import('../api').AskEvidenceItem[];
-        usedContext?: import('../api').AskUsedContext;
-        missingData?: string[];
-        status?: string;
-        error?: any;
-        retryAfterSeconds?: number;
-        stopped?: boolean;
-        isThinking?: boolean;
-    };
+    const repoAskAi = getAskAiState(repoUrl, selectedSha);
+    const chats = repoAskAi.chats;
+    const activeChatId = repoAskAi.activeChatId;
+    const chatMessages = repoAskAi.chatMessages;
+    const attachedImages = repoAskAi.attachedImages;
+    const askMode = repoAskAi.askMode;
+    const askScope = repoAskAi.askScope;
+    const isChatExpanded = repoAskAi.isChatExpanded;
+    const selectedAnswerIdx = repoAskAi.selectedAnswerIdx;
+    const expandedEvidenceOpen = repoAskAi.expandedEvidenceOpen;
+    const isStreaming = repoAskAi.isStreaming;
+    const aiError = repoAskAi.aiError;
+    const rateLimitCountdown = repoAskAi.rateLimitCountdown;
 
-    type AskChat = {
-        id: string;
-        title: string;
-        file: string;
-        createdAt: number;
-        updatedAt: number;
-        messages: AskChatMessage[];
-    };
+    const askQ = (activeChatId && repoAskAi.draftByChat[activeChatId]) ?? '';
+    const setAskQ = useCallback((val: string) => {
+        if (activeChatId) {
+            setAskAiDraft(activeChatId, val);
+        }
+    }, [activeChatId, setAskAiDraft]);
 
-    const [chatMessages, setChatMessages] = useState<AskChatMessage[]>([]);
-    const [chats, setChats] = useState<AskChat[]>([]);
-    const [activeChatId, setActiveChatId] = useState<string | null>(null);
+    const setChatMessages = useCallback((msgsOrUpdater: AskChatMessage[] | ((prev: AskChatMessage[]) => AskChatMessage[])) => {
+        const next = typeof msgsOrUpdater === 'function' ? msgsOrUpdater(repoAskAi.chatMessages) : msgsOrUpdater;
+        setAskAiMessages(next);
+    }, [repoAskAi.chatMessages, setAskAiMessages]);
+
+    const setActiveChatId = useCallback((id: string | null) => {
+        setActiveAskAiChat(id, selectedFile);
+    }, [selectedFile, setActiveAskAiChat]);
+
+    const setAttachedImages = useCallback((imgsOrUpdater: AttachedImage[] | ((prev: AttachedImage[]) => AttachedImage[])) => {
+        const next = typeof imgsOrUpdater === 'function' ? imgsOrUpdater(repoAskAi.attachedImages) : imgsOrUpdater;
+        setAskAiAttachedImages(next);
+    }, [repoAskAi.attachedImages, setAskAiAttachedImages]);
+
+    const setAskMode = useCallback((mode: import('../api').AskMode) => {
+        setAskAiMode(mode);
+    }, [setAskAiMode]);
+
+    const setAskScope = useCallback((scope: import('../api').AskScope) => {
+        setAskAiScope(scope);
+    }, [setAskAiScope]);
+
+    const setIsChatExpanded = useCallback((expandedOrUpdater: boolean | ((prev: boolean) => boolean)) => {
+        const next = typeof expandedOrUpdater === 'function' ? expandedOrUpdater(repoAskAi.isChatExpanded) : expandedOrUpdater;
+        setAskAiChatExpanded(next);
+    }, [repoAskAi.isChatExpanded, setAskAiChatExpanded]);
+
+    const setSelectedAnswerIdx = useCallback((idxOrUpdater: number | null | ((prev: number | null) => number | null)) => {
+        const next = typeof idxOrUpdater === 'function' ? idxOrUpdater(repoAskAi.selectedAnswerIdx) : idxOrUpdater;
+        setAskAiSelectedAnswerIdx(next);
+    }, [repoAskAi.selectedAnswerIdx, setAskAiSelectedAnswerIdx]);
+
+    const setExpandedEvidenceOpen = useCallback((openOrUpdater: boolean | ((prev: boolean) => boolean)) => {
+        const next = typeof openOrUpdater === 'function' ? openOrUpdater(repoAskAi.expandedEvidenceOpen) : openOrUpdater;
+        setAskAiExpandedEvidenceOpen(next);
+    }, [repoAskAi.expandedEvidenceOpen, setAskAiExpandedEvidenceOpen]);
+
+    const setAiError = useCallback((errOrUpdater: any) => {
+        const next = typeof errOrUpdater === 'function' ? errOrUpdater(repoAskAi.aiError) : errOrUpdater;
+        setAskAiError(next);
+    }, [repoAskAi.aiError, setAskAiError]);
+
+    const setRateLimitCountdown = useCallback((countOrUpdater: number | ((prev: number) => number)) => {
+        const next = typeof countOrUpdater === 'function' ? countOrUpdater(repoAskAi.rateLimitCountdown) : countOrUpdater;
+        setAskAiRateLimitCountdown(next);
+    }, [repoAskAi.rateLimitCountdown, setAskAiRateLimitCountdown]);
+
     const [chatSearchQuery, setChatSearchQuery] = useState('');
     const [normalChatsOpen, setNormalChatsOpen] = useState(false);
     const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
     const [copiedUserMsgIdx, setCopiedUserMsgIdx] = useState<number | null>(null);
     const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
     const [editingHasMissingImages, setEditingHasMissingImages] = useState(false);
-    const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
     const [imageWarning, setImageWarning] = useState<string | null>(null);
     const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
     const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const normalChatsBtnRef = useRef<HTMLButtonElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-    const lastActiveChatByFile = useRef<Record<string, string>>({});
-    const isChatsLoadedRef = useRef(false);
-    const chatsRef = useRef<AskChat[]>(chats);
-    chatsRef.current = chats;
-    const activeChatIdRef = useRef<string | null>(activeChatId);
-    activeChatIdRef.current = activeChatId;
-
-    const [selectedAnswerIdx, setSelectedAnswerIdx] = useState<number | null>(null);
+    const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
 
     const lastAssistantIdx = useMemo(() => {
         for (let i = chatMessages.length - 1; i >= 0; i--) {
@@ -3028,10 +3057,8 @@ export function MainPanel({ className }: { className?: string }) {
             } else if (e.key === 'Escape') {
                 if (lightboxImage) {
                     setLightboxImage(null);
-                } else if (abortControllerRef.current) {
-                    abortControllerRef.current.abort();
-                    abortControllerRef.current = null;
-                    setIsStreaming(false);
+                } else if (isStreaming) {
+                    stopAskAiStreaming();
                 } else if (isChatExpanded) {
                     setIsChatExpanded(false);
                 }
@@ -3039,7 +3066,7 @@ export function MainPanel({ className }: { className?: string }) {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isChatExpanded, activeTab, lightboxImage]);
+    }, [isChatExpanded, activeTab, lightboxImage, isStreaming, stopAskAiStreaming]);
 
 
 
@@ -3086,8 +3113,6 @@ export function MainPanel({ className }: { className?: string }) {
     const [showImpactReasons, setShowImpactReasons] = useState(true);
     const [hoveredImpactNode, setHoveredImpactNode] = useState<{ path: string; name: string; folder: string; score: number; type: 'direct' | 'indirect'; hops?: number; x: number; y: number } | null>(null);
     const [copiedReport, setCopiedReport] = useState(false);
-    const [isStreaming, setIsStreaming] = useState(false);
-    const abortControllerRef = useRef<AbortController | null>(null);
 
     const [drawerFile, setDrawerFile] = useState<string | null>(null);
     const [drawerOpen, setDrawerOpen] = useState(false);
@@ -3118,131 +3143,27 @@ export function MainPanel({ className }: { className?: string }) {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    // Save chat per repo+commit in localStorage (max 50 chats, max 30 msgs per chat)
-    const chatsStorageKey = repoUrl ? `em_ask_chats:${repoUrl}:${selectedSha || 'HEAD'}` : null;
-
-    // 1. Initial load effect: depends ONLY on [chatsStorageKey]
+    // 1. Initial load effect: loads from localStorage only if store is empty
     useEffect(() => {
-        isChatsLoadedRef.current = false;
-        if (!chatsStorageKey) {
-            setChats(prev => (prev.length === 0 ? prev : []));
-            setActiveChatId(null);
-            activeChatIdRef.current = null;
-            setChatMessages(prev => (prev.length === 0 ? prev : []));
-            return;
+        if (repoUrl) {
+            loadAskAiChatsFromStorage(repoUrl, selectedSha, selectedFile);
         }
-        try {
-            const raw = localStorage.getItem(chatsStorageKey);
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    const loadedChats: AskChat[] = parsed.slice(0, 50);
-                    chatsRef.current = loadedChats;
-                    setChats(loadedChats);
-                    isChatsLoadedRef.current = true;
+    }, [repoUrl, selectedSha, loadAskAiChatsFromStorage]);
 
-                    if (selectedFile) {
-                        const rememberedId = lastActiveChatByFile.current[selectedFile];
-                        const match = (rememberedId ? loadedChats.find(c => c.id === rememberedId && c.file === selectedFile) : null) ||
-                            loadedChats.find(c => c.file === selectedFile);
-                        if (match) {
-                            setActiveChatId(match.id);
-                            activeChatIdRef.current = match.id;
-                            setChatMessages(match.messages?.slice(-30) || []);
-                            lastActiveChatByFile.current[selectedFile] = match.id;
-                            return;
-                        }
-                    }
-                    const first = loadedChats[0];
-                    setActiveChatId(first.id);
-                    activeChatIdRef.current = first.id;
-                    setChatMessages(first.messages?.slice(-30) || []);
-                    if (first.file) {
-                        lastActiveChatByFile.current[first.file] = first.id;
-                    }
-                    return;
-                }
-            }
-        } catch (e) {
-            console.error('Failed to parse chats', e);
-        }
-        chatsRef.current = [];
-        setChats(prev => (prev.length === 0 ? prev : []));
-        isChatsLoadedRef.current = true;
-        if (selectedFile) {
-            const newId = 'chat_' + Date.now();
-            setActiveChatId(newId);
-            activeChatIdRef.current = newId;
-            setChatMessages(prev => (prev.length === 0 ? prev : []));
-            lastActiveChatByFile.current[selectedFile] = newId;
-        } else {
-            setActiveChatId(null);
-            activeChatIdRef.current = null;
-            setChatMessages(prev => (prev.length === 0 ? prev : []));
-        }
-    }, [chatsStorageKey]);
-
-    // 2. Load-chat-on-file-change effect: depends ONLY on [chatsStorageKey, selectedFile]
+    // 2. Load-chat-on-file-change effect: restores last active chat of file or empty state
     useEffect(() => {
-        if (!selectedFile) return;
-
-        const allChats = chatsRef.current;
-        const currentActiveId = activeChatIdRef.current;
-
-        const cur = allChats.find(c => c.id === currentActiveId);
-        if (cur && cur.file === selectedFile) {
-            return;
+        if (repoUrl && selectedFile) {
+            switchAskAiFile(selectedFile);
         }
+    }, [repoUrl, selectedSha, selectedFile, switchAskAiFile]);
 
-        const rememberedId = lastActiveChatByFile.current[selectedFile];
-        if (rememberedId) {
-            if (currentActiveId === rememberedId) {
-                return;
-            }
-            const remembered = allChats.find(c => c.id === rememberedId && c.file === selectedFile);
-            if (remembered) {
-                setActiveChatId(remembered.id);
-                activeChatIdRef.current = remembered.id;
-                setChatMessages(prev => (prev === remembered.messages ? prev : (remembered.messages?.slice(-30) || [])));
-                setAiError(null);
-                return;
-            }
-        }
-
-        const matching = allChats.find(c => c.file === selectedFile);
-        if (matching) {
-            if (currentActiveId === matching.id) {
-                return;
-            }
-            setActiveChatId(matching.id);
-            activeChatIdRef.current = matching.id;
-            setChatMessages(prev => (prev === matching.messages ? prev : (matching.messages?.slice(-30) || [])));
-            lastActiveChatByFile.current[selectedFile] = matching.id;
-            setAiError(null);
-            return;
-        }
-
-        if (rememberedId && currentActiveId === rememberedId) {
-            return;
-        }
-
-        const newId = 'chat_' + Date.now();
-        setActiveChatId(newId);
-        activeChatIdRef.current = newId;
-        setChatMessages(prev => (prev.length === 0 ? prev : []));
-        setAiError(null);
-        lastActiveChatByFile.current[selectedFile] = newId;
-    }, [chatsStorageKey, selectedFile]);
-
-    // 3. Single persistence effect: writes to localStorage only, no state updates inside it
+    // 3. Restore chat scroll position on activeChatId or tab change
     useEffect(() => {
-        if (!chatsStorageKey || !isChatsLoadedRef.current) return;
-        try {
-            localStorage.setItem(chatsStorageKey, JSON.stringify(chats.slice(0, 50)));
-        } catch (e) {
-            console.warn('Failed to persist chats to localStorage (quota exceeded?)', e);
+        if (activeTab === 'AskAI' && chatScrollContainerRef.current && activeChatId) {
+            const savedPos = repoAskAi.scrollPosByChat[activeChatId] ?? 0;
+            chatScrollContainerRef.current.scrollTop = savedPos;
         }
-    }, [chats, chatsStorageKey]);
+    }, [activeTab, activeChatId]);
 
     // 4. Keep aiEvidence in sync with the active assistant message
     useEffect(() => {
@@ -3280,118 +3201,7 @@ export function MainPanel({ className }: { className?: string }) {
         if (processed.length > 0) {
             setAttachedImages(prev => [...prev, ...processed].slice(0, 3));
         }
-    }, [attachedImages.length]);
-
-    const saveChatMessages = useCallback((msgs: AskChatMessage[]) => {
-        setChatMessages(msgs);
-        if (!selectedFile || !chatsStorageKey) return;
-
-        const cleanMsgs = msgs.filter(m => !m.isThinking).slice(-30).map(m => {
-            if (m.images && m.images.length > 0) {
-                return {
-                    ...m,
-                    images: m.images.map(img => ({ mime: img.mime, thumbUrl: img.thumbUrl, name: img.name }))
-                };
-            }
-            return m;
-        });
-        const now = Date.now();
-        const firstUserMsg = cleanMsgs.find(m => m.role === 'user');
-        const firstUserQ = firstUserMsg?.content.trim() || '';
-        const hasFirstUserImages = Boolean(firstUserMsg?.images && firstUserMsg.images.length > 0);
-        const fileBaseName = selectedFile ? selectedFile.split(/[/\\]/).pop() || 'file' : 'file';
-        const generatedTitle = firstUserQ
-            ? firstUserQ.slice(0, 40)
-            : (hasFirstUserImages ? `Image: ${fileBaseName}` : 'New chat');
-
-        setChats(prevChats => {
-            let updated: AskChat[];
-            const currentId = activeChatIdRef.current;
-            const existingIdx = prevChats.findIndex(c => c.id === currentId);
-            if (existingIdx !== -1) {
-                const existing = prevChats[existingIdx];
-                const newTitle = (existing.title && existing.title !== 'New chat') ? existing.title : (generatedTitle || existing.title);
-                const updatedChat: AskChat = {
-                    ...existing,
-                    title: newTitle,
-                    updatedAt: now,
-                    messages: cleanMsgs
-                };
-                updated = [updatedChat, ...prevChats.filter((_, i) => i !== existingIdx)];
-            } else {
-                const newChat: AskChat = {
-                    id: currentId || ('chat_' + now),
-                    title: generatedTitle || 'New chat',
-                    file: selectedFile,
-                    createdAt: now,
-                    updatedAt: now,
-                    messages: cleanMsgs
-                };
-                updated = [newChat, ...prevChats];
-            }
-
-            return updated.slice(0, 50);
-        });
-    }, [selectedFile]);
-
-    const handleNewChat = useCallback(() => {
-        if (!selectedFile) return;
-        const newId = 'chat_' + Date.now();
-        setActiveChatId(newId);
-        activeChatIdRef.current = newId;
-        setChatMessages([]);
-        setAiCitations([]);
-        setAiEvidence([]);
-        setAiError(null);
-        setAskQ('');
-        setAttachedImages([]);
-        setImageWarning(null);
-        lastActiveChatByFile.current[selectedFile] = newId;
-    }, [selectedFile, setAiCitations, setAiEvidence]);
-
-    const handleDeleteChat = useCallback((chatId: string) => {
-        if (!window.confirm("Delete this chat?")) return;
-        setChats(prevChats => {
-            const remaining = prevChats.filter(c => c.id !== chatId);
-            if (activeChatIdRef.current === chatId) {
-                const nextChat = remaining.find(c => c.file === selectedFile);
-                if (nextChat) {
-                    setActiveChatId(nextChat.id);
-                    activeChatIdRef.current = nextChat.id;
-                    setChatMessages(nextChat.messages || []);
-                    if (selectedFile) {
-                        lastActiveChatByFile.current[selectedFile] = nextChat.id;
-                    }
-                } else {
-                    const newId = 'chat_' + Date.now();
-                    setActiveChatId(newId);
-                    activeChatIdRef.current = newId;
-                    setChatMessages([]);
-                    if (selectedFile) {
-                        lastActiveChatByFile.current[selectedFile] = newId;
-                    }
-                }
-            }
-            return remaining;
-        });
-    }, [selectedFile]);
-
-    const handleRenameChat = useCallback((chatId: string, currentTitle: string) => {
-        const newTitle = window.prompt("Rename chat:", currentTitle);
-        if (!newTitle || !newTitle.trim()) return;
-        setChats(prevChats => prevChats.map(c => c.id === chatId ? { ...c, title: newTitle.trim().slice(0, 40), updatedAt: Date.now() } : c));
-    }, []);
-
-    const handleClearMessages = useCallback(() => {
-        setChatMessages([]);
-        setAiCitations([]);
-        setAiEvidence([]);
-        setAiError(null);
-        const currentId = activeChatIdRef.current;
-        if (currentId) {
-            setChats(prevChats => prevChats.map(c => c.id === currentId ? { ...c, messages: [], updatedAt: Date.now() } : c));
-        }
-    }, [setAiCitations, setAiEvidence]);
+    }, [attachedImages.length, setAttachedImages]);
 
     const filteredChats = useMemo(() => {
         if (!chatSearchQuery.trim()) return chats;
@@ -3686,6 +3496,29 @@ ${lastAssistant.content}${evidenceList}
         }
     };
 
+    const handleNewChat = useCallback(() => {
+        newAskAiChat(selectedFile);
+    }, [newAskAiChat, selectedFile]);
+
+    const handleRenameChat = useCallback((chatId: string, currentTitle: string) => {
+        const title = window.prompt('Rename chat:', currentTitle);
+        if (title && title.trim()) {
+            renameAskAiChat(chatId, title.trim());
+        }
+    }, [renameAskAiChat]);
+
+    const handleDeleteChat = useCallback((chatId: string) => {
+        if (window.confirm('Delete this chat?')) {
+            deleteAskAiChat(chatId);
+        }
+    }, [deleteAskAiChat]);
+
+    const handleClearMessages = useCallback(() => {
+        if (window.confirm('Clear all messages in this chat?')) {
+            clearAskAiMessages();
+        }
+    }, [clearAskAiMessages]);
+
     const reanalyzeRepo = async () => {
         if (!repoUrl || !selectedSha) return;
         setAnalyzing(true);
@@ -3752,10 +3585,6 @@ ${lastAssistant.content}${evidenceList}
         }
     }, [chatMessages, aiError, isStreaming, activeTab]);
 
-    // Reset Ask AI input on selected file change
-    useEffect(() => {
-        setAskQ('');
-    }, [selectedFile]);
 
     const formatAiError = (err: any): { message: string; backendMessage?: string; status?: number; code?: string; retryAfterSeconds?: number } => {
         const rawCode = String(err?.code || (err?.data && err.data.code) || '').toLowerCase();
@@ -3829,24 +3658,8 @@ ${lastAssistant.content}${evidenceList}
     };
 
     const handleStopAi = useCallback(() => {
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-            abortControllerRef.current = null;
-        }
-        setIsStreaming(false);
-        setChatMessages(prev => {
-            const copy = [...prev];
-            const last = copy[copy.length - 1];
-            if (last && last.role === 'assistant') {
-                copy[copy.length - 1] = {
-                    ...last,
-                    isThinking: false,
-                    stopped: true
-                };
-            }
-            return copy;
-        });
-    }, []);
+        stopAskAiStreaming();
+    }, [stopAskAiStreaming]);
 
     const askAI = async (
         questionToAsk?: string,
@@ -3880,15 +3693,14 @@ ${lastAssistant.content}${evidenceList}
             userMsg,
             { role: 'assistant' as const, content: '', isThinking: true }
         ];
-        setChatMessages(newMessages);
 
         const target = selectedSymbol
             ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
             : { type: 'file', path: selectedFile };
 
         const controller = new AbortController();
-        abortControllerRef.current = controller;
-        setIsStreaming(true);
+        const chatId = activeChatId || ('chat_' + Date.now());
+        startAskAiStreaming(chatId, controller, newMessages);
 
         const historyToSend = pool
             .filter(m => !m.isThinking && (m.content.trim().length > 0 || (m.images && m.images.length > 0)))
@@ -4026,8 +3838,6 @@ ${lastAssistant.content}${evidenceList}
             repoFacts
         };
 
-        let accumulatedStreamedText = '';
-
         try {
             const res = await api.ai.askStream(
                 repoUrl,
@@ -4037,20 +3847,7 @@ ${lastAssistant.content}${evidenceList}
                 q,
                 historyToSend,
                 (token: string) => {
-                    accumulatedStreamedText += token;
-                    setChatMessages(prev => {
-                        const copy = [...prev];
-                        const lastIdx = copy.length - 1;
-                        if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
-                            copy[lastIdx] = {
-                                ...copy[lastIdx],
-                                role: 'assistant',
-                                content: accumulatedStreamedText,
-                                isThinking: false
-                            };
-                        }
-                        return copy;
-                    });
+                    appendAskAiStreamingToken(token);
                 },
                 controller.signal,
                 extraContext,
@@ -4060,55 +3857,17 @@ ${lastAssistant.content}${evidenceList}
             );
 
             if (res.status === 'error' && res.error) {
-                setChatMessages(prev => {
-                    const kept = prev.filter(m => !m.isThinking);
-                    saveChatMessages(kept);
-                    return kept;
-                });
-                setAiError(formatAiError(res.error));
+                handleAskAiStreamError(formatAiError(res.error));
             } else {
-                const updated = [
-                    ...newMessages.slice(0, -1),
-                    {
-                        role: 'assistant' as const,
-                        content: res.answer || accumulatedStreamedText,
-                        followups: res.followUps,
-                        evidence: res.evidence,
-                        usedContext: res.usedContext,
-                        missingData: res.missingData,
-                        status: res.status,
-                        error: res.error,
-                        retryAfterSeconds: res.retryAfterSeconds
-                    }
-                ];
-                saveChatMessages(updated);
+                finishAskAiStreaming(res);
             }
         } catch (e: any) {
             if (controller.signal.aborted) {
-                if (accumulatedStreamedText) {
-                    const updated = [
-                        ...newMessages.slice(0, -1),
-                        {
-                            role: 'assistant' as const,
-                            content: accumulatedStreamedText,
-                            stopped: true
-                        }
-                    ];
-                    saveChatMessages(updated);
-                } else {
-                    setChatMessages(prev => prev.filter(m => !m.isThinking));
-                }
+                // Handled by stopAskAiStreaming
             } else {
-                setChatMessages(prev => {
-                    const kept = prev.filter(m => !m.isThinking);
-                    saveChatMessages(kept);
-                    return kept;
-                });
-                setAiError(formatAiError(e));
+                handleAskAiStreamError(formatAiError(e));
             }
         } finally {
-            setIsStreaming(false);
-            abortControllerRef.current = null;
             setTimeout(() => {
                 messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
             }, 50);
@@ -4612,15 +4371,12 @@ ${lastAssistant.content}${evidenceList}
                                         <div
                                             key={chat.id}
                                             onClick={() => {
-                                                setActiveChatId(chat.id);
-                                                activeChatIdRef.current = chat.id;
-                                                setChatMessages(chat.messages || []);
+                                                setActiveAskAiChat(chat.id, chat.file);
                                                 setSelectedAnswerIdx(null);
                                                 setAiError(null);
                                                 if (chat.file !== selectedFile) {
                                                     selectFile(chat.file);
                                                 }
-                                                lastActiveChatByFile.current[chat.file] = chat.id;
                                                 if (!isSidebar) setNormalChatsOpen(false);
                                             }}
                                             className={cn(
@@ -6025,6 +5781,12 @@ ${lastAssistant.content}${evidenceList}
                                     <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
                                         {/* Chat Messages */}
                                         <div
+                                            ref={chatScrollContainerRef}
+                                            onScroll={e => {
+                                                if (activeChatId) {
+                                                    setAskAiScrollPos(activeChatId, (e.target as HTMLElement).scrollTop);
+                                                }
+                                            }}
                                             className="flex-1 p-4 overflow-y-auto scrollbar-custom min-h-0 relative"
                                             onDragOver={e => {
                                                 e.preventDefault();
@@ -6841,33 +6603,41 @@ ${lastAssistant.content}${evidenceList}
                                                         {(healthData.circularImports || []).map((cycle, i) => (
                                                             <div key={i} className="p-2.5 rounded-lg border border-white/[0.06] bg-white/[0.02] text-xs space-y-1.5">
                                                                 <div className="text-[10px] text-[#8A918C] font-mono">Cycle #{i + 1} ({cycle?.length || 0} files)</div>
-                                                                <div className="flex items-center gap-1.5 flex-wrap">
-                                                                    {(cycle || []).map((filePath, fIdx) => (
-                                                                        <div key={fIdx} className="inline-flex items-center gap-1.5">
-                                                                            <button
-                                                                                onClick={() => filePath && selectFile(filePath)}
-                                                                                className="font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer underline-offset-2 hover:underline"
-                                                                                title={filePath}
-                                                                            >
-                                                                                {filePath ? filePath.split('/').pop() : ''}
-                                                                            </button>
-                                                                            {fIdx < (cycle?.length || 0) - 1 && (
-                                                                                <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
-                                                                            )}
-                                                                        </div>
-                                                                    ))}
-                                                                    {cycle && cycle.length > 0 && cycle[0] && (
-                                                                        <>
-                                                                            <span className="text-[#8A918C]/60 text-[10px] font-mono">→</span>
-                                                                            <button
-                                                                                onClick={() => selectFile(cycle[0])}
-                                                                                className="font-mono text-xs text-[#8A918C] hover:text-[#4FD1B5] transition-colors cursor-pointer"
-                                                                                title={cycle[0]}
-                                                                            >
-                                                                                {cycle[0].split('/').pop()}
-                                                                            </button>
-                                                                        </>
-                                                                    )}
+                                                                <div className="flex items-center gap-1.5 overflow-x-auto whitespace-nowrap scrollbar-custom py-0.5">
+                                                                    {(cycle || []).map((filePath, fIdx) => {
+                                                                        const baseName = filePath ? filePath.split('/').pop() : '';
+                                                                        const folder = filePath && filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : (filePath || '');
+                                                                        return (
+                                                                            <div key={fIdx} className="inline-flex items-center gap-1.5 shrink-0">
+                                                                                <button
+                                                                                    onClick={() => filePath && selectFile(filePath)}
+                                                                                    className="font-mono text-xs text-[#E8EAE6] hover:text-[#4FD1B5] transition-colors cursor-pointer underline-offset-2 hover:underline"
+                                                                                    title={folder}
+                                                                                >
+                                                                                    {baseName}
+                                                                                </button>
+                                                                                {fIdx < (cycle?.length || 0) - 1 && (
+                                                                                    <span className="text-[#4FD1B5]/70 text-[10px] font-mono select-none">→</span>
+                                                                                )}
+                                                                            </div>
+                                                                        );
+                                                                    })}
+                                                                    {cycle && cycle.length > 0 && cycle[0] && (() => {
+                                                                        const baseName = cycle[0].split('/').pop();
+                                                                        const folder = cycle[0].includes('/') ? cycle[0].slice(0, cycle[0].lastIndexOf('/')) : cycle[0];
+                                                                        return (
+                                                                            <>
+                                                                                <span className="text-[#4FD1B5]/70 text-[10px] font-mono select-none">→</span>
+                                                                                <button
+                                                                                    onClick={() => selectFile(cycle[0])}
+                                                                                    className="font-mono text-xs text-[#8A918C] hover:text-[#4FD1B5] transition-colors cursor-pointer shrink-0"
+                                                                                    title={folder}
+                                                                                >
+                                                                                    {baseName}
+                                                                                </button>
+                                                                            </>
+                                                                        );
+                                                                    })()}
                                                                 </div>
                                                             </div>
                                                         ))}
@@ -6891,7 +6661,7 @@ ${lastAssistant.content}${evidenceList}
                                             </div>
                                             {openHealthSections.unused ? <ChevronUp size={14} className="text-[#8A918C]" /> : <ChevronDown size={14} className="text-[#8A918C]" />}
                                         </button>
-                                        <p className="text-[11px] text-[#8A918C]">Entry and config files are excluded</p>
+                                        <p className="text-[11px] text-[#8A918C]">Entry and config files are excluded. Scripts, tests and tooling folders are excluded.</p>
 
                                         {openHealthSections.unused && (
                                             <div className="pt-2 border-t border-white/[0.06] space-y-2">

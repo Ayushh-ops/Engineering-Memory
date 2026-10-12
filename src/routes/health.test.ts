@@ -42,6 +42,39 @@ async function main(): Promise<void> {
         assert.ok(Array.isArray(healthBody.unusedFiles), "Health body should contain unusedFiles");
         assert.ok(Array.isArray(healthBody.godFiles), "Health body should contain godFiles");
 
+        // 1b. Test unusedFiles exclusions vs valid product source file
+        const exclusionPayload = {
+            graph: {
+                nodes: [
+                    { id: "repo:1", type: "repository", name: "test-repo" },
+                    { id: "file:1", type: "file", name: "waitForCdp.ts", path: ".agents/skills/launch/scripts/waitForCdp.ts" },
+                    { id: "file:2", type: "file", name: "code-amd-node-module.ts", path: ".eslint-plugin-local/code-amd-node-module.ts" },
+                    { id: "file:3", type: "file", name: "bar.ts", path: "src/vs/foo/bar.ts" }
+                ],
+                edges: []
+            }
+        };
+
+        const exclusionRes = await fetch(`http://127.0.0.1:${port}/api/repositories/graph/health`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(exclusionPayload)
+        });
+        assert.equal(exclusionRes.status, 200, "Exclusion test request should succeed");
+        const exclusionBody = await exclusionRes.json() as { unusedFiles: string[] };
+        assert.ok(
+            !exclusionBody.unusedFiles.includes(".agents/skills/launch/scripts/waitForCdp.ts"),
+            "Files in .agents/skills/... must NOT be in unusedFiles"
+        );
+        assert.ok(
+            !exclusionBody.unusedFiles.includes(".eslint-plugin-local/code-amd-node-module.ts"),
+            "Files in .eslint-plugin-local/... must NOT be in unusedFiles"
+        );
+        assert.ok(
+            exclusionBody.unusedFiles.includes("src/vs/foo/bar.ts"),
+            "Real source file src/vs/foo/bar.ts with in-degree 0 MUST be in unusedFiles"
+        );
+
         // 2. A 2 MB body to a normal route is rejected with a JSON 413 error
         const normalPayload = {
             padding: twoMbPadding

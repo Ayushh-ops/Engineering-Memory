@@ -52,6 +52,32 @@ function isConfigPath(path: string): boolean {
     return false;
 }
 
+const EXCLUDED_PATH_SEGMENTS = new Set([
+    ".agents", ".eslint-plugin-local", ".github", ".vscode", ".devcontainer", ".config",
+    "scripts", "script", "tools", "tool", "build", "test", "tests", "__tests__",
+    "fixtures", "fixture", "mock", "mocks", "examples", "example", "docs",
+    "benchmark", "benchmarks", "node_modules", "dist", "out", "extensions-tests"
+]);
+
+function isExcludedUnusedPath(path: string): boolean {
+    const normalized = path.replace(/\\/g, "/").toLowerCase();
+    const segments = normalized.split("/").filter(Boolean);
+    if (segments.length === 0) return false;
+
+    for (const seg of segments) {
+        if (EXCLUDED_PATH_SEGMENTS.has(seg)) return true;
+    }
+
+    const fileName = segments[segments.length - 1];
+    if (/\.(test|spec)\./i.test(fileName)) return true;
+    if (fileName.endsWith(".d.ts")) return true;
+    if (fileName === "index.ts" || fileName === "index.js") return true;
+    if (fileName.includes(".config.") || /\.config\.[^.]+$/i.test(fileName)) return true;
+    if (/^(main|index|app|cli|server|setup|bootstrap)\./i.test(fileName)) return true;
+
+    return false;
+}
+
 function isDocPath(path: string): boolean {
     const normalized = path.replace(/\\/g, "/").toLowerCase();
     const parts = normalized.split("/");
@@ -188,6 +214,7 @@ export function computeGraphHealth(graph: RepositoryGraph): HealthSummaryResult 
         const depCount = inDegree.get(f.path) || 0;
         if (depCount === 0) {
             if (!isSourceFile(f.path)) continue;
+            if (isExcludedUnusedPath(f.path)) continue;
             if (isEntryPath(f.path)) continue;
             if (isTestPath(f.path)) continue;
             if (isConfigPath(f.path)) continue;

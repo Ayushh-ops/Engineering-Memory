@@ -3,6 +3,7 @@ import App from '../src/App';
 import { useAppStore } from '../src/store';
 import { test, expect, vi, beforeEach } from 'vitest';
 import React from 'react';
+import { MemoryRouter } from 'react-router-dom';
 
 // Mock fetch
 global.fetch = vi.fn();
@@ -30,12 +31,19 @@ test('Analyze button works and renders tree', async () => {
         if (path === '/api/repositories/tree') {
             return { ok: true, json: async () => mockTree };
         }
+        if (path === '/api/repositories/analyze') {
+            return { ok: true, json: async () => ({ graph: { nodes: [], edges: [] } }) };
+        }
         return { ok: false };
     });
 
-    render(<App />);
+    render(
+        <MemoryRouter>
+            <App />
+        </MemoryRouter>
+    );
 
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo');
+    const input = screen.getByPlaceholderText('https://github.com/owner/repository');
     fireEvent.change(input, { target: { value: 'https://github.com/microsoft/vscode' } });
 
     const analyzeBtn = screen.getByText('Analyze');
@@ -60,4 +68,4 @@ test('Analyze button works and renders tree', async () => {
     expect(state.treeFiles.length).toBe(13000);
 
     console.log("TEST PASSED! Tree successfully rendered from state.");
-});
+}, 30000);
