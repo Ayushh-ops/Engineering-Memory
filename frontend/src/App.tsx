@@ -21,7 +21,7 @@ export default function App() {
             {!repoUrl ? (
                 <LandingPage />
             ) : (
-                <div className="flex flex-col h-screen overflow-hidden text-sm bg-[#07090A] text-[#E8EAE6]">
+                <div className="flex flex-col h-[100dvh] min-h-[100dvh] max-h-[100dvh] overflow-hidden overflow-x-clip text-sm bg-[#07090A] text-[#E8EAE6]">
                     <TopBar />
                     <div className="flex flex-1 overflow-hidden">
                         <Sidebar className="w-[210px] flex-shrink-0" />

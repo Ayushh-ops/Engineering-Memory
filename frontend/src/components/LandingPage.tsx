@@ -240,7 +240,11 @@ export function LandingPage() {
             const pX = (mx - 0.5) * 22;
             const pY = (my - 0.5) * 22;
 
-            const pos = nodesData.map((node) => {
+            const isPhone = window.innerWidth <= 767;
+            const maxNodes = isPhone ? 40 : nodesData.length;
+            const currentNodes = nodesData.slice(0, maxNodes);
+
+            const pos = currentNodes.map((node) => {
                 if (prefersReducedMotion) {
                     return {
                         x: cx + node.x * scale,
@@ -261,8 +265,10 @@ export function LandingPage() {
             ctx!.setLineDash([]);
             ctx!.beginPath();
             regularEdges.forEach(([src, dst]) => {
+                if (src >= maxNodes || dst >= maxNodes) return;
                 const a = pos[src];
                 const b = pos[dst];
+                if (!a || !b) return;
                 ctx!.moveTo(a.x, a.y);
                 ctx!.lineTo(b.x, b.y);
             });
@@ -279,8 +285,10 @@ export function LandingPage() {
             }
             ctx!.beginPath();
             amberEdges.forEach(([src, dst]) => {
+                if (src >= maxNodes || dst >= maxNodes) return;
                 const a = pos[src];
                 const b = pos[dst];
+                if (!a || !b) return;
                 ctx!.moveTo(a.x, a.y);
                 ctx!.lineTo(b.x, b.y);
             });
@@ -301,9 +309,10 @@ export function LandingPage() {
                     p.u += dt / 1400;
                     if (p.u > 1) return false;
                     const edge = allEdges[p.edgeIdx];
-                    if (!edge) return false;
+                    if (!edge || edge[0] >= maxNodes || edge[1] >= maxNodes) return false;
                     const a = pos[edge[0]];
                     const b = pos[edge[1]];
+                    if (!a || !b) return false;
                     const px = a.x + (b.x - a.x) * p.u;
                     const py = a.y + (b.y - a.y) * p.u;
                     const alpha = Math.sin(p.u * Math.PI) * 0.85;
@@ -317,9 +326,10 @@ export function LandingPage() {
             }
 
             // Draw leaf grey nodes
-            nodesData.forEach((node, idx) => {
+            currentNodes.forEach((node, idx) => {
                 if (node.type !== 'grey') return;
                 const p = pos[idx];
+                if (!p) return;
                 ctx!.fillStyle = '#8A918C';
                 ctx!.beginPath();
                 ctx!.arc(p.x, p.y, node.r * scale, 0, Math.PI * 2);
@@ -327,9 +337,10 @@ export function LandingPage() {
             });
 
             // Draw normal teal nodes
-            nodesData.forEach((node, idx) => {
+            currentNodes.forEach((node, idx) => {
                 if (node.type !== 'teal') return;
                 const p = pos[idx];
+                if (!p) return;
                 ctx!.fillStyle = '#4FD1B5';
                 ctx!.beginPath();
                 ctx!.arc(p.x, p.y, node.r * scale, 0, Math.PI * 2);
@@ -337,9 +348,10 @@ export function LandingPage() {
             });
 
             // Draw risky amber nodes with soft warm glow
-            nodesData.forEach((node, idx) => {
+            currentNodes.forEach((node, idx) => {
                 if (node.type !== 'amber') return;
                 const p = pos[idx];
+                if (!p) return;
                 ctx!.save();
                 ctx!.shadowBlur = 10 * scale;
                 ctx!.shadowColor = 'rgba(227, 160, 74, 0.45)';
@@ -519,9 +531,9 @@ export function LandingPage() {
             <div className="absolute top-[520px] -left-[240px] w-[620px] h-[620px] rounded-full pointer-events-none bg-[radial-gradient(circle,rgba(227,160,74,0.06),transparent_65%)]" />
             <div className="noise-overlay pointer-events-none" />
 
-            <div className="relative z-10 max-w-[1200px] mx-auto px-6 sm:px-8">
+            <div className="relative z-10 max-w-[1200px] mx-auto px-4 sm:px-8">
                 {/* Navbar */}
-                <nav className="flex items-center justify-between h-[84px] gap-6 flex-wrap">
+                <nav className="flex items-center justify-between h-[84px] gap-4 flex-wrap">
                     <div className="flex items-center gap-2.5 font-semibold text-[17px] tracking-[-0.01em] text-[#E8EAE6]">
                         <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
                             <path d="M13 2l11 11-11 11L2 13z" stroke="#4FD1B5" strokeWidth="1.5" />
@@ -529,7 +541,7 @@ export function LandingPage() {
                         </svg>
                         <span>Engineering Memory</span>
                     </div>
-                    <div className="flex items-center gap-7 text-[14.5px]">
+                    <div className="flex items-center gap-5 sm:gap-7 text-[14px] sm:text-[14.5px]">
                         <a href="#how" className="text-[#8A918C] hover:text-[#E8EAE6] transition-colors">
                             How it works
                         </a>
@@ -551,9 +563,9 @@ export function LandingPage() {
                 </nav>
 
                 {/* Hero Section */}
-                <section className="flex flex-col lg:flex-row items-center gap-8 py-14 lg:py-24">
+                <section className="flex flex-col lg:flex-row items-center gap-8 py-10 sm:py-14 lg:py-24">
                     {/* Left Column */}
-                    <div className="flex-1 min-w-[300px] w-full max-w-[560px]">
+                    <div className="flex-1 min-w-0 w-full max-w-[560px]">
                         {loading ? (
                             <div className="glass-surface max-w-md p-6 rounded-2xl hairline-border shadow-2xl flex flex-col justify-center">
                                 <p className="font-mono text-xs text-[#8A918C] mb-4 truncate">{analyzingTarget || 'Loading repository'}</p>
@@ -594,7 +606,7 @@ export function LandingPage() {
                                     <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5]" />
                                     <span>Code intelligence for GitHub repositories</span>
                                 </div>
-                                <h1 className="mt-6 text-5xl sm:text-6xl lg:text-[76px] leading-[1] tracking-[-0.035em] font-semibold text-[#E8EAE6]">
+                                <h1 className="mt-6 text-4xl sm:text-6xl lg:text-[76px] leading-[1.05] sm:leading-[1] tracking-[-0.035em] font-semibold text-[#E8EAE6]">
                                     Understand your <span className="text-[#E3A04A]">codebase</span>
                                     <br />
                                     before you
@@ -606,34 +618,36 @@ export function LandingPage() {
                                 </p>
 
                                 {/* URL Input with Glass Surface */}
-                                <div className="mt-9 landing-field flex items-center gap-2 max-w-[560px] p-[7px] pl-[18px] bg-[rgba(16,20,21,0.66)] border border-white/10 rounded-[14px] shadow-[0_18px_40px_rgba(0,0,0,0.35)] transition-all">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A918C" strokeWidth="1.7" strokeLinecap="round" className="shrink-0">
-                                        <circle cx="6" cy="6" r="2.5" />
-                                        <circle cx="6" cy="18" r="2.5" />
-                                        <circle cx="18" cy="8" r="2.5" />
-                                        <path d="M6 8.5v7M18 10.5c0 4-12 2-12 5.5" />
-                                    </svg>
-                                    <label htmlFor="repo" className="sr-only">GitHub repository URL</label>
-                                    <input
-                                        id="repo"
-                                        type="text"
-                                        value={url}
-                                        onChange={(e) => {
-                                            setUrl(e.target.value);
-                                            if (error) setError('');
-                                        }}
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                if (!isValidGitHubUrl(url)) {
-                                                    setError('Enter a full GitHub URL, for example https://github.com/owner/repository');
-                                                    return;
+                                <div className="mt-8 sm:mt-9 landing-field flex flex-col sm:flex-row items-stretch sm:items-center gap-2 max-w-[560px] p-2 sm:p-[7px] sm:pl-[18px] bg-[rgba(16,20,21,0.66)] border border-white/10 rounded-[14px] shadow-[0_18px_40px_rgba(0,0,0,0.35)] transition-all">
+                                    <div className="flex items-center gap-2 flex-1 min-w-0 px-2 sm:px-0">
+                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8A918C" strokeWidth="1.7" strokeLinecap="round" className="shrink-0">
+                                            <circle cx="6" cy="6" r="2.5" />
+                                            <circle cx="6" cy="18" r="2.5" />
+                                            <circle cx="18" cy="8" r="2.5" />
+                                            <path d="M6 8.5v7M18 10.5c0 4-12 2-12 5.5" />
+                                        </svg>
+                                        <label htmlFor="repo" className="sr-only">GitHub repository URL</label>
+                                        <input
+                                            id="repo"
+                                            type="text"
+                                            value={url}
+                                            onChange={(e) => {
+                                                setUrl(e.target.value);
+                                                if (error) setError('');
+                                            }}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                    if (!isValidGitHubUrl(url)) {
+                                                        setError('Enter a full GitHub URL, for example https://github.com/owner/repository');
+                                                        return;
+                                                    }
+                                                    handleAnalyze(url.trim());
                                                 }
-                                                handleAnalyze(url.trim());
-                                            }
-                                        }}
-                                        placeholder="https://github.com/owner/repository"
-                                        className="flex-1 min-w-0 bg-transparent border-0 text-[#E8EAE6] font-mono text-sm sm:text-[15px] py-3 focus:outline-none placeholder-[#8A918C]"
-                                    />
+                                            }}
+                                            placeholder="https://github.com/owner/repository"
+                                            className="flex-1 min-w-0 bg-transparent border-0 text-[#E8EAE6] font-mono text-base sm:text-[15px] py-2 sm:py-3 focus:outline-none placeholder-[#8A918C]"
+                                        />
+                                    </div>
                                     <button
                                         onClick={() => {
                                             if (!isValidGitHubUrl(url)) {
@@ -643,7 +657,7 @@ export function LandingPage() {
                                             handleAnalyze(url.trim());
                                         }}
                                         disabled={loading || !url.trim()}
-                                        className="landing-btn shrink-0 bg-[#4FD1B5] text-[#04100D] border-0 rounded-[10px] px-6 py-3 font-semibold text-sm sm:text-[15px] cursor-pointer disabled:opacity-50"
+                                        className="landing-btn w-full sm:w-auto shrink-0 bg-[#4FD1B5] text-[#04100D] border-0 rounded-[10px] px-6 py-3 font-semibold text-sm sm:text-[15px] cursor-pointer disabled:opacity-50 flex items-center justify-center min-h-[44px]"
                                     >
                                         Analyze
                                     </button>
@@ -708,10 +722,10 @@ export function LandingPage() {
                     </div>
 
                     {/* Right Column: Canvas Graph */}
-                    <div className="flex-1 min-w-[300px] w-full max-w-[560px] flex items-center justify-center">
+                    <div className="flex-1 min-w-0 w-full max-w-[560px] flex items-center justify-center">
                         <canvas
                             ref={canvasRef}
-                            className="w-full max-w-[560px] aspect-[560/520] block"
+                            className="w-full max-w-[560px] aspect-[560/520] block opacity-40 sm:opacity-100 transition-opacity"
                             role="img"
                             aria-label="Interactive decorative dependency network"
                         />
@@ -845,7 +859,7 @@ export function LandingPage() {
                 </section>
 
                 {/* Footer */}
-                <footer className="flex justify-between items-center flex-wrap gap-4 py-7 pb-10 border-t border-white/[0.06] text-sm text-[#8A918C]">
+                <footer className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 py-7 pb-10 border-t border-white/[0.06] text-sm text-[#8A918C]">
                     <span>Engineering Memory</span>
                     <span>Built to answer one question: what breaks if I change this?</span>
                 </footer>

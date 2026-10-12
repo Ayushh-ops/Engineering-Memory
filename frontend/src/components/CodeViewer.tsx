@@ -170,8 +170,8 @@ export function CodeViewer() {
             </div>
 
             {/* Code view area with line numbers and horizontal scroll */}
-            <div className="flex-1 overflow-auto scrollbar-custom font-mono text-xs leading-5 bg-[#050708] select-text">
-                <div className="min-w-full inline-block py-2">
+            <div className="flex-1 overflow-auto scrollbar-custom font-mono text-[12.5px] leading-5 bg-[#050708] select-text">
+                <div className="min-w-max inline-block py-2">
                     {lines.map((line, index) => {
                         const lineNum = index + 1;
                         const isHighlighted = codeHighlightLine !== null && (
@@ -193,12 +193,12 @@ export function CodeViewer() {
                                 )}
                             >
                                 <span className={cn(
-                                    "w-12 shrink-0 select-none text-right pr-4 text-[#8A918C]/40 text-[11px]",
+                                    "w-12 shrink-0 select-none text-right pr-4 text-[#8A918C]/40 text-[11px] sticky left-0 bg-[#050708] z-10",
                                     isHighlighted && "text-[#4FD1B5] font-semibold"
                                 )}>
                                     {lineNum}
                                 </span>
-                                <pre className="whitespace-pre overflow-visible text-[#E8EAE6] m-0 font-mono">
+                                <pre className="whitespace-pre overflow-visible text-[#E8EAE6] m-0 font-mono text-[12.5px]">
                                     {highlightCodeLine(line)}
                                 </pre>
                             </div>

@@ -155,6 +155,11 @@ export interface AppState {
     activeTab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI' | 'ChangeSet';
     setActiveTab: (tab: 'Overview' | 'Graph' | 'Impact' | 'Connections' | 'Code' | 'History' | 'Health' | 'AskAI' | 'ChangeSet') => void;
 
+    mobileNavOpen: boolean;
+    setMobileNavOpen: (open: boolean) => void;
+    mobileDetailsOpen: boolean;
+    setMobileDetailsOpen: (open: boolean) => void;
+
     codeHighlightLine: number | null;
     codeHighlightEndLine: number | null;
     setCodeHighlightLine: (line: number | null, endLine?: number | null) => void;
@@ -269,7 +274,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     setSelectedSymbol: (sym) => set({ selectedSymbol: sym }),
 
     activeTab: 'Impact',
-    setActiveTab: (tab) => set({ activeTab: tab }),
+    setActiveTab: (tab) => set({ activeTab: tab, mobileNavOpen: false }),
+
+    mobileNavOpen: false,
+    setMobileNavOpen: (open) => set({ mobileNavOpen: open }),
+    mobileDetailsOpen: false,
+    setMobileDetailsOpen: (open) => set({ mobileDetailsOpen: open }),
 
     codeHighlightLine: null,
     codeHighlightEndLine: null,
@@ -336,6 +346,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             selectedFile: path,
             selectedSymbol: null,
             impactResult: null,
+            mobileNavOpen: false,
+            mobileDetailsOpen: false,
         });
 
         const isCode = isCodeFile(path);

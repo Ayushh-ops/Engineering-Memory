@@ -57,9 +57,11 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const gl = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     gl.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     gl.setSize(W(), H());
+    gl.domElement.style.touchAction = 'none';
     const lr = new CSS2DRenderer();
     lr.setSize(W(), H());
-    Object.assign(lr.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none' });
+    Object.assign(lr.domElement.style, { position: 'absolute', inset: '0', pointerEvents: 'none', touchAction: 'none' });
+    el.style.touchAction = 'none';
     el.append(gl.domElement, lr.domElement);
     scene.add(new THREE.AmbientLight(0xffffff, 0.95));
     const dl = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -395,8 +397,18 @@ export default function Graph3D({ center, nodes, onSelect, resetSignal = 0 }: Pr
     const computeOverlaps = () => {
       const w = W(), h = H();
       const placed: { x: number; y: number; w: number; h: number }[] = [];
+      const isPhone = typeof window !== 'undefined' && window.innerWidth <= 767;
+      const top4RiskyIds = isPhone
+        ? new Set([...nodes].sort((a, b) => (b.risk || 0) - (a.risk || 0)).slice(0, 4).map((n) => n.id))
+        : null;
 
       orderedItems.forEach((it) => {
+        if (isPhone && it.id !== center.id && !top4RiskyIds?.has(it.id) && !it.hover) {
+          it.shown = false;
+          it.el.style.opacity = '0';
+          return;
+        }
+
         // Measure label sizes once after mount and cache them
         if (!it.bw) {
           it.bw = (it.el.offsetWidth || 110) + 6;

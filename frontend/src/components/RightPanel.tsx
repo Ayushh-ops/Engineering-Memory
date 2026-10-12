@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAppStore } from '../store';
 import { Badge, cn } from '../ui';
-import { Activity, Clock, MessageSquare } from 'lucide-react';
+import { Activity, Clock, MessageSquare, X } from 'lucide-react';
 import { api, FileOwnersResponse } from '../api';
 import { computeRisk, getConnectedFiles, getFileDependents, isTestFile } from '../graph-helpers';
 import { CodeViewer } from './CodeViewer';
+import { useResponsive } from '../useMediaQuery';
 
 function getFileLanguage(filePath: string): string {
     const lower = filePath.toLowerCase();
@@ -835,24 +836,71 @@ function FileInspector({ className }: { className?: string }) {
 }
 
 export function RightPanel({ className }: { className?: string }) {
-    const { activeTab } = useAppStore();
+    const { activeTab, mobileDetailsOpen, setMobileDetailsOpen } = useAppStore();
+    const { isDesktop } = useResponsive();
+
+    useEffect(() => {
+        if (!isDesktop && mobileDetailsOpen) {
+            const handleEsc = (e: KeyboardEvent) => {
+                if (e.key === 'Escape') setMobileDetailsOpen(false);
+            };
+            window.addEventListener('keydown', handleEsc);
+            return () => window.removeEventListener('keydown', handleEsc);
+        }
+    }, [isDesktop, mobileDetailsOpen, setMobileDetailsOpen]);
 
     // Repo-level tabs must not show Node details
     if (['Overview', 'ChangeSet', 'Health'].includes(activeTab)) {
         return null;
     }
 
-    if (activeTab === 'History') {
-        return <CommitDetails className={className} />;
+    const content = (() => {
+        if (activeTab === 'History') {
+            return <CommitDetails className={isDesktop ? className : undefined} />;
+        }
+        if (activeTab === 'AskAI') {
+            return <EvidenceList className={isDesktop ? className : undefined} />;
+        }
+        if (activeTab === 'Connections') {
+            return <ConnectionsSummary className={isDesktop ? className : undefined} />;
+        }
+        return <FileInspector className={isDesktop ? className : undefined} />;
+    })();
+
+    if (isDesktop) {
+        return content;
     }
 
-    if (activeTab === 'AskAI') {
-        return <EvidenceList className={className} />;
+    if (!mobileDetailsOpen) {
+        return null;
     }
 
-    if (activeTab === 'Connections') {
-        return <ConnectionsSummary className={className} />;
-    }
-
-    return <FileInspector className={className} />;
+    return (
+        <>
+            <div
+                className="fixed inset-0 bg-black/55 z-40 transition-opacity"
+                onClick={() => setMobileDetailsOpen(false)}
+                aria-hidden="true"
+            />
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="File details"
+                className="fixed inset-x-0 bottom-0 z-50 max-h-[75dvh] rounded-t-[16px] bg-[#0A0D0E] border-t border-white/10 shadow-2xl flex flex-col overflow-hidden"
+            >
+                {/* Drag handle bar */}
+                <div className="w-10 h-1 rounded-full bg-white/20 mx-auto my-2.5 shrink-0" />
+                <button
+                    onClick={() => setMobileDetailsOpen(false)}
+                    className="absolute top-2.5 right-3 text-xs text-[#8A918C] hover:text-[#E8EAE6] p-1.5 rounded-lg border border-white/10 bg-white/[0.03] cursor-pointer"
+                    aria-label="Close details"
+                >
+                    <X size={14} />
+                </button>
+                <div className="flex-1 overflow-y-auto scrollbar-custom min-h-0">
+                    {content}
+                </div>
+            </div>
+        </>
+    );
 }

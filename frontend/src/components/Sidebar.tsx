@@ -1,10 +1,11 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import { useAppStore } from '../store';
-import { Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers, Hexagon, HeartPulse, Network, Activity, Clock, MessageSquare, Code2 } from 'lucide-react';
+import { Search, ChevronDown, ChevronRight, FileCode, FileText, Loader2, X, Layers, Hexagon, HeartPulse, Network, Activity, Clock, MessageSquare, Code2, GitBranch } from 'lucide-react';
 import { api } from '../api';
 import { cn } from '../ui';
 import { getPathsToAnalyze, isCodeFile } from '../analyze-helpers';
 import { selectRepoStats } from '../graph-helpers';
+import { useResponsive } from '../useMediaQuery';
 
 function buildTree(paths: string[]) {
     const root: any = { name: '', children: {}, isDir: true };
@@ -85,10 +86,92 @@ export function Sidebar({ className }: { className?: string }) {
         treeFiles, setTreeFiles, graph, setGraph, selectedFile,
         changeSet, removeFromChangeSet, clearChangeSet,
         setChangeSetResult, changeSetLoading, setChangeSetLoading,
-        activeTab, setActiveTab, repoCache, cacheShaAnalysis
+        activeTab, setActiveTab, repoCache, cacheShaAnalysis,
+        mobileNavOpen, setMobileNavOpen, setRepoUrl, setMeta, setCommits
     } = useAppStore();
+    const { isDesktop } = useResponsive();
+    const drawerRef = useRef<HTMLDivElement>(null);
     const [search, setSearch] = useState('');
     const [loadingTree, setLoadingTree] = useState(false);
+    const [drawerUrl, setDrawerUrl] = useState('');
+    const [drawerLoading, setDrawerLoading] = useState(false);
+
+    useEffect(() => {
+        if (mobileNavOpen && !isDesktop) {
+            drawerRef.current?.focus();
+            const prevOverflow = document.body.style.overflow;
+            document.body.style.overflow = 'hidden';
+
+            const handleEsc = (e: KeyboardEvent) => {
+                if (e.key === 'Escape') {
+                    setMobileNavOpen(false);
+                }
+            };
+            window.addEventListener('keydown', handleEsc);
+            return () => {
+                document.body.style.overflow = prevOverflow;
+                window.removeEventListener('keydown', handleEsc);
+            };
+        }
+    }, [mobileNavOpen, isDesktop, setMobileNavOpen]);
+
+    const handleDrawerAnalyze = async () => {
+        if (!drawerUrl.trim()) return;
+        setDrawerLoading(true);
+        try {
+            const urlVal = drawerUrl.trim();
+            const state = useAppStore.getState();
+            const cache = state.repoCache[urlVal] || {};
+
+            let m = cache.meta;
+            if (!m) {
+                m = await api.repositories.getMeta(urlVal);
+                state.repoCache[urlVal] = { ...state.repoCache[urlVal], meta: m };
+            }
+
+            try {
+                const stored = localStorage.getItem('engineering_memory_history');
+                const recent = stored ? JSON.parse(stored) : [];
+                const updated = [urlVal, ...recent.filter((r: string) => r !== urlVal)].slice(0, 8);
+                localStorage.setItem('engineering_memory_history', JSON.stringify(updated));
+            } catch (e) {}
+
+            let cList = cache.commits;
+            if (!cList) {
+                const commitData = await api.repositories.getCommits(urlVal);
+                cList = commitData.commits;
+                state.repoCache[urlVal] = { ...state.repoCache[urlVal], commits: cList };
+            }
+
+            let headSha = null;
+            let treeFilesResult: string[] = [];
+            if (cList && cList.length > 0) {
+                headSha = cList[0].sha;
+                let cachedTree = cache.trees?.[headSha];
+                if (!cachedTree) {
+                    const treeRes = await api.repositories.getTree(urlVal, headSha);
+                    cachedTree = treeRes.files;
+                    state.repoCache[urlVal] = {
+                        ...state.repoCache[urlVal],
+                        trees: { ...(state.repoCache[urlVal]?.trees || {}), [headSha]: cachedTree }
+                    };
+                }
+                treeFilesResult = cachedTree;
+            }
+
+            setMeta(m!);
+            setCommits(cList);
+            if (headSha) setSelectedSha(headSha);
+            if (treeFilesResult.length > 0) setTreeFiles(treeFilesResult);
+            setRepoUrl(urlVal);
+            setDrawerUrl('');
+            setMobileNavOpen(false);
+        } catch (e) {
+            console.error('Drawer analyze failed', e);
+        } finally {
+            setDrawerLoading(false);
+        }
+    };
 
     const handleAnalyzeChangeSet = async () => {
         if (!graph || changeSet.length === 0) return;
@@ -130,6 +213,7 @@ export function Sidebar({ className }: { className?: string }) {
 
     const handleFileSelect = async (path: string) => {
         try {
+            setMobileNavOpen(false);
             await useAppStore.getState().selectFile(path);
             if (['Overview', 'ChangeSet', 'Health'].includes(useAppStore.getState().activeTab)) {
                 useAppStore.getState().setActiveTab('Graph');
@@ -147,7 +231,65 @@ export function Sidebar({ className }: { className?: string }) {
     const repoName = meta?.fullName || (repoUrl ? repoUrl.replace(/^https?:\/\/github\.com\//, '') : 'Repository');
 
     return (
-        <div className={cn("w-[210px] min-w-[210px] max-w-[210px] flex flex-col bg-[#07090A] border-r border-white/[0.08] select-none h-full overflow-hidden shrink-0", className)}>
+        <>
+            {!isDesktop && mobileNavOpen && (
+                <div
+                    className="fixed inset-0 bg-black/55 z-40 transition-opacity"
+                    onClick={() => setMobileNavOpen(false)}
+                    aria-hidden="true"
+                />
+            )}
+            <div
+                ref={drawerRef}
+                tabIndex={!isDesktop ? -1 : undefined}
+                role={!isDesktop ? "dialog" : undefined}
+                aria-modal={!isDesktop ? "true" : undefined}
+                aria-label={!isDesktop ? "Repository navigation" : undefined}
+                className={cn(
+                    "flex flex-col bg-[#07090A] border-r border-white/[0.08] select-none h-full overflow-hidden shrink-0",
+                    isDesktop
+                        ? "w-[210px] min-w-[210px] max-w-[210px]"
+                        : "fixed top-0 bottom-0 left-0 z-50 w-[min(86vw,320px)] h-[100dvh] shadow-2xl transition-transform duration-[220ms] ease-out",
+                    !isDesktop && (mobileNavOpen ? "translate-x-0" : "-translate-x-full pointer-events-none"),
+                    isDesktop && className
+                )}
+            >
+                {/* On phone and tablet: top URL input and Analyze button */}
+                {!isDesktop && (
+                    <div className="p-3 border-b border-white/[0.08] shrink-0 bg-white/[0.02]">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-semibold text-[#E8EAE6]">
+                                Analyze another repository
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setMobileNavOpen(false)}
+                                className="p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer"
+                                aria-label="Close menu"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+                        <form onSubmit={(e) => { e.preventDefault(); handleDrawerAnalyze(); }} className="space-y-2">
+                            <div className="relative flex items-center bg-white/[0.03] border border-white/[0.08] rounded-lg px-2.5 py-1.5 focus-within:border-[#4FD1B5]/50 transition-colors">
+                                <GitBranch className="text-[#8A918C] mr-2 shrink-0" size={13} />
+                                <input
+                                    value={drawerUrl}
+                                    onChange={(e) => setDrawerUrl(e.target.value)}
+                                    placeholder="https://github.com/owner/repo"
+                                    className="w-full bg-transparent text-xs font-mono text-[#E8EAE6] focus:outline-none placeholder:text-[#8A918C]/60 truncate"
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                disabled={drawerLoading || !drawerUrl.trim()}
+                                className="w-full py-2 px-3 text-xs font-medium bg-[#4FD1B5] text-[#04100D] rounded-lg hover:brightness-110 active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer font-sans min-h-[40px] flex items-center justify-center shadow-sm"
+                            >
+                                {drawerLoading ? 'Analyzing...' : 'Analyze'}
+                            </button>
+                        </form>
+                    </div>
+                )}
             {/* Top header: Repo name, branch & commit chips */}
             <div className="p-3 border-b border-white/[0.08] shrink-0">
                 <div className="text-[13px] font-semibold text-[#E8EAE6] truncate" title={repoName}>
@@ -390,5 +532,6 @@ export function Sidebar({ className }: { className?: string }) {
                 )}
             </div>
         </div>
+        </>
     );
 }

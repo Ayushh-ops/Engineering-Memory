@@ -13,6 +13,7 @@ import { getNeighborInfo, getFocusedGraph, computeRisk, computeChangeSetRisk, se
 import { ConnectedFilesList } from './ConnectedFilesList';
 import { RightPanel } from './RightPanel';
 import { ErrorBoundary } from './ErrorBoundary';
+import { useResponsive } from '../useMediaQuery';
 
 export type { AttachedImage };
 
@@ -430,20 +431,20 @@ function ComponentToolbar({
     };
 
     return (
-        <div className="flex items-center justify-between shrink-0 gap-3 whitespace-nowrap overflow-x-auto scrollbar-none py-1">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between shrink-0 gap-2 sm:gap-3 py-1">
             {/* Title Left */}
-            <div className="flex items-center gap-2 min-w-0">
-                <div>
-                    <div className="flex items-center gap-2">
-                        <h3 className="text-xs font-semibold text-[#E8EAE6] truncate">{title}</h3>
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+                <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-xs font-semibold text-[#E8EAE6] whitespace-normal">{title}</h3>
                         {badge}
                     </div>
-                    {subtitle && <p className="text-[11px] text-[#8A918C] mt-0.5">{subtitle}</p>}
+                    {subtitle && <p className="text-[11px] text-[#8A918C] mt-0.5 whitespace-normal">{subtitle}</p>}
                 </div>
             </div>
 
             {/* Right Controls: Middle (e.g. depth segmented control) + Primary Action + "..." Menu */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
                 {middle}
 
                 {primaryAction}
@@ -1316,12 +1317,29 @@ function OverviewGraph2D({
     const indirectIdSet = useMemo(() => new Set(indirectIds), [indirectIds]);
 
     const nodes = useMemo(() => {
+        const isPhone = typeof window !== 'undefined' && window.innerWidth <= 767;
+        const top4RiskyIds = isPhone ? new Set(
+            [...visibleNodes]
+                .map((n: any) => {
+                    const p = n.path || (n.type === 'file' ? n.id : undefined);
+                    let score = 0;
+                    if (p && graph) {
+                        try { score = computeRisk(p, graph).score; } catch {}
+                    }
+                    return { id: n.id, score };
+                })
+                .sort((a, b) => b.score - a.score)
+                .slice(0, 4)
+                .map(x => x.id)
+        ) : null;
+
         return visibleNodes.map((n: any) => {
             const pos = positions.get(n.id) || { x: 0, y: 0 };
             const nodePath = n.path || (n.type === 'file' ? n.id : undefined);
             const isSelected = neighborInfo.selectedNodeIds.has(n.id) || (centerId === n.id);
             const isRepo = n.type === 'repository';
             const isCallable = n.type === 'function' || n.type === 'method';
+            const showTextLabel = !isPhone || isSelected || Boolean(top4RiskyIds?.has(n.id));
 
             const rawName = n.name || (nodePath ? nodePath.split('/').pop() : n.id);
             const displayName = isRepo ? 'repo' : (rawName.includes('/') ? rawName.split('/').pop() : rawName);
@@ -1408,12 +1426,14 @@ function OverviewGraph2D({
                                 )}
                                 style={isRepo ? undefined : { backgroundColor: dotColor }}
                             />
-                            <span
-                                style={{ fontSize: '12px', color: textColor, fontWeight: isSelected ? '600' : '400' }}
-                                className="text-[12px] leading-none font-mono tracking-tight pointer-events-none"
-                            >
-                                {displayLabel}
-                            </span>
+                            {showTextLabel && (
+                                <span
+                                    style={{ fontSize: '12px', color: textColor, fontWeight: isSelected ? '600' : '400' }}
+                                    className="text-[12px] leading-none font-mono tracking-tight pointer-events-none"
+                                >
+                                    {displayLabel}
+                                </span>
+                            )}
                             {hops >= 2 && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-[#8A918C] ml-1 font-sans shrink-0 pointer-events-none">
                                     {hops} hops
@@ -1710,6 +1730,7 @@ function OverviewGraph2D({
             })()}
 
             <ReactFlow
+                style={{ touchAction: 'none' }}
                 nodes={nodes}
                 edges={edges}
                 nodeTypes={customNodeTypes}
@@ -1755,6 +1776,8 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
         setActiveTab,
         hoveredGraphNode
     } = useAppStore();
+    const { isDesktop } = useResponsive();
+    const [mobileLegendOpen, setMobileLegendOpen] = useState(false);
 
     const [viewMode, setViewMode] = useState<'2D' | '3D'>(() => {
         try {
@@ -2279,10 +2302,10 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                     ? "fixed inset-0 h-[100dvh] w-screen z-50 overflow-hidden flex flex-col"
                     : "w-full h-full rounded-lg border border-zinc-800/50 relative"
             )}
-            style={{ cursor: viewMode === '3D' ? 'grab' : 'default' }}
+            style={{ cursor: viewMode === '3D' ? 'grab' : 'default', touchAction: 'none' }}
         >
             {/* View Mode & Toolbar */}
-            <div className="absolute top-3.5 left-3.5 z-30 glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-lg p-1.5 flex items-center gap-2 border border-white/10 shadow-lg text-xs font-mono select-none flex-wrap max-w-[calc(100%-20px)]">
+            <div className="absolute top-3.5 left-3.5 z-30 glass-surface bg-[rgba(16,20,21,0.85)] backdrop-blur-md rounded-lg p-1.5 flex items-center gap-2 border border-white/10 shadow-lg text-xs font-mono select-none flex-nowrap overflow-x-auto scrollbar-none max-w-[calc(100%-60px)] sm:max-w-[calc(100%-20px)]">
                 {/* Back button: left chevron icon button with tooltip "Previous node", disabled when no history */}
                 {visitedHistory.length > 0 && (
                     <>
@@ -2501,44 +2524,85 @@ function OverviewGraph({ graph }: { graph: import('../api').RepositoryGraph }) {
                 </div>
             )}
 
-            {/* Legend (top-right below toolbar): compact horizontal legend strip */}
-            <div className={cn(
-                "absolute top-[3.75rem] z-20 h-8 px-2.5 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto",
-                isExpanded ? "right-32" : "right-3.5"
-            )}>
-                <div className="flex items-center gap-1.5">
-                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                        <line x1="1" y1="4" x2="13" y2="4" stroke="#4FD1B5" strokeWidth="1.5" />
-                        <polygon points="12,1.5 17,4 12,6.5" fill="#4FD1B5" />
-                    </svg>
-                    <span className="text-[#E8EAE6]">Imports</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                        <line x1="1" y1="4" x2="13" y2="4" stroke="#F0B35F" strokeWidth="1.5" />
-                        <polygon points="12,1.5 17,4 12,6.5" fill="#F0B35F" />
-                    </svg>
-                    <span className="text-[#E8EAE6]">Imported by</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                    <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                        <line x1="1" y1="4" x2="13" y2="4" stroke="#7C8A93" strokeWidth="1.5" strokeDasharray="3 3" />
-                        <polygon points="12,1.5 17,4 12,6.5" fill="#7C8A93" />
-                    </svg>
-                    <span className="text-[#E8EAE6]">Indirect</span>
-                </div>
-                <div className="h-3 w-[1px] bg-white/10" />
-                <span className="text-[#8A918C]">Size = risk</span>
-                {showCalls && viewMode !== '3D' && (
+            {/* Legend (desktop: compact horizontal strip, mobile: "i" button popover) */}
+            {isDesktop ? (
+                <div className={cn(
+                    "absolute top-[3.75rem] z-20 h-8 px-2.5 glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md rounded-lg border border-white/10 shadow-lg flex items-center gap-3 text-[11px] font-mono text-[#8A918C] select-none pointer-events-auto",
+                    isExpanded ? "right-32" : "right-3.5"
+                )}>
                     <div className="flex items-center gap-1.5">
                         <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
-                            <line x1="1" y1="4" x2="13" y2="4" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
-                            <polygon points="12,1.5 17,4 12,6.5" fill="#6F8F9A" />
+                            <line x1="1" y1="4" x2="13" y2="4" stroke="#4FD1B5" strokeWidth="1.5" />
+                            <polygon points="12,1.5 17,4 12,6.5" fill="#4FD1B5" />
                         </svg>
-                        <span className="text-[#E8EAE6]">Calls</span>
+                        <span className="text-[#E8EAE6]">Imports</span>
                     </div>
-                )}
-            </div>
+                    <div className="flex items-center gap-1.5">
+                        <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                            <line x1="1" y1="4" x2="13" y2="4" stroke="#F0B35F" strokeWidth="1.5" />
+                            <polygon points="12,1.5 17,4 12,6.5" fill="#F0B35F" />
+                        </svg>
+                        <span className="text-[#E8EAE6]">Imported by</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                        <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                            <line x1="1" y1="4" x2="13" y2="4" stroke="#7C8A93" strokeWidth="1.5" strokeDasharray="3 3" />
+                            <polygon points="12,1.5 17,4 12,6.5" fill="#7C8A93" />
+                        </svg>
+                        <span className="text-[#E8EAE6]">Indirect</span>
+                    </div>
+                    <div className="h-3 w-[1px] bg-white/10" />
+                    <span className="text-[#8A918C]">Size = risk</span>
+                    {showCalls && viewMode !== '3D' && (
+                        <div className="flex items-center gap-1.5">
+                            <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                                <line x1="1" y1="4" x2="13" y2="4" stroke="#6F8F9A" strokeWidth="1.5" strokeDasharray="1.5 2" />
+                                <polygon points="12,1.5 17,4 12,6.5" fill="#6F8F9A" />
+                            </svg>
+                            <span className="text-[#E8EAE6]">Calls</span>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="absolute top-3.5 right-3.5 z-30">
+                    <button
+                        type="button"
+                        onClick={() => setMobileLegendOpen(!mobileLegendOpen)}
+                        className="w-8 h-8 rounded-lg glass-surface bg-[rgba(16,22,26,0.92)] backdrop-blur-md border border-white/10 flex items-center justify-center text-[#8A918C] hover:text-[#E8EAE6] cursor-pointer shadow-lg"
+                        title="Legend"
+                    >
+                        <Info size={14} />
+                    </button>
+                    {mobileLegendOpen && (
+                        <div className="absolute right-0 top-10 z-40 p-3 glass-surface bg-[rgba(16,22,26,0.96)] backdrop-blur-md rounded-xl border border-white/10 shadow-2xl flex flex-col gap-2 text-xs font-mono text-[#8A918C] min-w-[160px]">
+                            <div className="flex items-center gap-2">
+                                <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                                    <line x1="1" y1="4" x2="13" y2="4" stroke="#4FD1B5" strokeWidth="1.5" />
+                                    <polygon points="12,1.5 17,4 12,6.5" fill="#4FD1B5" />
+                                </svg>
+                                <span className="text-[#E8EAE6]">Imports</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                                    <line x1="1" y1="4" x2="13" y2="4" stroke="#F0B35F" strokeWidth="1.5" />
+                                    <polygon points="12,1.5 17,4 12,6.5" fill="#F0B35F" />
+                                </svg>
+                                <span className="text-[#E8EAE6]">Imported by</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <svg width="18" height="8" viewBox="0 0 18 8" className="inline-block shrink-0">
+                                    <line x1="1" y1="4" x2="13" y2="4" stroke="#7C8A93" strokeWidth="1.5" strokeDasharray="3 3" />
+                                    <polygon points="12,1.5 17,4 12,6.5" fill="#7C8A93" />
+                                </svg>
+                                <span className="text-[#E8EAE6]">Indirect</span>
+                            </div>
+                            <div className="text-[10px] text-[#8A918C] border-t border-white/10 pt-1">
+                                Size = risk
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Hint text (bottom-centre): non-overlapping controls guide */}
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 glass-surface bg-[rgba(16,22,26,0.85)] backdrop-blur-md rounded-full border border-white/10 text-[11px] font-mono text-[#8A918C] select-none pointer-events-none shadow-md flex items-center gap-2">
@@ -2675,8 +2739,10 @@ export function MainPanel({ className }: { className?: string }) {
         setAskAiError, setAskAiRateLimitCountdown,
         startAskAiStreaming, appendAskAiStreamingToken, finishAskAiStreaming,
         handleAskAiStreamError, stopAskAiStreaming, newAskAiChat,
-        deleteAskAiChat, renameAskAiChat, clearAskAiMessages
+        deleteAskAiChat, renameAskAiChat, clearAskAiMessages,
+        mobileDetailsOpen, setMobileDetailsOpen
     } = useAppStore();
+    const { isPhone, isTablet, isDesktop } = useResponsive();
 
     const stats = useMemo(() => selectRepoStats({ graph, treeFiles, commits }), [graph, treeFiles, commits]);
     const fileRisk = useMemo(() => selectedFile ? computeRisk(selectedFile, graph, commits) : null, [selectedFile, graph, commits]);
@@ -4552,9 +4618,9 @@ ${lastAssistant.content}${evidenceList}
         <div className={cn("flex flex-col bg-[#07090A] select-none h-full min-h-0", className)}>
             {/* Header / Breadcrumb & File-level Segmented Tabs (shown only when a file is selected and not in repo-level views) */}
             {!isRepoLevelTab && selectedFile && (
-                <div className="p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10 space-y-3">
+                <div className="p-3 sm:p-3.5 border-b border-white/10 shrink-0 bg-[#07090A] z-10 space-y-2.5">
                     <div>
-                        <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px]">
+                        <div className="flex items-center gap-1.5 text-xs font-mono text-[#8A918C] mb-2 min-h-[16px] overflow-x-auto scrollbar-none whitespace-nowrap">
                             {selectedFile.split('/').map((part, i, arr) => (
                                 <span key={i} className="flex items-center gap-1.5">
                                     <span className="hover:text-[#E8EAE6] cursor-pointer">{part}</span>
@@ -4562,22 +4628,38 @@ ${lastAssistant.content}${evidenceList}
                                 </span>
                             ))}
                         </div>
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <div className="w-7 h-7 rounded-lg glass-surface border-white/10 flex items-center justify-center text-[#4FD1B5]">
+                        <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <div className="w-7 h-7 rounded-lg glass-surface border-white/10 flex items-center justify-center text-[#4FD1B5] shrink-0">
                                     {isCode ? <FileCode size={14} /> : <FileText size={14} />}
                                 </div>
-                                <div>
-                                    <h2 className="text-base font-semibold text-[#E8EAE6] font-mono tracking-tight">
+                                <div className="min-w-0 flex-1">
+                                    <h2 className="text-sm sm:text-base font-semibold text-[#E8EAE6] font-mono tracking-tight truncate" title={selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}>
                                         {selectedSymbol ? `${selectedSymbol.name}()` : selectedFile.split('/').pop()}
                                     </h2>
-                                    <div className="flex gap-2 items-center mt-0.5">
+                                    <div className="flex gap-2 items-center mt-0.5 min-w-0">
                                         {selectedSymbol && <Badge variant="default">{selectedSymbol.type}</Badge>}
-                                        <span className="text-[11px] text-[#8A918C] font-mono">{selectedFile}</span>
+                                        <span className="text-[11px] text-[#8A918C] font-mono truncate" title={selectedFile}>{selectedFile}</span>
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 shrink-0">
+                                {!isDesktop && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setMobileDetailsOpen(true)}
+                                        className={cn(
+                                            "px-2.5 py-1.5 rounded-lg text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer border",
+                                            mobileDetailsOpen
+                                                ? "bg-[#4FD1B5]/15 border-[#4FD1B5]/40 text-[#4FD1B5]"
+                                                : "glass-surface border-white/10 text-[#E8EAE6] hover:border-[#4FD1B5]/50 hover:text-[#4FD1B5]"
+                                        )}
+                                        title="Open details"
+                                    >
+                                        <Info size={13} />
+                                        <span>Details</span>
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => addToChangeSet(selectedFile)}
                                     disabled={changeSet.includes(selectedFile) || changeSet.length >= 20}
@@ -4595,6 +4677,37 @@ ${lastAssistant.content}${evidenceList}
                             </div>
                         </div>
                     </div>
+
+                    {/* On phone: sticky horizontally scrollable chip row for file tabs */}
+                    {isPhone && (
+                        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none py-1 -mx-1 px-1 snap-x scroll-smooth border-t border-white/[0.06] pt-2">
+                            {[
+                                { id: 'Graph', label: 'Graph' },
+                                { id: 'Impact', label: 'Impact' },
+                                { id: 'Connections', label: 'Connections' },
+                                { id: 'Code', label: 'Code' },
+                                { id: 'History', label: 'History' },
+                                { id: 'AskAI', label: 'Ask AI' },
+                            ].map((tab) => {
+                                const isActive = activeTab === tab.id;
+                                return (
+                                    <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => setActiveTab(tab.id as any)}
+                                        className={cn(
+                                            "snap-start shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors cursor-pointer",
+                                            isActive
+                                                ? "bg-[#4FD1B5] text-[#04100D] font-semibold"
+                                                : "bg-white/[0.05] text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08]"
+                                        )}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -4634,15 +4747,15 @@ ${lastAssistant.content}${evidenceList}
                                 </div>
                             ) : (
                                 <div
-                                    className="flex-1 overflow-y-auto scrollbar-custom p-[30px_36px_34px] transition-[padding] duration-300"
+                                    className="flex-1 overflow-y-auto scrollbar-custom p-4 sm:p-[30px_36px_34px] transition-[padding] duration-300"
                                     style={{
-                                        paddingRight: drawerOpen ? 'calc(36px + 330px)' : '36px'
+                                        paddingRight: !isDesktop ? undefined : (drawerOpen ? 'calc(36px + 330px)' : '36px')
                                     }}
                                 >
                                     <div className="text-xs font-mono text-[#8A918C] mb-2">{repoDisplayName}</div>
 
                                     {hotspotsList.length > 0 ? (
-                                        <h1 className="text-[36px] leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
+                                        <h1 className="text-[28px] sm:text-[36px] leading-[1.1] sm:leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
                                             {hotspotsList.length} {hotspotsList.length === 1 ? 'file carries' : 'files carry'} most of the risk. Start with{" "}
                                             <u style={{ textDecoration: 'none', boxShadow: 'inset 0 -.18em 0 rgba(227,160,74,.45)' }}>
                                                 {hotspotsList[0].path ? hotspotsList[0].path.split('/').pop() : (hotspotsList[0].name ? hotspotsList[0].name.split('/').pop() : '')}
@@ -4650,7 +4763,7 @@ ${lastAssistant.content}${evidenceList}
                                             .
                                         </h1>
                                     ) : (
-                                        <h1 className="text-[36px] leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
+                                        <h1 className="text-[28px] sm:text-[36px] leading-[1.1] sm:leading-[1.08] tracking-[-0.03em] font-semibold my-2.5 max-w-[640px] text-[#E8EAE6]">
                                             No risky files found in the analyzed set.
                                         </h1>
                                     )}
@@ -4803,10 +4916,20 @@ ${lastAssistant.content}${evidenceList}
                             )}
 
                             {/* Overview Drawer */}
+                            {!isDesktop && drawerOpen && (
+                                <div
+                                    className="fixed inset-0 bg-black/55 z-40 transition-opacity"
+                                    onClick={() => setDrawerOpen(false)}
+                                    aria-hidden="true"
+                                />
+                            )}
                             <aside
                                 className={cn("overview-drawer scrollbar-custom", drawerOpen && "open")}
                                 aria-label="File risk details"
                             >
+                                {!isDesktop && (
+                                    <div className="w-10 h-1 rounded-full bg-white/20 mx-auto my-2.5 shrink-0" />
+                                )}
                                 {drawerFile ? (
                                     <>
                                         <button
@@ -4864,6 +4987,7 @@ ${lastAssistant.content}${evidenceList}
                                         <div className="flex gap-2 mt-4">
                                             <button
                                                 onClick={() => {
+                                                    setDrawerOpen(false);
                                                     selectFile(drawerFile);
                                                     setActiveTab('Impact');
                                                 }}
@@ -4873,6 +4997,7 @@ ${lastAssistant.content}${evidenceList}
                                             </button>
                                             <button
                                                 onClick={() => {
+                                                    setDrawerOpen(false);
                                                     selectFile(drawerFile);
                                                     setActiveTab('AskAI');
                                                 }}
@@ -4894,7 +5019,7 @@ ${lastAssistant.content}${evidenceList}
 
                     {/* Dedicated Graph Tab: full-height canvas, fit-to-view on load */}
                     {activeTab === 'Graph' && (
-                        <div className="w-full h-full min-h-[500px] flex-1 rounded-xl overflow-hidden border border-white/10 relative">
+                        <div className="w-full h-full min-h-[360px] sm:min-h-[500px] flex-1 rounded-xl overflow-hidden border border-white/10 relative">
                             {graph ? (
                                 <OverviewGraph graph={graph} />
                             ) : (
@@ -5057,7 +5182,7 @@ ${lastAssistant.content}${evidenceList}
                                 });
 
                                 return (
-                                    <div className="flex-1 flex flex-col min-h-0 h-full overflow-hidden space-y-3 relative">
+                                    <div className="flex-1 flex flex-col min-h-0 md:h-full md:overflow-hidden overflow-y-auto space-y-3 relative">
                                         {/* 1. Verdict line at top (22px, editorial, file name highlighted in amber) */}
                                         <div className="glass-surface px-5 py-3.5 rounded-xl border-white/10 shrink-0">
                                             <h2 className="text-[22px] font-normal tracking-tight text-[#E8EAE6] leading-snug">
@@ -5071,10 +5196,10 @@ ${lastAssistant.content}${evidenceList}
                                         </div>
 
                                         {/* Two columns: Left ~60% (Blast radius rings), Right ~40% (Ranked list + tests + why score) */}
-                                        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-0 h-full overflow-hidden">
+                                        <div className="flex-1 grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 min-h-0 md:h-full md:overflow-hidden">
                                             {/* Left (about 60%): blast radius rings filling whole card */}
                                             <div
-                                                className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-between relative overflow-hidden h-full min-h-0 select-none"
+                                                className="glass-surface p-4 rounded-xl border-white/10 flex flex-col items-center justify-between relative overflow-hidden h-auto md:h-full min-h-0 select-none"
                                                 onMouseLeave={() => setHoveredImpactNode(null)}
                                             >
                                                 {/* Legend row above the rings (outside the SVG) */}
@@ -5424,7 +5549,7 @@ ${lastAssistant.content}${evidenceList}
                                             </div>
 
                                             {/* Right (about 40%): ranked list "Files that could break" + Tests + Why score */}
-                                            <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col h-full min-h-0 overflow-hidden">
+                                            <div className="glass-surface p-4 rounded-xl border-white/10 flex flex-col h-auto md:h-full min-h-0 md:overflow-hidden">
                                                 <div className="flex-1 flex flex-col min-h-0">
                                                     {/* Sticky Header: Files that could break */}
                                                     <div className="sticky top-0 z-10 flex items-center justify-between mb-3 pb-2.5 border-b border-white/[0.06] bg-[#07090A]/95 backdrop-blur-sm shrink-0">
@@ -5443,7 +5568,7 @@ ${lastAssistant.content}${evidenceList}
                                                     </div>
 
                                                     {/* Scrollable Ranked list (shows at least 6 rows) */}
-                                                    <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom pr-1 pt-1.5 space-y-1.5">
+                                                    <div className="flex-1 min-h-0 md:overflow-y-auto scrollbar-custom pr-1 pt-1.5 space-y-1.5">
                                                         {rankedAll.length === 0 ? (
                                                             <div className="text-xs text-[#8A918C] py-4 text-center">
                                                                 No dependents found.
@@ -5517,8 +5642,8 @@ ${lastAssistant.content}${evidenceList}
 
                                                 {/* Footer: Tests to run & Why this score */}
                                                 <div className="pt-2 border-t border-white/[0.08] mt-2 shrink-0 space-y-2">
-                                                    {/* Tests to run block: fixed max-height with own scroll */}
-                                                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 text-xs max-h-40 flex flex-col shrink-0">
+                                                    {/* Tests to run block: fixed max-height with own scroll on desktop/tablet */}
+                                                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5 text-xs md:max-h-40 flex flex-col shrink-0">
                                                         <div className="flex items-center justify-between mb-1.5 shrink-0">
                                                             <span className="font-medium text-[#8A918C]">Tests to run ({testCount})</span>
                                                         </div>
@@ -5529,7 +5654,7 @@ ${lastAssistant.content}${evidenceList}
                                                                     : "No test covers this file. Add a unit test covering this module before modifying it."}
                                                             </div>
                                                         ) : (
-                                                            <div className="space-y-1 max-h-28 overflow-y-auto scrollbar-custom pr-0.5">
+                                                            <div className="space-y-1 md:max-h-28 md:overflow-y-auto scrollbar-custom pr-0.5">
                                                                 {testsToRunList.map((testItem, i) => {
                                                                     const testPath = testItem.path;
                                                                     const testTag = testItem.depth > 1 ? `${testItem.depth} hops` : 'Direct';
@@ -5721,7 +5846,7 @@ ${lastAssistant.content}${evidenceList}
                             <div className={cn(
                                 "flex flex-col overflow-hidden",
                                 isChatExpanded
-                                    ? "fixed top-12 left-0 right-0 bottom-0 z-40 bg-[#07090A] motion-reduce:transition-none"
+                                    ? "fixed inset-0 z-50 bg-[#07090A] motion-reduce:transition-none"
                                     : "flex-1 flex min-h-0 glass-surface border-white/10 rounded-xl"
                             )}>
                                 <div className="p-3 bg-white/[0.02] border-b border-white/10 shrink-0">
@@ -5735,7 +5860,7 @@ ${lastAssistant.content}${evidenceList}
                                                     </div>
                                                 }
                                                 middle={
-                                                    <div className="flex items-center gap-1.5">
+                                                    <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
                                                         <ThemedSelect
                                                             value={askMode}
                                                             onChange={setAskMode}
@@ -5754,23 +5879,56 @@ ${lastAssistant.content}${evidenceList}
                                                                             ? "border-[#4FD1B5]/40 bg-[#4FD1B5]/10 text-[#4FD1B5]"
                                                                             : "border-white/10 bg-white/[0.02] text-[#8A918C] hover:text-[#E8EAE6] hover:border-white/20"
                                                                     )}
-                                                                    title="Open chats"
+                                                                    title={`Chats (${chats.length})`}
                                                                 >
                                                                     <MessageSquare size={11} />
-                                                                    <span>Chats ({chats.length})</span>
+                                                                    <span className="hidden min-[480px]:inline">Chats ({chats.length})</span>
                                                                     <ChevronDown size={10} className={cn("transition-transform duration-150", normalChatsOpen && "rotate-180")} />
                                                                 </button>
-                                                                <Popover
-                                                                    isOpen={normalChatsOpen}
-                                                                    onClose={() => setNormalChatsOpen(false)}
-                                                                    triggerRef={normalChatsBtnRef}
-                                                                    width={340}
-                                                                    align="start"
-                                                                    role="menu"
-                                                                    className="w-[340px] max-h-[60vh] flex flex-col overflow-hidden"
-                                                                >
-                                                                    {renderChatsList(false)}
-                                                                </Popover>
+                                                                {isDesktop && (
+                                                                    <Popover
+                                                                        isOpen={normalChatsOpen}
+                                                                        onClose={() => setNormalChatsOpen(false)}
+                                                                        triggerRef={normalChatsBtnRef}
+                                                                        width={340}
+                                                                        align="start"
+                                                                        role="menu"
+                                                                        className="w-[340px] max-h-[60vh] flex flex-col overflow-hidden"
+                                                                    >
+                                                                        {renderChatsList(false)}
+                                                                    </Popover>
+                                                                )}
+                                                                {!isDesktop && normalChatsOpen && (
+                                                                    <div
+                                                                        className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-xs motion-reduce:transition-none"
+                                                                        onClick={() => setNormalChatsOpen(false)}
+                                                                        role="dialog"
+                                                                        aria-modal="true"
+                                                                        aria-label="Chats"
+                                                                    >
+                                                                        <div
+                                                                            className="w-full max-h-[75dvh] bg-[#0C0F12] border-t border-white/10 rounded-t-[16px] flex flex-col overflow-hidden shadow-2xl animate-in slide-in-from-bottom duration-200"
+                                                                            onClick={e => e.stopPropagation()}
+                                                                        >
+                                                                            <div className="w-full flex items-center justify-center pt-2.5 pb-1 shrink-0">
+                                                                                <div className="w-10 h-1 bg-white/20 rounded-full" />
+                                                                            </div>
+                                                                            <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 shrink-0">
+                                                                                <span className="text-xs font-semibold text-[#E8EAE6]">Chats ({chats.length})</span>
+                                                                                <button
+                                                                                    onClick={() => setNormalChatsOpen(false)}
+                                                                                    className="p-1 rounded-lg text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors"
+                                                                                    title="Close"
+                                                                                >
+                                                                                    <X size={16} />
+                                                                                </button>
+                                                                            </div>
+                                                                            <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom p-2">
+                                                                                {renderChatsList(false)}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         )}
                                                         {isChatExpanded && (
@@ -5785,7 +5943,8 @@ ${lastAssistant.content}${evidenceList}
                                                                 )}
                                                                 title="Toggle evidence panel"
                                                             >
-                                                                <span>Evidence ({isActiveBriefCountSuppressed ? 0 : activeEvidence.length})</span>
+                                                                <span className="hidden min-[480px]:inline">Evidence </span>
+                                                                <span>({isActiveBriefCountSuppressed ? 0 : activeEvidence.length})</span>
                                                             </button>
                                                         )}
                                                     </div>
@@ -5805,7 +5964,7 @@ ${lastAssistant.content}${evidenceList}
                                                             title="Start a new chat"
                                                         >
                                                             <Plus size={12} />
-                                                            <span>New chat</span>
+                                                            <span className="hidden min-[480px]:inline">New chat</span>
                                                         </button>
                                                     </div>
                                                 }
@@ -5887,7 +6046,7 @@ ${lastAssistant.content}${evidenceList}
                                         </div>
 
                                 <div className="flex-1 min-h-0 flex overflow-hidden">
-                                    {isChatExpanded && (
+                                    {isChatExpanded && isDesktop && (
                                         <div className="w-[260px] shrink-0 border-r border-white/10 flex flex-col bg-[#0B0E10] overflow-hidden">
                                             {renderChatsList(true)}
                                         </div>
@@ -5967,11 +6126,11 @@ ${lastAssistant.content}${evidenceList}
                                                         {chatMessages.length === 0 && aiError && renderAiErrorCard()}
                                                         {chatMessages.map((msg, idx) => (
                                                             <Fragment key={idx}>
-                                                                <div className={cn("group flex items-center gap-1.5", msg.role === 'user' ? "justify-end" : "justify-start")}>
+                                                                <div className={cn("group flex gap-1.5", msg.role === 'user' ? "flex-col sm:flex-row items-end sm:items-center justify-end" : "items-center justify-start")}>
                                                             {msg.role === 'user' ? (
                                                                 <>
                                                                     <div className={cn(
-                                                                        "flex items-center gap-1 transition-opacity shrink-0",
+                                                                        "flex items-center gap-1 transition-opacity shrink-0 order-2 sm:order-1",
                                                                         "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
                                                                     )}>
                                                                         {/* Copy */}
@@ -6026,7 +6185,7 @@ ${lastAssistant.content}${evidenceList}
                                                                         </button>
                                                                     </div>
 
-                                                                    <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                                    <div className="max-w-[94%] sm:max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2 order-1 sm:order-2">
                                                                         {msg.images && msg.images.length > 0 && (
                                                                             <div className="flex items-center gap-2 flex-wrap">
                                                                                 {msg.images.map((img, imgIdx) => {
@@ -6055,7 +6214,7 @@ ${lastAssistant.content}${evidenceList}
                                                                     </div>
                                                                 </>
                                                             ) : (
-                                                                <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                                <div className="max-w-[94%] sm:max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
                                                                     {msg.isThinking ? (
                                                                         <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
                                                                             <span>Thinking</span>
@@ -6099,7 +6258,11 @@ ${lastAssistant.content}${evidenceList}
                                                                                         type="button"
                                                                                         onClick={() => {
                                                                                             setSelectedAnswerIdx(idx);
-                                                                                            if (isChatExpanded) setExpandedEvidenceOpen(true);
+                                                                                            if (!isDesktop) {
+                                                                                                setMobileDetailsOpen(true);
+                                                                                            } else if (isChatExpanded) {
+                                                                                                setExpandedEvidenceOpen(true);
+                                                                                            }
                                                                                         }}
                                                                                         className={cn(
                                                                                             "text-[10px] font-mono px-1.5 py-0.5 rounded border transition-colors cursor-pointer flex items-center gap-1",
@@ -6280,8 +6443,8 @@ ${lastAssistant.content}${evidenceList}
                                         </div>
 
 
-                                        {/* Composer - pinned at bottom */}
-                                        <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
+                                        {/* Composer - pinned at bottom with safe-area padding */}
+                                        <div className="p-3 pb-[max(12px,env(safe-area-inset-bottom))] border-t border-white/10 bg-[#07090A]/95 backdrop-blur-xs shrink-0 sticky bottom-0 z-20">
                                             <div className={cn(isChatExpanded && "max-w-[920px] mx-auto w-full")}>
                                                 {attachedImages.length > 0 && (
                                                     <div className="mb-2 flex items-center gap-2 flex-wrap">
@@ -6355,7 +6518,7 @@ ${lastAssistant.content}${evidenceList}
                                                         type="button"
                                                         onClick={() => fileInputRef.current?.click()}
                                                         className={cn(
-                                                            "p-1.5 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0 mb-0.5",
+                                                            "w-11 h-11 sm:w-auto sm:h-auto sm:p-1.5 rounded-lg sm:rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0 mb-0.5 flex items-center justify-center",
                                                             attachedImages.length >= 3 && "opacity-40 cursor-not-allowed"
                                                         )}
                                                         disabled={attachedImages.length >= 3}
@@ -6412,13 +6575,13 @@ ${lastAssistant.content}${evidenceList}
                                                                 ? "Ask about attached image(s) (press Enter for default analysis)..."
                                                                 : `Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`
                                                         }
-                                                        className="flex-1 bg-transparent px-2 py-1 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans resize-none max-h-[120px] scrollbar-custom leading-relaxed"
+                                                        className="flex-1 bg-transparent px-2 py-1 text-base sm:text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans resize-none max-h-[120px] scrollbar-custom leading-relaxed"
                                                     />
                                                     {isStreaming ? (
                                                         <button
                                                             type="button"
                                                             onClick={handleStopAi}
-                                                            className="px-3 py-1.5 text-xs shrink-0 rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors mb-0.5"
+                                                            className="min-h-[44px] sm:min-h-0 px-3.5 py-1.5 text-xs shrink-0 rounded-lg sm:rounded font-mono flex items-center gap-1.5 bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 cursor-pointer transition-colors mb-0.5 justify-center"
                                                             title="Stop generating"
                                                         >
                                                             <Square size={12} className="fill-current" />
@@ -6427,7 +6590,7 @@ ${lastAssistant.content}${evidenceList}
                                                     ) : (
                                                         <Button
                                                             onClick={handleSendMessage}
-                                                            className="px-3 py-1.5 text-xs shrink-0 mb-0.5"
+                                                            className="min-h-[44px] sm:min-h-0 px-3.5 py-1.5 text-xs shrink-0 mb-0.5 flex items-center justify-center"
                                                             disabled={(!askQ.trim() && attachedImages.length === 0) || isStreaming || rateLimitCountdown > 0}
                                                             title={rateLimitCountdown > 0 ? `Wait ${rateLimitCountdown}s` : undefined}
                                                         >
@@ -6443,7 +6606,7 @@ ${lastAssistant.content}${evidenceList}
                                     </div>
 
                                     {/* Right panel inside expanded chat: collapsible 320px column showing the Evidence list for active answer */}
-                                    {isChatExpanded && expandedEvidenceOpen && (
+                                    {isChatExpanded && expandedEvidenceOpen && isDesktop && (
                                         <div className="w-[320px] shrink-0 border-l border-white/10 flex flex-col bg-[#07090A] overflow-hidden">
                                             <div className="p-3 border-b border-white/10 flex items-center justify-between shrink-0">
                                                 <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-[#E8EAE6]">
@@ -6609,7 +6772,10 @@ ${lastAssistant.content}${evidenceList}
                                             return (
                                                 <div
                                                     key={commit.sha || i}
-                                                    onClick={() => setSelectedHistoryCommit(commit)}
+                                                    onClick={() => {
+                                                        setSelectedHistoryCommit(commit);
+                                                        if (!isDesktop) setMobileDetailsOpen(true);
+                                                    }}
                                                     className={cn(
                                                         "relative glass-surface p-3.5 rounded-xl border transition-colors cursor-pointer text-xs",
                                                         isSelected ? "border-[#4FD1B5] bg-white/[0.04]" : "border-white/10 hover:border-white/20 hover:bg-white/[0.02]"
@@ -7043,21 +7209,27 @@ ${lastAssistant.content}${evidenceList}
                             ) : !changeSetResult ? (
                                 <div className="space-y-4">
                                     {/* 3 short steps */}
-                                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
-                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">01</div>
-                                            <div className="text-xs text-[#E8EAE6] font-medium">Open a file</div>
-                                            <div className="text-[11px] text-[#8A918C]">Select any file from the sidebar.</div>
+                                    <div className="flex flex-col sm:grid sm:grid-cols-3 gap-2 sm:gap-3">
+                                        <div className="p-2.5 sm:p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] flex items-center sm:block gap-3 sm:space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5] shrink-0">01</div>
+                                            <div>
+                                                <div className="text-xs text-[#E8EAE6] font-medium">Open a file</div>
+                                                <div className="text-[11px] text-[#8A918C]">Select any file from the sidebar.</div>
+                                            </div>
                                         </div>
-                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
-                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">02</div>
-                                            <div className="text-xs text-[#E8EAE6] font-medium">Press Add to plan</div>
-                                            <div className="text-[11px] text-[#8A918C]">Add all files you intend to modify.</div>
+                                        <div className="p-2.5 sm:p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] flex items-center sm:block gap-3 sm:space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5] shrink-0">02</div>
+                                            <div>
+                                                <div className="text-xs text-[#E8EAE6] font-medium">Press Add to plan</div>
+                                                <div className="text-[11px] text-[#8A918C]">Add all files you intend to modify.</div>
+                                            </div>
                                         </div>
-                                        <div className="p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] space-y-1">
-                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5]">03</div>
-                                            <div className="text-xs text-[#E8EAE6] font-medium">Press Analyze plan</div>
-                                            <div className="text-[11px] text-[#8A918C]">Get combined risk and breakages.</div>
+                                        <div className="p-2.5 sm:p-3.5 rounded-lg bg-white/[0.02] border border-white/[0.06] flex items-center sm:block gap-3 sm:space-y-1">
+                                            <div className="text-[10px] font-mono font-bold text-[#4FD1B5] shrink-0">03</div>
+                                            <div>
+                                                <div className="text-xs text-[#E8EAE6] font-medium">Press Analyze plan</div>
+                                                <div className="text-[11px] text-[#8A918C]">Get combined risk and breakages.</div>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -7144,6 +7316,34 @@ ${lastAssistant.content}${evidenceList}
                                                 </button>
                                             )}
                                         </div>
+                                    </div>
+
+                                    {/* Mobile full-width buttons below Files in your plan */}
+                                    <div className="sm:hidden flex flex-col gap-2 pt-1">
+                                        {selectedFile && !changeSet.includes(selectedFile) && (
+                                            <Button
+                                                onClick={() => addToChangeSet(selectedFile)}
+                                                variant="secondary"
+                                                className="w-full min-h-[44px] text-xs justify-center flex items-center gap-1.5"
+                                            >
+                                                <Plus size={14} />
+                                                <span>Add {selectedFile.split('/').pop()}</span>
+                                            </Button>
+                                        )}
+                                        <Button
+                                            onClick={analyzeChangeSet}
+                                            disabled={changeSetLoading || changeSet.length === 0 || !graph}
+                                            className="w-full min-h-[44px] text-xs justify-center flex items-center gap-1.5"
+                                        >
+                                            {changeSetLoading ? (
+                                                <>
+                                                    <Loader2 size={13} className="animate-spin mr-1.5" />
+                                                    <span>Analyzing...</span>
+                                                </>
+                                            ) : (
+                                                <span>Analyze plan</span>
+                                            )}
+                                        </Button>
                                     </div>
                                 </div>
                             ) : (

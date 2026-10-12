@@ -4,8 +4,10 @@ import { Search, FileCode, FileText } from 'lucide-react';
 import { isCodeFile } from '../analyze-helpers';
 import { computeRisk } from '../graph-helpers';
 import { cn } from '../ui';
+import { useResponsive } from '../useMediaQuery';
 
 export function CommandPalette() {
+    const { isPhone } = useResponsive();
     const { commandPaletteOpen, setCommandPaletteOpen, treeFiles, selectFile, selectedFile, graph, commits } = useAppStore();
     const [query, setQuery] = useState('');
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -124,6 +126,86 @@ export function CommandPalette() {
     };
 
     if (!commandPaletteOpen) return null;
+
+    if (isPhone) {
+        return (
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-label="Search files"
+                className="fixed inset-0 z-50 flex flex-col bg-[#07090A] text-[#E8EAE6] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
+            >
+                <div className="flex items-center gap-2 p-3 border-b border-white/10 bg-[#0A0D0E]">
+                    <Search size={18} className="text-[#8A918C] shrink-0 ml-1" />
+                    <input
+                        ref={inputRef}
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="Search files..."
+                        className="flex-1 bg-transparent text-base text-[#E8EAE6] placeholder:text-[#8A918C]/60 focus:outline-none py-1.5"
+                    />
+                    <button
+                        type="button"
+                        onClick={() => setCommandPaletteOpen(false)}
+                        className="min-h-[44px] px-3 flex items-center justify-center text-sm font-medium text-[#4FD1B5] hover:text-[#3fbfa3] cursor-pointer"
+                    >
+                        Cancel
+                    </button>
+                </div>
+
+                <div ref={listRef} className="flex-1 overflow-y-auto p-2 divide-y divide-white/[0.04]">
+                    {results.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-[#8A918C]">
+                            No files match
+                        </div>
+                    ) : (
+                        results.map((file, index) => {
+                            const isCode = isCodeFile(file);
+                            const isHighlighted = index === selectedIndex;
+                            const isSelected = selectedFile === file;
+                            const parts = file.split('/');
+                            const fileName = parts.pop() || file;
+                            const dirPath = parts.join('/');
+
+                            return (
+                                <div
+                                    key={file}
+                                    onClick={() => handleSelect(file)}
+                                    className={cn(
+                                        "flex items-center justify-between gap-3 px-3 py-3 min-h-[44px] rounded-lg text-sm cursor-pointer transition-colors font-mono",
+                                        isHighlighted
+                                            ? "bg-white/[0.08] text-[#E8EAE6]"
+                                            : "text-[#8A918C] active:bg-white/[0.06]",
+                                        isSelected && "text-[#4FD1B5]"
+                                    )}
+                                >
+                                    <div className="flex items-center gap-2.5 min-w-0">
+                                        {isCode ? (
+                                            <FileCode size={16} className={cn("shrink-0", isSelected ? "text-[#4FD1B5]" : "text-[#8A918C]")} />
+                                        ) : (
+                                            <FileText size={16} className="shrink-0 text-[#8A918C]/60" />
+                                        )}
+                                        <div className="flex flex-col min-w-0">
+                                            <span className={cn("truncate text-sm", isSelected && "font-medium")}>
+                                                {fileName}
+                                            </span>
+                                            {dirPath && (
+                                                <span className="text-xs text-[#8A918C]/60 truncate font-sans">
+                                                    {dirPath}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })
+                    )}
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div

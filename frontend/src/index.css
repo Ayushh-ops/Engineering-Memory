@@ -22,6 +22,7 @@
 
     html {
         scroll-behavior: smooth;
+        height: 100dvh;
     }
 
     body {
@@ -29,7 +30,8 @@
         color: var(--tx);
         font-family: 'Bricolage Grotesque', system-ui, -apple-system, sans-serif;
         margin: 0;
-        overflow-x: hidden;
+        overflow-x: clip;
+        min-height: 100dvh;
     }
 
     code, kbd, samp, pre, .font-mono, .mono {
@@ -292,9 +294,44 @@
         transform: none;
     }
 
-    @media (max-width: 900px) {
+    /* Mobile & Tablet Overview rules */
+    @media (max-width: 1099px) {
+        .overview-drawer {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            top: auto;
+            width: 100%;
+            max-height: 75dvh;
+            border-top-left-radius: 16px;
+            border-top-right-radius: 16px;
+            border-left: none;
+            border-top: 1px solid var(--ln);
+            transform: translateY(102%);
+            z-index: 50;
+        }
+        .overview-drawer.open {
+            transform: translateY(0);
+        }
+    }
+
+    @media (max-width: 767px) {
+        body {
+            font-size: 14px;
+        }
+        input, select, textarea {
+            font-size: 16px !important;
+        }
         .overview-two {
             grid-template-columns: 1fr;
+            gap: 24px;
+        }
+        .overview-st {
+            margin: 18px 0;
+        }
+        .overview-st b {
+            font-size: 24px;
         }
         .overview-rw {
             grid-template-columns: 24px 1fr 28px;
@@ -304,7 +341,35 @@
         }
     }
 
+    @media (max-width: 359px) {
+        .overview-st {
+            grid-template-columns: 1fr;
+        }
+        .overview-st > div {
+            border-right: none;
+            border-bottom: 1px solid var(--ln);
+            margin-right: 0;
+            padding: 10px 0;
+        }
+    }
+
+    /* Touch screen & hover: none adjustments: reveal hover controls */
+    @media (hover: none), (max-width: 1099px) {
+        .opacity-0.group-hover\:opacity-100,
+        .group:hover .opacity-0,
+        .hover-reveal-touch {
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+    }
+
     @media (prefers-reduced-motion: reduce) {
+        *, ::before, ::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.001ms !important;
+            scroll-behavior: auto !important;
+        }
         .overview-drawer {
             transition: none !important;
         }
