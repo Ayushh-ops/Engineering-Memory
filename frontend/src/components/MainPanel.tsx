@@ -2614,6 +2614,11 @@ export function MainPanel({ className }: { className?: string }) {
     const normalChatsDropdownRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const lastActiveChatByFile = useRef<Record<string, string>>({});
+    const isChatsLoadedRef = useRef(false);
+    const chatsRef = useRef<AskChat[]>(chats);
+    chatsRef.current = chats;
+    const activeChatIdRef = useRef<string | null>(activeChatId);
+    activeChatIdRef.current = activeChatId;
 
     const latestAssistantEvidence = useMemo(() => {
         const lastWithEvidence = [...chatMessages].reverse().find(m => m.role === 'assistant' && m.evidence && m.evidence.length > 0);
@@ -2741,11 +2746,14 @@ export function MainPanel({ className }: { className?: string }) {
     // Save chat per repo+commit in localStorage (max 50 chats, max 30 msgs per chat)
     const chatsStorageKey = repoUrl ? `em_ask_chats:${repoUrl}:${selectedSha || 'HEAD'}` : null;
 
+    // 1. Initial load effect: depends ONLY on [chatsStorageKey]
     useEffect(() => {
+        isChatsLoadedRef.current = false;
         if (!chatsStorageKey) {
-            setChats([]);
+            setChats(prev => (prev.length === 0 ? prev : []));
             setActiveChatId(null);
-            setChatMessages([]);
+            activeChatIdRef.current = null;
+            setChatMessages(prev => (prev.length === 0 ? prev : []));
             return;
         }
         try {
@@ -2754,7 +2762,9 @@ export function MainPanel({ className }: { className?: string }) {
                 const parsed = JSON.parse(raw);
                 if (Array.isArray(parsed) && parsed.length > 0) {
                     const loadedChats: AskChat[] = parsed.slice(0, 50);
+                    chatsRef.current = loadedChats;
                     setChats(loadedChats);
+                    isChatsLoadedRef.current = true;
 
                     if (selectedFile) {
                         const rememberedId = lastActiveChatByFile.current[selectedFile];
@@ -2762,64 +2772,107 @@ export function MainPanel({ className }: { className?: string }) {
                             loadedChats.find(c => c.file === selectedFile);
                         if (match) {
                             setActiveChatId(match.id);
-                            setChatMessages(match.messages.slice(-30));
+                            activeChatIdRef.current = match.id;
+                            setChatMessages(match.messages?.slice(-30) || []);
                             lastActiveChatByFile.current[selectedFile] = match.id;
                             return;
                         }
                     }
                     const first = loadedChats[0];
                     setActiveChatId(first.id);
-                    setChatMessages(first.messages.slice(-30));
+                    activeChatIdRef.current = first.id;
+                    setChatMessages(first.messages?.slice(-30) || []);
+                    if (first.file) {
+                        lastActiveChatByFile.current[first.file] = first.id;
+                    }
                     return;
                 }
             }
         } catch (e) {
             console.error('Failed to parse chats', e);
         }
-        setChats([]);
-        setActiveChatId(null);
-        setChatMessages([]);
+        chatsRef.current = [];
+        setChats(prev => (prev.length === 0 ? prev : []));
+        isChatsLoadedRef.current = true;
+        if (selectedFile) {
+            const newId = 'chat_' + Date.now();
+            setActiveChatId(newId);
+            activeChatIdRef.current = newId;
+            setChatMessages(prev => (prev.length === 0 ? prev : []));
+            lastActiveChatByFile.current[selectedFile] = newId;
+        } else {
+            setActiveChatId(null);
+            activeChatIdRef.current = null;
+            setChatMessages(prev => (prev.length === 0 ? prev : []));
+        }
     }, [chatsStorageKey]);
 
+    // 2. Load-chat-on-file-change effect: depends ONLY on [chatsStorageKey, selectedFile]
     useEffect(() => {
         if (!selectedFile) return;
 
-        const cur = chats.find(c => c.id === activeChatId);
+        const allChats = chatsRef.current;
+        const currentActiveId = activeChatIdRef.current;
+
+        const cur = allChats.find(c => c.id === currentActiveId);
         if (cur && cur.file === selectedFile) {
             return;
         }
 
         const rememberedId = lastActiveChatByFile.current[selectedFile];
         if (rememberedId) {
-            const remembered = chats.find(c => c.id === rememberedId && c.file === selectedFile);
+            if (currentActiveId === rememberedId) {
+                return;
+            }
+            const remembered = allChats.find(c => c.id === rememberedId && c.file === selectedFile);
             if (remembered) {
                 setActiveChatId(remembered.id);
-                setChatMessages(remembered.messages.slice(-30));
+                activeChatIdRef.current = remembered.id;
+                setChatMessages(prev => (prev === remembered.messages ? prev : (remembered.messages?.slice(-30) || [])));
                 setAiError(null);
                 return;
             }
         }
 
-        const matching = chats.find(c => c.file === selectedFile);
+        const matching = allChats.find(c => c.file === selectedFile);
         if (matching) {
+            if (currentActiveId === matching.id) {
+                return;
+            }
             setActiveChatId(matching.id);
-            setChatMessages(matching.messages.slice(-30));
+            activeChatIdRef.current = matching.id;
+            setChatMessages(prev => (prev === matching.messages ? prev : (matching.messages?.slice(-30) || [])));
             lastActiveChatByFile.current[selectedFile] = matching.id;
             setAiError(null);
             return;
         }
 
+        if (rememberedId && currentActiveId === rememberedId) {
+            return;
+        }
+
         const newId = 'chat_' + Date.now();
         setActiveChatId(newId);
-        setChatMessages([]);
+        activeChatIdRef.current = newId;
+        setChatMessages(prev => (prev.length === 0 ? prev : []));
         setAiError(null);
         lastActiveChatByFile.current[selectedFile] = newId;
-    }, [selectedFile, chats, activeChatId]);
+    }, [chatsStorageKey, selectedFile]);
 
-    // Keep aiEvidence in sync with the latest assistant message
+    // 3. Single persistence effect: writes to localStorage only, no state updates inside it
+    useEffect(() => {
+        if (!chatsStorageKey || !isChatsLoadedRef.current) return;
+        try {
+            localStorage.setItem(chatsStorageKey, JSON.stringify(chats.slice(0, 50)));
+        } catch (e) {
+            console.warn('Failed to persist chats to localStorage (quota exceeded?)', e);
+        }
+    }, [chats, chatsStorageKey]);
+
+    // 4. Keep aiEvidence in sync with the latest assistant message
     useEffect(() => {
         const lastAssistant = chatMessages.slice().reverse().find(m => m.role === 'assistant' && !m.isThinking);
-        if (lastAssistant && lastAssistant.evidence) {
+        if (lastAssistant && lastAssistant.evidence && lastAssistant.evidence.length > 0) {
             setAiEvidence(lastAssistant.evidence);
             setAiCitations(lastAssistant.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
         } else {
@@ -2869,7 +2922,8 @@ export function MainPanel({ className }: { className?: string }) {
 
         setChats(prevChats => {
             let updated: AskChat[];
-            const existingIdx = prevChats.findIndex(c => c.id === activeChatId);
+            const currentId = activeChatIdRef.current;
+            const existingIdx = prevChats.findIndex(c => c.id === currentId);
             if (existingIdx !== -1) {
                 const existing = prevChats[existingIdx];
                 const newTitle = (existing.title && existing.title !== 'New chat') ? existing.title : (generatedTitle || existing.title);
@@ -2882,7 +2936,7 @@ export function MainPanel({ className }: { className?: string }) {
                 updated = [updatedChat, ...prevChats.filter((_, i) => i !== existingIdx)];
             } else {
                 const newChat: AskChat = {
-                    id: activeChatId || ('chat_' + now),
+                    id: currentId || ('chat_' + now),
                     title: generatedTitle || 'New chat',
                     file: selectedFile,
                     createdAt: now,
@@ -2892,20 +2946,15 @@ export function MainPanel({ className }: { className?: string }) {
                 updated = [newChat, ...prevChats];
             }
 
-            const trimmed = updated.slice(0, 50);
-            try {
-                localStorage.setItem(chatsStorageKey, JSON.stringify(trimmed));
-            } catch (e) {
-                console.warn('Failed to persist chats to localStorage (quota exceeded?)', e);
-            }
-            return trimmed;
+            return updated.slice(0, 50);
         });
-    }, [activeChatId, selectedFile, chatsStorageKey]);
+    }, [selectedFile]);
 
     const handleNewChat = useCallback(() => {
         if (!selectedFile) return;
         const newId = 'chat_' + Date.now();
         setActiveChatId(newId);
+        activeChatIdRef.current = newId;
         setChatMessages([]);
         setAiCitations([]);
         setAiEvidence([]);
@@ -2920,17 +2969,11 @@ export function MainPanel({ className }: { className?: string }) {
         if (!window.confirm("Delete this chat?")) return;
         setChats(prevChats => {
             const remaining = prevChats.filter(c => c.id !== chatId);
-            if (chatsStorageKey) {
-                try {
-                    localStorage.setItem(chatsStorageKey, JSON.stringify(remaining));
-                } catch (e) {
-                    console.error('Failed to update chats storage', e);
-                }
-            }
-            if (activeChatId === chatId) {
+            if (activeChatIdRef.current === chatId) {
                 const nextChat = remaining.find(c => c.file === selectedFile);
                 if (nextChat) {
                     setActiveChatId(nextChat.id);
+                    activeChatIdRef.current = nextChat.id;
                     setChatMessages(nextChat.messages || []);
                     if (selectedFile) {
                         lastActiveChatByFile.current[selectedFile] = nextChat.id;
@@ -2938,6 +2981,7 @@ export function MainPanel({ className }: { className?: string }) {
                 } else {
                     const newId = 'chat_' + Date.now();
                     setActiveChatId(newId);
+                    activeChatIdRef.current = newId;
                     setChatMessages([]);
                     if (selectedFile) {
                         lastActiveChatByFile.current[selectedFile] = newId;
@@ -2946,43 +2990,24 @@ export function MainPanel({ className }: { className?: string }) {
             }
             return remaining;
         });
-    }, [chatsStorageKey, activeChatId, selectedFile]);
+    }, [selectedFile]);
 
     const handleRenameChat = useCallback((chatId: string, currentTitle: string) => {
         const newTitle = window.prompt("Rename chat:", currentTitle);
         if (!newTitle || !newTitle.trim()) return;
-        setChats(prevChats => {
-            const updated = prevChats.map(c => c.id === chatId ? { ...c, title: newTitle.trim().slice(0, 40), updatedAt: Date.now() } : c);
-            if (chatsStorageKey) {
-                try {
-                    localStorage.setItem(chatsStorageKey, JSON.stringify(updated));
-                } catch (e) {
-                    console.error('Failed to update chats storage', e);
-                }
-            }
-            return updated;
-        });
-    }, [chatsStorageKey]);
+        setChats(prevChats => prevChats.map(c => c.id === chatId ? { ...c, title: newTitle.trim().slice(0, 40), updatedAt: Date.now() } : c));
+    }, []);
 
     const handleClearMessages = useCallback(() => {
         setChatMessages([]);
         setAiCitations([]);
         setAiEvidence([]);
         setAiError(null);
-        if (activeChatId) {
-            setChats(prevChats => {
-                const updated = prevChats.map(c => c.id === activeChatId ? { ...c, messages: [], updatedAt: Date.now() } : c);
-                if (chatsStorageKey) {
-                    try {
-                        localStorage.setItem(chatsStorageKey, JSON.stringify(updated));
-                    } catch (e) {
-                        console.error('Failed to update chats storage', e);
-                    }
-                }
-                return updated;
-            });
+        const currentId = activeChatIdRef.current;
+        if (currentId) {
+            setChats(prevChats => prevChats.map(c => c.id === currentId ? { ...c, messages: [], updatedAt: Date.now() } : c));
         }
-    }, [activeChatId, chatsStorageKey, setAiCitations, setAiEvidence]);
+    }, [setAiCitations, setAiEvidence]);
 
     const filteredChats = useMemo(() => {
         if (!chatSearchQuery.trim()) return chats;
@@ -3954,6 +3979,7 @@ ${lastAssistant.content}${evidenceList}
                                             key={chat.id}
                                             onClick={() => {
                                                 setActiveChatId(chat.id);
+                                                activeChatIdRef.current = chat.id;
                                                 setChatMessages(chat.messages || []);
                                                 setAiError(null);
                                                 if (chat.file !== selectedFile) {

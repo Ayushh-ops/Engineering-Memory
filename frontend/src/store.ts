@@ -139,10 +139,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     setImpactResult: (r) => set({ impactResult: r }),
 
     aiCitations: [],
-    setAiCitations: (citations) => set({ aiCitations: citations }),
+    setAiCitations: (citations) => set((state) => {
+        if (state.aiCitations.length === citations.length && state.aiCitations.every((c, i) => c === citations[i])) {
+            return state;
+        }
+        return { aiCitations: citations };
+    }),
 
     aiEvidence: [],
-    setAiEvidence: (evidence) => set({ aiEvidence: evidence }),
+    setAiEvidence: (evidence) => set((state) => {
+        if (state.aiEvidence.length === 0 && evidence.length === 0) return state;
+        if (state.aiEvidence.length === evidence.length && state.aiEvidence.every((e, i) => e.path === evidence[i].path && e.line === evidence[i].line && e.endLine === evidence[i].endLine)) {
+            return state;
+        }
+        return { aiEvidence: evidence };
+    }),
 
     changeSet: [],
     addToChangeSet: (path: string) => set((state) => {
