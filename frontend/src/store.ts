@@ -27,6 +27,7 @@ export interface AskChatMessage {
     retryAfterSeconds?: number;
     stopped?: boolean;
     isThinking?: boolean;
+    truncated?: boolean;
 }
 
 export interface AskChat {
@@ -57,6 +58,7 @@ export interface RepoAskAiState {
     accumulatedStreamedText: string;
     aiError: { message: string; raw?: string; status?: number; code?: string; retryAfterSeconds?: number; backendMessage?: string } | null;
     rateLimitCountdown: number;
+    continuationState?: { targetMsgIndex: number; prefixContent: string } | null;
 }
 
 export const getRepoKey = (url: string, sha: string | null): string => url ? `${url}:${sha || 'HEAD'}` : '__no_repo__';
@@ -118,6 +120,7 @@ export const createInitialRepoAskAiState = (): RepoAskAiState => ({
     accumulatedStreamedText: '',
     aiError: null,
     rateLimitCountdown: 0,
+    continuationState: null,
 });
 
 export interface AppState {
@@ -229,9 +232,9 @@ export interface AppState {
     setAskAiExpandedEvidenceOpen: (open: boolean) => void;
     setAskAiError: (error: any) => void;
     setAskAiRateLimitCountdown: (count: number) => void;
-    startAskAiStreaming: (chatId: string, controller: AbortController, initialMessages: AskChatMessage[]) => void;
+    startAskAiStreaming: (chatId: string, controller: AbortController, initialMessages: AskChatMessage[], continuation?: { targetMsgIndex: number; prefixContent: string } | null) => void;
     appendAskAiStreamingToken: (token: string) => void;
-    finishAskAiStreaming: (result: { answer?: string; followUps?: string[]; evidence?: any[]; usedContext?: any; missingData?: string[]; status?: string; error?: any; retryAfterSeconds?: number }) => void;
+    finishAskAiStreaming: (result: { answer?: string; followUps?: string[]; evidence?: any[]; usedContext?: any; missingData?: string[]; status?: string; error?: any; retryAfterSeconds?: number; truncated?: boolean }) => void;
     handleAskAiStreamError: (error: any) => void;
     stopAskAiStreaming: () => void;
     newAskAiChat: (file?: string | null) => string;
@@ -854,7 +857,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
     },
 
-    startAskAiStreaming: (chatId, controller, initialMessages) => {
+    startAskAiStreaming: (chatId, controller, initialMessages, continuation) => {
         const { repoUrl, selectedSha, askAiByRepo } = get();
         const repoKey = getRepoKey(repoUrl, selectedSha);
         const prev = askAiByRepo[repoKey] || createInitialRepoAskAiState();
@@ -869,6 +872,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     abortController: controller,
                     accumulatedStreamedText: '',
                     chatMessages: initialMessages,
+                    continuationState: continuation || null,
                     aiError: null
                 }
             }
@@ -883,14 +887,28 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         const newAccumulated = prev.accumulatedStreamedText + token;
         const msgs = [...prev.chatMessages];
-        const lastIdx = msgs.length - 1;
-        if (lastIdx >= 0 && msgs[lastIdx].role === 'assistant') {
-            msgs[lastIdx] = {
-                ...msgs[lastIdx],
-                role: 'assistant',
-                content: newAccumulated,
-                isThinking: false
-            };
+
+        if (prev.continuationState) {
+            const targetIdx = prev.continuationState.targetMsgIndex;
+            if (targetIdx >= 0 && targetIdx < msgs.length) {
+                msgs[targetIdx] = {
+                    ...msgs[targetIdx],
+                    role: 'assistant',
+                    content: prev.continuationState.prefixContent + newAccumulated,
+                    isThinking: false,
+                    truncated: false
+                };
+            }
+        } else {
+            const lastIdx = msgs.length - 1;
+            if (lastIdx >= 0 && msgs[lastIdx].role === 'assistant') {
+                msgs[lastIdx] = {
+                    ...msgs[lastIdx],
+                    role: 'assistant',
+                    content: newAccumulated,
+                    isThinking: false
+                };
+            }
         }
 
         set({
@@ -912,21 +930,45 @@ export const useAppStore = create<AppState>((set, get) => ({
         const prev = askAiByRepo[repoKey];
         if (!prev) return;
 
-        const msgs = [...prev.chatMessages];
-        const newMsgs: AskChatMessage[] = [
-            ...msgs.slice(0, -1),
-            {
-                role: 'assistant' as const,
-                content: result.answer || prev.accumulatedStreamedText,
-                followups: result.followUps,
-                evidence: result.evidence,
-                usedContext: result.usedContext,
-                missingData: result.missingData,
-                status: result.status,
-                error: result.error,
-                retryAfterSeconds: result.retryAfterSeconds
+        let newMsgs: AskChatMessage[];
+        if (prev.continuationState) {
+            const targetIdx = prev.continuationState.targetMsgIndex;
+            const fullContent = prev.continuationState.prefixContent + (result.answer || prev.accumulatedStreamedText);
+            const msgs = [...prev.chatMessages];
+            if (targetIdx >= 0 && targetIdx < msgs.length) {
+                msgs[targetIdx] = {
+                    ...msgs[targetIdx],
+                    content: fullContent,
+                    followups: result.followUps ?? msgs[targetIdx].followups,
+                    evidence: (result.evidence && result.evidence.length > 0) ? result.evidence : msgs[targetIdx].evidence,
+                    usedContext: result.usedContext ?? msgs[targetIdx].usedContext,
+                    missingData: result.missingData ?? msgs[targetIdx].missingData,
+                    status: result.status,
+                    error: result.error,
+                    retryAfterSeconds: result.retryAfterSeconds,
+                    truncated: result.truncated === true,
+                    isThinking: false
+                };
             }
-        ];
+            newMsgs = msgs;
+        } else {
+            const msgs = [...prev.chatMessages];
+            newMsgs = [
+                ...msgs.slice(0, -1),
+                {
+                    role: 'assistant' as const,
+                    content: result.answer || prev.accumulatedStreamedText,
+                    followups: result.followUps,
+                    evidence: result.evidence,
+                    usedContext: result.usedContext,
+                    missingData: result.missingData,
+                    status: result.status,
+                    error: result.error,
+                    retryAfterSeconds: result.retryAfterSeconds,
+                    truncated: result.truncated === true
+                }
+            ];
+        }
 
         const chatId = prev.streamingChatId || prev.activeChatId;
         let updatedChats = [...prev.chats];
@@ -968,6 +1010,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     isStreaming: false,
                     streamingChatId: null,
                     abortController: null,
+                    continuationState: null,
                     chatMessages: newMsgs,
                     chats: updatedChats
                 }
@@ -1005,6 +1048,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     isStreaming: false,
                     streamingChatId: null,
                     abortController: null,
+                    continuationState: null,
                     chatMessages: msgs,
                     chats: updatedChats,
                     aiError: err
@@ -1054,6 +1098,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     isStreaming: false,
                     streamingChatId: null,
                     abortController: null,
+                    continuationState: null,
                     chatMessages: msgs,
                     chats: updatedChats
                 }

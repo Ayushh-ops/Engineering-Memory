@@ -922,9 +922,19 @@ export class AiAnswerService {
         const isExplicitScope = request.scope === "file" || request.scope === "dependents" || request.scope === "repo";
         const effectiveScope: LlmScope = isExplicitScope
             ? request.scope!
-            : classifyScope(rawQ || questionForLLM, Boolean(request.repoFacts));
+            : (!rawQ && hasImages
+                ? "file"
+                : classifyScope(rawQ, Boolean(request.repoFacts)));
 
-        const classification = classifyQuestion(rawQ, effectiveMode, hasImages);
+        const classification = (!rawQ && hasImages)
+            ? {
+                length: "standard" as const,
+                format: "prose" as const,
+                maxTokens: 1600,
+                reasoningEffort: "low" as const,
+                isGreetingOrThanks: false
+            }
+            : classifyQuestion(rawQ, effectiveMode, hasImages);
 
         const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
         if (greetingReply || (classification.isGreetingOrThanks && rawQ)) {
@@ -1194,8 +1204,15 @@ export class AiAnswerService {
             }
         }
 
-        let finalEvidence: LlmEvidence[] = parsed.evidence;
-        if (effectiveScope === "repo") {
+        let finalEvidence: LlmEvidence[] = [];
+        if (hasImages) {
+            finalEvidence = parsed.evidence.filter((item) => {
+                const normPath = item.path.replace(/\\/g, "/").toLowerCase();
+                const baseName = normPath.split("/").pop() || "";
+                const answerLower = finalAnswer.toLowerCase();
+                return answerLower.includes(normPath) || (baseName.length > 3 && answerLower.includes(baseName));
+            });
+        } else if (effectiveScope === "repo") {
             finalEvidence = extractRepoScopeEvidence(finalAnswer, request.repoFacts);
         } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
             finalEvidence = extractBackendChosenEvidence(
@@ -1203,15 +1220,19 @@ export class AiAnswerService {
                 rawQ || questionForLLM,
                 targetPath,
                 request.fileContent,
-                finalEvidence
+                parsed.evidence
             );
+        } else {
+            finalEvidence = parsed.evidence;
         }
 
         const finalCitations = finalEvidence.length > 0
             ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
-            : (parsed.citations.length > 0
-                ? parsed.citations
-                : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])));
+            : (hasImages
+                ? []
+                : (parsed.citations.length > 0
+                    ? parsed.citations
+                    : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []))));
 
         const askedSet = new Set<string>();
         if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -1239,6 +1260,7 @@ export class AiAnswerService {
             missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
             followUps: finalFollowUps,
             evidence: finalEvidence,
+            ...(providerResponse.truncated ? { truncated: true } : {}),
             usedContext: {
                 ...(providerResponse.usedContext ?? {
                     files: aiContext.files.length,
@@ -1311,9 +1333,19 @@ export class AiAnswerService {
         const isExplicitScope = request.scope === "file" || request.scope === "dependents" || request.scope === "repo";
         const effectiveScope: LlmScope = isExplicitScope
             ? request.scope!
-            : classifyScope(rawQ || questionForLLM, Boolean(request.repoFacts));
+            : (!rawQ && hasImages
+                ? "file"
+                : classifyScope(rawQ, Boolean(request.repoFacts)));
 
-        const classification = classifyQuestion(rawQ, effectiveMode, hasImages);
+        const classification = (!rawQ && hasImages)
+            ? {
+                length: "standard" as const,
+                format: "prose" as const,
+                maxTokens: 1600,
+                reasoningEffort: "low" as const,
+                isGreetingOrThanks: false
+            }
+            : classifyQuestion(rawQ, effectiveMode, hasImages);
 
         const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
         if (greetingReply || (classification.isGreetingOrThanks && rawQ)) {
@@ -1587,8 +1619,15 @@ export class AiAnswerService {
                 }
             }
 
-            let finalEvidence: LlmEvidence[] = parsed.evidence;
-            if (effectiveScope === "repo") {
+            let finalEvidence: LlmEvidence[] = [];
+            if (hasImages) {
+                finalEvidence = parsed.evidence.filter((item) => {
+                    const normPath = item.path.replace(/\\/g, "/").toLowerCase();
+                    const baseName = normPath.split("/").pop() || "";
+                    const answerLower = finalAnswer.toLowerCase();
+                    return answerLower.includes(normPath) || (baseName.length > 3 && answerLower.includes(baseName));
+                });
+            } else if (effectiveScope === "repo") {
                 finalEvidence = extractRepoScopeEvidence(finalAnswer, request.repoFacts);
             } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
                 finalEvidence = extractBackendChosenEvidence(
@@ -1596,15 +1635,19 @@ export class AiAnswerService {
                     rawQ || questionForLLM,
                     targetPath,
                     request.fileContent,
-                    finalEvidence
+                    parsed.evidence
                 );
+            } else {
+                finalEvidence = parsed.evidence;
             }
 
             const finalCitations = finalEvidence.length > 0
                 ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
-                : (parsed.citations.length > 0
-                    ? parsed.citations
-                    : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])));
+                : (hasImages
+                    ? []
+                    : (parsed.citations.length > 0
+                        ? parsed.citations
+                        : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []))));
 
             const askedSet = new Set<string>();
             if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -1632,6 +1675,7 @@ export class AiAnswerService {
                 missingData: parsed.missingData !== undefined ? parsed.missingData : providerResponse.missingData,
                 followUps: finalFollowUps,
                 evidence: finalEvidence,
+                ...(providerResponse.truncated ? { truncated: true } : {}),
                 usedContext: {
                     ...(providerResponse.usedContext ?? {
                         files: aiContext.files.length,

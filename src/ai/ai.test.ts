@@ -1846,6 +1846,109 @@ async function main(): Promise<void> {
         resetGeminiCandidatesCache();
     }
 
+    // 18a. finish_reason length sets truncated: true (non-streaming)
+    try {
+        globalThis.fetch = (async () => {
+            return new Response(JSON.stringify({
+                choices: [{
+                    message: { content: "Partial cut off text" },
+                    finish_reason: "length"
+                }]
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }) as typeof fetch;
+
+        const truncProvider = new OpenAIProvider({
+            apiKey: "test-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile"
+        });
+
+        const res = await truncProvider.answer({
+            repository: "example/repo",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "explain auth",
+            facts: { files: [{ path: "src/auth.ts" }] }
+        });
+
+        assert.equal(res.status, "ok");
+        assert.equal(res.truncated, true);
+        assert.equal(res.answer, "Partial cut off text");
+    } finally {
+        globalThis.fetch = mockOriginalFetch;
+    }
+
+    // 18b. stream that ends without done still yields a final payload with truncated: true
+    try {
+        globalThis.fetch = (async () => {
+            const stream = new ReadableStream({
+                start(controller) {
+                    controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"First chunk "}}]}\n\n'));
+                    controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"second chunk"}}]}\n\n'));
+                    // Ends without data: [DONE]
+                    controller.close();
+                }
+            });
+            return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+        }) as typeof fetch;
+
+        const streamTruncProvider = new OpenAIProvider({
+            apiKey: "test-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile"
+        });
+
+        const streamedTokens: string[] = [];
+        const res = await streamTruncProvider.streamAnswer!({
+            repository: "example/repo",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "explain stream",
+            facts: { files: [{ path: "src/auth.ts" }] }
+        }, (t) => streamedTokens.push(t));
+
+        assert.equal(res.status, "ok");
+        assert.equal(res.truncated, true);
+        assert.equal(res.answer, "First chunk second chunk");
+    } finally {
+        globalThis.fetch = mockOriginalFetch;
+    }
+
+    // 18c. internal image instruction never triggers repo scope (sentence containing repository is ignored)
+    assert.equal(classifyScope("Explain what the attached image(s) show and relate them to src/auth.ts and the repository context", true), "file");
+    assert.equal(classifyScope("Explain what the attached image(s) show and relate them to the repository context", true), "file");
+    assert.equal(classifyScope("Explain what the attached image(s) show and relate them to the repository context. What is the architecture of the repository?", true), "repo");
+    assert.equal(classifyScope("What is the architecture of the repository?", true), "repo");
+
+    // 18d. image request without cited paths returns an empty evidence list
+    {
+        class MockImageProvider implements LlmProvider {
+            async answer(): Promise<LlmResponse> {
+                return {
+                    status: "ok",
+                    answer: "This image shows a blue dashboard button and a login card without mentioning specific file paths.",
+                    citations: [{ type: "file", path: "src/auth.ts" }],
+                    confidence: "high"
+                };
+            }
+        }
+
+        const imgService = new AiAnswerService(new MockImageProvider());
+        const imgResult = await imgService.answer({
+            repository: "example/repo",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "What does this image show?",
+            graph,
+            fileContent: "export const auth = true;",
+            images: [{ mime: "image/png", data: "aGVsbG8=" }],
+            repoFacts: {
+                topRisk: [{ path: "src/risky.ts", score: 99, dependents: 50 }]
+            } as any
+        });
+
+        assert.equal(imgResult.status, "ok");
+        assert.deepEqual(imgResult.evidence, []);
+        assert.deepEqual(imgResult.citations, []);
+    }
+
     console.log("AI fixtures passed");
 }
 

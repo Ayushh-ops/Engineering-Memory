@@ -14,7 +14,12 @@ export interface OpenAIMessage {
 }
 
 export interface OpenAIChatCompletionResponse {
-    choices?: Array<{ message?: { content?: string; reasoning?: string }; delta?: { content?: string; reasoning?: string } }>;
+    choices?: Array<{
+        message?: { content?: string; reasoning?: string };
+        delta?: { content?: string; reasoning?: string };
+        finish_reason?: string;
+        finishReason?: string;
+    }>;
     error?: {
         message?: string;
         code?: string;
@@ -402,13 +407,22 @@ export class OpenAIProvider implements LlmProvider {
         const url = this.buildUrl(candidate.baseUrl);
 
         const isReasoning = this.isReasoningModel(candidate.model);
+        const isGemini = candidate.model.toLowerCase().includes("gemini") || candidate.provider === "fallback";
         const classification = request.classification || classifyQuestion(
             request.question,
             request.mode,
             Boolean(request.images && request.images.length > 0),
             candidate.model
         );
-        const tokenLimit = request.responseOptions?.maxTokens ?? classification.maxTokens;
+        let tokenLimit = request.responseOptions?.maxTokens ?? classification.maxTokens;
+        const hasImages = Boolean(request.images && request.images.length > 0);
+        if (hasImages) {
+            tokenLimit = Math.max(tokenLimit, 1600);
+        } else if (classification.length === "standard" || !request.responseOptions?.maxTokens) {
+            if (classification.length === "standard") {
+                tokenLimit = Math.max(tokenLimit, 1200);
+            }
+        }
 
         const bodyPayload: Record<string, unknown> = {
             model: candidate.model,
@@ -425,6 +439,9 @@ export class OpenAIProvider implements LlmProvider {
         } else {
             bodyPayload.max_tokens = tokenLimit;
             bodyPayload.temperature = request.responseOptions?.temperature ?? 0.2;
+            if (isGemini) {
+                bodyPayload.reasoning_effort = "low";
+            }
         }
 
         try {
@@ -631,6 +648,8 @@ export class OpenAIProvider implements LlmProvider {
                     const data = (await response.json()) as OpenAIChatCompletionResponse;
                     const messageObj = data.choices?.[0]?.message;
                     const content = messageObj?.content?.trim() || messageObj?.reasoning?.trim() || "";
+                    const finishReason = data.choices?.[0]?.finish_reason || (data.choices?.[0] as any)?.finishReason;
+                    const isTruncated = finishReason === "length" || finishReason === "MAX_TOKENS" || finishReason === "max_tokens";
 
                     if (!content) {
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, 60);
@@ -654,6 +673,7 @@ export class OpenAIProvider implements LlmProvider {
                         answer: content,
                         citations,
                         confidence: "medium",
+                        ...(isTruncated ? { truncated: true } : {}),
                         usedContext: {
                             files: filesCount,
                             commits: commitsCount,
@@ -985,33 +1005,46 @@ export class OpenAIProvider implements LlmProvider {
                 const filter = new StreamDelimiterFilter(onToken);
                 let buffer = "";
                 let accumulatedContent = "";
+                let streamDone = false;
+                let lastFinishReason: string | undefined = undefined;
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
 
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split("\n");
-                    buffer = lines.pop() ?? "";
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split("\n");
+                        buffer = lines.pop() ?? "";
 
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed.startsWith("data:")) continue;
-                        const dataStr = trimmed.slice(5).trim();
-                        if (dataStr === "[DONE]") continue;
-
-                        try {
-                            const parsed = JSON.parse(dataStr) as OpenAIChatCompletionResponse;
-                            const delta = parsed.choices?.[0]?.delta;
-                            const contentDelta = delta?.content;
-                            if (typeof contentDelta === "string" && contentDelta.length > 0) {
-                                accumulatedContent += contentDelta;
-                                filter.feed(contentDelta);
+                        for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (!trimmed.startsWith("data:")) continue;
+                            const dataStr = trimmed.slice(5).trim();
+                            if (dataStr === "[DONE]") {
+                                streamDone = true;
+                                continue;
                             }
-                        } catch {
-                            // Non-json chunk ignored
+
+                            try {
+                                const parsed = JSON.parse(dataStr) as OpenAIChatCompletionResponse;
+                                const choice = parsed.choices?.[0];
+                                if (choice?.finish_reason) {
+                                    lastFinishReason = choice.finish_reason;
+                                }
+                                const delta = choice?.delta;
+                                const contentDelta = delta?.content;
+                                if (typeof contentDelta === "string" && contentDelta.length > 0) {
+                                    accumulatedContent += contentDelta;
+                                    filter.feed(contentDelta);
+                                }
+                            } catch {
+                                // Non-json chunk ignored
+                            }
                         }
                     }
+                } catch {
+                    // Stream closed early; proceed with text accumulated so far
                 }
 
                 filter.flush();
@@ -1020,6 +1053,11 @@ export class OpenAIProvider implements LlmProvider {
                 if (!trimmedContent) {
                     continue;
                 }
+
+                const isTruncated = lastFinishReason === "length" ||
+                    lastFinishReason === "MAX_TOKENS" ||
+                    lastFinishReason === "max_tokens" ||
+                    !streamDone;
 
                 const citationMatches = trimmedContent.match(/\b(?:[\w./\\-]+):(?:\d+)\b/g);
                 const citations: LlmCitation[] = citationMatches
@@ -1038,6 +1076,7 @@ export class OpenAIProvider implements LlmProvider {
                     answer: trimmedContent,
                     citations,
                     confidence: "medium",
+                    ...(isTruncated ? { truncated: true } : {}),
                     usedContext: {
                         files: filesCount,
                         commits: commitsCount,

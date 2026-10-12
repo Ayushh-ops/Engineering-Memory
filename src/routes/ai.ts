@@ -213,7 +213,8 @@ export function createAiRouter(
                 ...(result.followUps !== undefined ? { followUps: result.followUps } : {}),
                 ...(result.evidence !== undefined ? { evidence: result.evidence } : {}),
                 ...(result.usedContext !== undefined ? { usedContext: result.usedContext } : {}),
-                ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {})
+                ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {}),
+                ...(result.truncated !== undefined ? { truncated: result.truncated } : {})
             });
         } catch (error) {
             const errMsg = error instanceof Error ? error.message : "AI service failed.";
@@ -302,6 +303,7 @@ export function createAiRouter(
             res.setHeader("Cache-Control", "no-cache");
             res.setHeader("Connection", "keep-alive");
 
+            let accumulatedTokens = "";
             const sendEvent = (event: string, data: any) => {
                 res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
             };
@@ -330,6 +332,7 @@ export function createAiRouter(
                             repoFacts: repoFacts as any
                         } as any,
                         (token: string) => {
+                            accumulatedTokens += token;
                             sendEvent("token", { token });
                         }
                     );
@@ -374,12 +377,26 @@ export function createAiRouter(
                         ...(streamResult.followUps !== undefined ? { followUps: streamResult.followUps } : {}),
                         ...(streamResult.evidence !== undefined ? { evidence: streamResult.evidence } : {}),
                         ...(streamResult.usedContext !== undefined ? { usedContext: streamResult.usedContext } : {}),
-                        ...(streamResult.retryAfterSeconds !== undefined ? { retryAfterSeconds: streamResult.retryAfterSeconds } : {})
+                        ...(streamResult.retryAfterSeconds !== undefined ? { retryAfterSeconds: streamResult.retryAfterSeconds } : {}),
+                        ...(streamResult.truncated !== undefined ? { truncated: streamResult.truncated } : {})
                     });
                 }
                 res.end();
                 return;
             } catch (error) {
+                if (accumulatedTokens.trim().length > 0 && !res.writableEnded) {
+                    sendEvent("done", {
+                        status: "ok",
+                        answer: accumulatedTokens.trim(),
+                        citations: [],
+                        confidence: "medium",
+                        missingData: [],
+                        error: null,
+                        truncated: true
+                    });
+                    res.end();
+                    return;
+                }
                 const errCode = error instanceof GitHubRepositoryFileError
                     ? (error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "provider_unavailable")
                     : "provider_unavailable";
@@ -455,7 +472,8 @@ export function createAiRouter(
                 ...(result.followUps !== undefined ? { followUps: result.followUps } : {}),
                 ...(result.evidence !== undefined ? { evidence: result.evidence } : {}),
                 ...(result.usedContext !== undefined ? { usedContext: result.usedContext } : {}),
-                ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {})
+                ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {}),
+                ...(result.truncated !== undefined ? { truncated: result.truncated } : {})
             });
         } catch (error) {
             if (error instanceof GitHubRepositoryFileError) {

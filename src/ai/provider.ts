@@ -54,6 +54,7 @@ export interface LlmResponse {
     evidence?: LlmEvidence[];
     usedContext?: LlmUsedContext;
     retryAfterSeconds?: number;
+    truncated?: boolean;
 }
 
 export interface LlmRequest {

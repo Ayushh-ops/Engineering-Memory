@@ -1,4 +1,4 @@
-import { useAppStore, type AskChatMessage, type AskChat, type AttachedImage } from '../store';
+import { useAppStore, getRepoKey, type AskChatMessage, type AskChat, type AttachedImage } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info, Pencil } from 'lucide-react';
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo, Fragment } from 'react';
@@ -2655,6 +2655,9 @@ function getStarterQuestionsForTarget(file: string | null, attachedImagesCount: 
     return ["Which tests cover this file?", "Why is the risk score high?", "Summarize recent changes"];
 }
 
+const healthDataCache = new Map<string, import('../api').HealthSummaryResult>();
+const healthInFlightPromises = new Map<string, Promise<import('../api').HealthSummaryResult>>();
+
 export function MainPanel({ className }: { className?: string }) {
     const {
         activeTab, setActiveTab, selectedFile, setSelectedFile,
@@ -3007,6 +3010,15 @@ export function MainPanel({ className }: { className?: string }) {
         return '';
     }, [chatMessages]);
 
+    const getPrecedingUserMessage = useCallback((msgIdx: number) => {
+        for (let i = msgIdx - 1; i >= 0; i--) {
+            if (chatMessages[i]?.role === 'user') {
+                return chatMessages[i];
+            }
+        }
+        return null;
+    }, [chatMessages]);
+
     const isBriefCountAnswerWithoutLineCitation = useCallback((msg: AskChatMessage, prevQuestion?: string) => {
         if (msg.role !== 'assistant') return false;
         const mode = (msg.usedContext as any)?.mode || askMode;
@@ -3021,6 +3033,12 @@ export function MainPanel({ className }: { className?: string }) {
         const prevQ = getPrecedingUserQuestion(activeAssistantIdx);
         return isBriefCountAnswerWithoutLineCitation(activeAssistantMsg, prevQ);
     }, [activeAssistantMsg, activeAssistantIdx, getPrecedingUserQuestion, isBriefCountAnswerWithoutLineCitation]);
+
+    const activeIsImageQuestion = useMemo(() => {
+        if (!activeAssistantMsg || activeAssistantIdx === null) return false;
+        const prevUserMsg = getPrecedingUserMessage(activeAssistantIdx);
+        return Boolean(prevUserMsg?.images && prevUserMsg.images.length > 0);
+    }, [activeAssistantMsg, activeAssistantIdx, getPrecedingUserMessage]);
 
     const askedQuestions = useMemo(() => {
         return chatMessages
@@ -3167,7 +3185,7 @@ export function MainPanel({ className }: { className?: string }) {
 
     // 4. Keep aiEvidence in sync with the active assistant message
     useEffect(() => {
-        if (activeAssistantMsg && activeAssistantMsg.evidence && activeAssistantMsg.evidence.length > 0) {
+        if (activeAssistantMsg && activeAssistantMsg.evidence && activeAssistantMsg.evidence.length > 0 && !isActiveBriefCountSuppressed) {
             setAiEvidence(activeAssistantMsg.evidence);
             setAiCitations(activeAssistantMsg.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
         } else {
@@ -3175,11 +3193,15 @@ export function MainPanel({ className }: { className?: string }) {
             setAiCitations([]);
         }
         if (activeAnswerNumber) {
-            setAiEvidenceTitle?.(`Evidence for answer #${activeAnswerNumber}`);
+            setAiEvidenceTitle?.(
+                (activeIsImageQuestion && activeEvidence.length === 0) || isActiveBriefCountSuppressed
+                    ? "No evidence needed for this answer"
+                    : `Evidence for answer #${activeAnswerNumber}`
+            );
         } else {
             setAiEvidenceTitle?.(null);
         }
-    }, [activeAssistantIdx, activeAssistantMsg, activeAnswerNumber, setAiEvidence, setAiCitations, setAiEvidenceTitle]);
+    }, [activeAssistantIdx, activeAssistantMsg, activeAnswerNumber, activeEvidence.length, activeIsImageQuestion, isActiveBriefCountSuppressed, setAiEvidence, setAiCitations, setAiEvidenceTitle]);
 
     const handleAttachFiles = useCallback(async (files: FileList | File[]) => {
         setImageWarning(null);
@@ -3666,10 +3688,14 @@ ${lastAssistant.content}${evidenceList}
         requestedMode?: import('../api').AskMode,
         requestedScope?: import('../api').AskScope,
         baseMessages?: AskChatMessage[],
-        imagesToPass?: AttachedImage[]
+        imagesToPass?: AttachedImage[],
+        continuation?: {
+            targetMsgIndex: number;
+            prefixContent: string;
+        }
     ) => {
-        const imagesToSend = imagesToPass !== undefined ? imagesToPass : attachedImages;
-        const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
+        const imagesToSend = continuation ? [] : (imagesToPass !== undefined ? imagesToPass : attachedImages);
+        const q = continuation ? "Continue from where you stopped" : (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
         if ((!q && imagesToSend.length === 0) || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
         setAskQ('');
@@ -3681,18 +3707,31 @@ ${lastAssistant.content}${evidenceList}
         const currentScope = requestedScope || 'auto';
 
         const pool = baseMessages !== undefined ? baseMessages : chatMessages;
-        const userMsg: AskChatMessage = {
-            role: 'user' as const,
-            content: q,
-            images: imagesToSend.length > 0
-                ? imagesToSend.map(img => ({ mime: img.mime, data: img.data, thumbUrl: img.thumbUrl, name: img.name }))
-                : undefined
-        };
-        const newMessages: AskChatMessage[] = [
-            ...pool.filter(m => !m.isThinking),
-            userMsg,
-            { role: 'assistant' as const, content: '', isThinking: true }
-        ];
+        let newMessages: AskChatMessage[];
+        if (continuation) {
+            const msgs = [...pool];
+            if (continuation.targetMsgIndex >= 0 && continuation.targetMsgIndex < msgs.length) {
+                msgs[continuation.targetMsgIndex] = {
+                    ...msgs[continuation.targetMsgIndex],
+                    isThinking: true,
+                    truncated: false
+                };
+            }
+            newMessages = msgs;
+        } else {
+            const userMsg: AskChatMessage = {
+                role: 'user' as const,
+                content: q,
+                images: imagesToSend.length > 0
+                    ? imagesToSend.map(img => ({ mime: img.mime, data: img.data, thumbUrl: img.thumbUrl, name: img.name }))
+                    : undefined
+            };
+            newMessages = [
+                ...pool.filter(m => !m.isThinking),
+                userMsg,
+                { role: 'assistant' as const, content: '', isThinking: true }
+            ];
+        }
 
         const target = selectedSymbol
             ? { type: 'symbol', path: selectedSymbol.path, symbol: selectedSymbol }
@@ -3700,21 +3739,43 @@ ${lastAssistant.content}${evidenceList}
 
         const controller = new AbortController();
         const chatId = activeChatId || ('chat_' + Date.now());
-        startAskAiStreaming(chatId, controller, newMessages);
+        startAskAiStreaming(chatId, controller, newMessages, continuation);
 
-        const historyToSend = pool
-            .filter(m => !m.isThinking && (m.content.trim().length > 0 || (m.images && m.images.length > 0)))
-            .slice(-4)
-            .map(m => {
-                let text = m.content;
-                if (!text && m.images && m.images.length > 0) {
-                    text = '[image attached]';
-                }
-                return {
-                    role: m.role,
-                    content: m.role === 'assistant' && text.length > 600 ? text.slice(0, 600) : text
-                };
-            });
+        let historyToSend: Array<{ role: string; content: string }>;
+        if (continuation) {
+            const priorPool = pool.slice(0, continuation.targetMsgIndex)
+                .filter(m => !m.isThinking && (m.content.trim().length > 0 || (m.images && m.images.length > 0)))
+                .slice(-3)
+                .map(m => {
+                    let text = m.content;
+                    if (!text && m.images && m.images.length > 0) {
+                        text = '[image attached]';
+                    }
+                    return {
+                        role: m.role,
+                        content: m.role === 'assistant' && text.length > 600 ? text.slice(-600) : text
+                    };
+                });
+            const lastAssistantSnippet = continuation.prefixContent.slice(-600);
+            historyToSend = [
+                ...priorPool,
+                { role: 'assistant', content: lastAssistantSnippet }
+            ];
+        } else {
+            historyToSend = pool
+                .filter(m => !m.isThinking && (m.content.trim().length > 0 || (m.images && m.images.length > 0)))
+                .slice(-4)
+                .map(m => {
+                    let text = m.content;
+                    if (!text && m.images && m.images.length > 0) {
+                        text = '[image attached]';
+                    }
+                    return {
+                        role: m.role,
+                        content: m.role === 'assistant' && text.length > 600 ? text.slice(0, 600) : text
+                    };
+                });
+        }
 
         let totalHistoryChars = historyToSend.reduce((acc, m) => acc + m.content.length, 0);
         while (totalHistoryChars > 4000 && historyToSend.length > 0) {
@@ -3865,7 +3926,16 @@ ${lastAssistant.content}${evidenceList}
             if (controller.signal.aborted) {
                 // Handled by stopAskAiStreaming
             } else {
-                handleAskAiStreamError(formatAiError(e));
+                const currentRepoKey = getRepoKey(repoUrl, selectedSha);
+                const prevRepoState = useAppStore.getState().askAiByRepo[currentRepoKey];
+                if (prevRepoState?.accumulatedStreamedText?.trim()) {
+                    finishAskAiStreaming({
+                        answer: prevRepoState.accumulatedStreamedText,
+                        truncated: true
+                    });
+                } else {
+                    handleAskAiStreamError(formatAiError(e));
+                }
             }
         } finally {
             setTimeout(() => {
@@ -3876,6 +3946,23 @@ ${lastAssistant.content}${evidenceList}
             }, 180);
         }
     };
+
+    const handleContinueAnswer = useCallback((msgIdx: number) => {
+        if (isStreaming || rateLimitCountdown > 0) return;
+        const targetMsg = chatMessages[msgIdx];
+        if (!targetMsg || targetMsg.role !== 'assistant') return;
+        askAI(
+            'Continue from where you stopped',
+            askMode,
+            askScope,
+            chatMessages,
+            [],
+            {
+                targetMsgIndex: msgIdx,
+                prefixContent: targetMsg.content
+            }
+        );
+    }, [isStreaming, rateLimitCountdown, chatMessages, askMode, askScope]);
 
     const handleRetry = useCallback(() => {
         setAiError(null);
@@ -4170,12 +4257,38 @@ ${lastAssistant.content}${evidenceList}
         // Automatically computed from graph and selectedFile
     }, []);
 
-    const fetchHealth = useCallback(async () => {
+    const fetchHealth = useCallback(async (force = false) => {
         if (!graph) return;
+        const cacheKey = (repoUrl || '') + '@' + (selectedSha || '');
+        if (force && cacheKey) {
+            healthDataCache.delete(cacheKey);
+        }
+        if (!force && cacheKey && healthDataCache.has(cacheKey)) {
+            setHealthData(healthDataCache.get(cacheKey)!);
+            setHealthError(null);
+            return;
+        }
+        if (!force && cacheKey && healthInFlightPromises.has(cacheKey)) {
+            setHealthLoading(true);
+            try {
+                const res = await healthInFlightPromises.get(cacheKey)!;
+                setHealthData(res);
+                setHealthError(null);
+            } catch (e: any) {
+                // error handled below
+            } finally {
+                setHealthLoading(false);
+            }
+            return;
+        }
+
         setHealthLoading(true);
         setHealthError(null);
         try {
-            const res = await api.graph.health(graph);
+            const promise = api.graph.health(graph);
+            if (cacheKey) healthInFlightPromises.set(cacheKey, promise);
+            const res = await promise;
+            if (cacheKey) healthDataCache.set(cacheKey, res);
             setHealthData(res);
         } catch (e: any) {
             console.error(e);
@@ -4185,9 +4298,10 @@ ${lastAssistant.content}${evidenceList}
                 code: e?.code
             });
         } finally {
+            if (cacheKey) healthInFlightPromises.delete(cacheKey);
             setHealthLoading(false);
         }
-    }, [graph]);
+    }, [graph, repoUrl, selectedSha]);
 
     useEffect(() => {
         if (activeTab === 'Health' || activeTab === 'Overview') fetchHealth();
@@ -5961,6 +6075,23 @@ ${lastAssistant.content}${evidenceList}
                                                                                 </div>
                                                                             )}
 
+                                                                            {msg.truncated && (
+                                                                                <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/[0.06] mt-2">
+                                                                                    <span className="text-[11px] text-[#E3A04A] font-mono">Answer was cut off</span>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        disabled={isStreaming}
+                                                                                        onClick={() => handleContinueAnswer(idx)}
+                                                                                        className={cn(
+                                                                                            "text-[11px] font-mono px-2.5 py-1 rounded border border-[#E3A04A]/40 bg-[#E3A04A]/10 text-[#E3A04A] hover:bg-[#E3A04A]/20 transition-colors flex items-center gap-1",
+                                                                                            isStreaming ? "opacity-40 cursor-not-allowed" : "cursor-pointer"
+                                                                                        )}
+                                                                                    >
+                                                                                        Continue
+                                                                                    </button>
+                                                                                </div>
+                                                                            )}
+
                                                                             {/* Evidence chips: mono, path:line, base name bold, folder muted */}
                                                                             {msg.evidence && msg.evidence.length > 0 && !isBriefCountAnswerWithoutLineCitation(msg, getPrecedingUserQuestion(idx)) && (
                                                                                 <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
@@ -6335,7 +6466,7 @@ ${lastAssistant.content}${evidenceList}
                                             <div className="flex-1 overflow-y-auto scrollbar-custom p-3 space-y-2">
                                                 {activeEvidence.length === 0 || isActiveBriefCountSuppressed ? (
                                                     <div className="text-center py-8 text-xs text-[#8A918C] font-mono">
-                                                        {isActiveBriefCountSuppressed
+                                                        {(isActiveBriefCountSuppressed || activeIsImageQuestion)
                                                             ? "No evidence needed for this answer"
                                                             : "No evidence for this answer"}
                                                     </div>
@@ -6530,13 +6661,13 @@ ${lastAssistant.content}${evidenceList}
                                     ) : undefined
                                 }
                                 primaryAction={
-                                    <Button onClick={fetchHealth} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={healthLoading || !graph}>
+                                    <Button onClick={() => fetchHealth(true)} className="px-3 py-1 text-xs shrink-0 whitespace-nowrap" disabled={healthLoading || !graph}>
                                         {healthLoading ? <Loader2 size={12} className="animate-spin" /> : 'Re-check'}
                                     </Button>
                                 }
                                 onDownloadReport={handleDownloadHealthReport}
                                 onCopyPRComment={handleCopyHealthPRComment}
-                                onReanalyze={fetchHealth}
+                                onReanalyze={() => fetchHealth(true)}
                                 onExport={() => downloadTextFile('repository-health.json', JSON.stringify(healthData || {}, null, 2), 'application/json')}
                             />
 
@@ -6561,7 +6692,7 @@ ${lastAssistant.content}${evidenceList}
                                             )}
                                         </div>
                                         <Button
-                                            onClick={fetchHealth}
+                                            onClick={() => fetchHealth(true)}
                                             className="px-3 py-1.5 text-xs bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 flex items-center gap-1.5 shrink-0"
                                         >
                                             <RefreshCw size={12} />

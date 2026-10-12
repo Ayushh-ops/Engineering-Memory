@@ -28,7 +28,7 @@ export function classifyQuestion(
 
     // 1. Empty question with images
     if (!raw && hasImages) {
-        let maxTokens = 1000;
+        let maxTokens = 1600;
         if (isReasoning) {
             maxTokens = Math.min(3200, maxTokens + 700);
         }
@@ -110,11 +110,15 @@ export function classifyQuestion(
     }
 
     // 6. maxTokens calculation
-    let maxTokens = 1000;
+    let maxTokens = 1200;
     if (length === "brief") {
         maxTokens = 400;
     } else if (length === "deep") {
         maxTokens = 2400;
+    }
+
+    if (hasImages) {
+        maxTokens = Math.max(maxTokens, 1600);
     }
 
     if (isReasoning) {
@@ -134,7 +138,18 @@ export function classifyQuestion(
 }
 
 export function classifyScope(question: string, hasRepoFacts = true): "file" | "dependents" | "repo" {
-    const q = (question || "").toLowerCase();
+    const raw = question || "";
+
+    // Ignore internal image instruction (the sentence containing the word repository is ignored)
+    const sentences = raw.split(/(?<=[.!?])\s+|\r?\n+/);
+    const filteredSentences = sentences.filter(s => {
+        const lower = s.toLowerCase();
+        if (lower.includes("attached image") && lower.includes("repository")) {
+            return false;
+        }
+        return true;
+    });
+    const q = filteredSentences.join(" ").toLowerCase();
 
     // 1. Repo scope keywords (requires hasRepoFacts)
     const repoRegex = /\b(repo|repository|whole\s+project|poore\s+project|overall|project\s+level|repo\s+level|codebase|architecture|health|hotspot|most\s+risky\s+files|top\s+files)\b/i;

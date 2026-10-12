@@ -202,6 +202,7 @@ export interface AskPayload {
     evidence?: AskEvidenceItem[];
     usedContext?: AskUsedContext;
     retryAfterSeconds?: number;
+    truncated?: boolean;
 }
 
 export type AiAnswerResult = AskPayload;
@@ -485,7 +486,13 @@ export const api = {
                 }
 
                 if (finalResult) return finalResult;
-                throw new Error('Stream finished without final result');
+                return {
+                    status: 'ok',
+                    answer: '',
+                    citations: [],
+                    confidence: 'medium',
+                    truncated: true
+                } as AskPayload;
             } catch (err: any) {
                 if (signal?.aborted) {
                     throw err;
