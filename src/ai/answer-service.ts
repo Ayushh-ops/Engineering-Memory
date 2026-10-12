@@ -889,8 +889,8 @@ export class AiAnswerService {
                 citations: [],
                 confidence: "low",
                 error: {
-                    code: "invalid_question",
-                    message: "A non-empty question is required."
+                    code: "bad_request",
+                    message: "A question is required when no image is attached"
                 }
             };
         }
@@ -1199,7 +1199,7 @@ export class AiAnswerService {
         } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
             finalEvidence = extractBackendChosenEvidence(
                 finalAnswer,
-                request.question,
+                rawQ || questionForLLM,
                 targetPath,
                 request.fileContent,
                 finalEvidence
@@ -1268,27 +1268,54 @@ export class AiAnswerService {
             return this.answer(request);
         }
 
-        if (typeof request.question !== "string" || request.question.trim().length === 0) {
+        const rawQ = (request && typeof request.question === "string") ? request.question.trim() : "";
+        const hasImages = Boolean(request.images && request.images.length > 0);
+
+        if (!rawQ && !hasImages) {
             return {
                 status: "error",
                 answer: "",
                 citations: [],
                 confidence: "low",
                 error: {
-                    code: "invalid_question",
-                    message: "A non-empty question is required."
+                    code: "bad_request",
+                    message: "A question is required when no image is attached"
                 }
             };
         }
 
         const effectiveMode = request.mode || "auto";
-        const hasImages = Boolean(request.images && request.images.length > 0);
-        const isRepoLevelQuestion = /\b(repo|repository|whole\s+project|poore\s+project|overall|project\s+level|repo\s+level|codebase)\b/i.test(request.question);
-        const effectiveScope: LlmScope = request.scope === "repo" || (isRepoLevelQuestion && Boolean(request.repoFacts)) ? "repo" : (request.scope || "file");
-        const classification = classifyQuestion(request.question, effectiveMode, hasImages);
 
-        const greetingReply = getGreetingOrSmallTalkResponse(request.question);
-        if (greetingReply || classification.isGreetingOrThanks) {
+        const targetPath = request.target?.type === "file"
+            ? request.target.path
+            : request.target?.type === "symbol"
+                ? request.target.symbol.path
+                : undefined;
+
+        const targetDisplayName = targetPath || (request.target?.type === "file" ? request.target.path : "the selected file");
+        const cleanHistory = sanitizeHistory(request.history);
+
+        let questionForLLM = rawQ;
+        let detectedLang: "hi" | "hinglish" | "en" = "en";
+
+        if (!rawQ && hasImages) {
+            const internalInstruction = `Explain what the attached image(s) show and relate them to ${targetDisplayName} and the repository context`;
+            const lastUserMsg = cleanHistory?.filter(h => h.role === "user" && h.content?.trim()).slice(-1)[0];
+            detectedLang = lastUserMsg ? detectLang(lastUserMsg.content) : "en";
+            questionForLLM = internalInstruction;
+        } else {
+            detectedLang = detectLang(rawQ);
+        }
+
+        const isExplicitScope = request.scope === "file" || request.scope === "dependents" || request.scope === "repo";
+        const effectiveScope: LlmScope = isExplicitScope
+            ? request.scope!
+            : classifyScope(rawQ || questionForLLM, Boolean(request.repoFacts));
+
+        const classification = classifyQuestion(rawQ, effectiveMode, hasImages);
+
+        const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
+        if (greetingReply || (classification.isGreetingOrThanks && rawQ)) {
             const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
             onToken(finalGreeting);
             return {
@@ -1311,7 +1338,7 @@ export class AiAnswerService {
             };
         }
 
-        const capabilityReply = getCapabilityResponse(request.question);
+        const capabilityReply = rawQ ? getCapabilityResponse(rawQ) : null;
         if (capabilityReply) {
             onToken(capabilityReply);
             return {
@@ -1334,13 +1361,6 @@ export class AiAnswerService {
             };
         }
 
-        const targetPath = request.target?.type === "file"
-            ? request.target.path
-            : request.target?.type === "symbol"
-                ? request.target.symbol.path
-                : undefined;
-
-        const cleanHistory = sanitizeHistory(request.history);
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
         const cacheKey = this.buildCacheKey(request, targetPath, classification, effectiveScope);
 
@@ -1421,7 +1441,7 @@ export class AiAnswerService {
             request.recentCommits,
             request.owners,
             {
-                question: request.question,
+                question: questionForLLM,
                 scope: effectiveScope,
                 dependentFiles: request.dependentFiles,
                 repoFacts: request.repoFacts
@@ -1443,7 +1463,7 @@ export class AiAnswerService {
         }
 
         const isFileSelected = request.target?.type === "file" || aiContext.target.type === "file";
-        if (effectiveScope !== "repo" && !isFileSelected && request.allowInsufficientContext && !isGroundedQuestion(request.question, aiContext.target)) {
+        if (rawQ && effectiveScope !== "repo" && !isFileSelected && request.allowInsufficientContext && !hasImages && !isGroundedQuestion(rawQ, aiContext.target)) {
             return {
                 status: "insufficient_context",
                 answer: "The supplied repository context is insufficient to answer this question reliably.",
@@ -1455,11 +1475,10 @@ export class AiAnswerService {
             };
         }
 
-        const lang = detectLang(request.question);
-        const directive = getLanguageDirective(lang);
-        const promptQuestion = request.question.includes(directive)
-            ? request.question
-            : `${request.question}\n${directive}`;
+        const directive = getLanguageDirective(detectedLang);
+        const promptQuestion = questionForLLM.includes(directive)
+            ? questionForLLM
+            : `${questionForLLM}\n${directive}`;
 
         const instructions = getSystemInstructions(
             effectiveMode,
@@ -1573,7 +1592,7 @@ export class AiAnswerService {
             } else if (finalEvidence.length < 2 && request.fileContent && targetPath) {
                 finalEvidence = extractBackendChosenEvidence(
                     finalAnswer,
-                    request.question,
+                    rawQ || questionForLLM,
                     targetPath,
                     request.fileContent,
                     finalEvidence
@@ -1600,7 +1619,7 @@ export class AiAnswerService {
                     targetPath,
                     request.question,
                     cleanHistory,
-                    lang
+                    detectedLang
                 );
             }
 

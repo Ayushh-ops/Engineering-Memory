@@ -652,8 +652,9 @@ async function main(): Promise<void> {
     });
 
     assert.equal(invalidResponse.status, 400);
-    const invalidBody = await invalidResponse.json() as { error: string };
-    assert.match(invalidBody.error, /question/i);
+    const invalidBody = await invalidResponse.json() as { status: string; code: string; message: string; error: string };
+    assert.equal(invalidBody.status, "error");
+    assert.equal(invalidBody.message, "A question is required when no image is attached");
 
     const imageOnlyRouteResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
         method: "POST",
@@ -671,6 +672,27 @@ async function main(): Promise<void> {
         })
     });
     assert.equal(imageOnlyRouteResponse.status, 200);
+
+    const overImagesResponse = await fetch(`http://127.0.0.1:${port}/api/ai/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "explain",
+            images: [
+                { mime: "image/png", data: "dGVzdDE=" },
+                { mime: "image/png", data: "dGVzdDI=" },
+                { mime: "image/png", data: "dGVzdDM=" },
+                { mime: "image/png", data: "dGVzdDQ=" }
+            ],
+            graph
+        })
+    });
+    assert.equal(overImagesResponse.status, 400);
+    const overImagesBody = await overImagesResponse.json() as { status: string; code: string; message: string };
+    assert.equal(overImagesBody.status, "error");
+    assert.equal(overImagesBody.message, "At most 3 images");
 
     server.close();
 
@@ -1145,14 +1167,14 @@ async function main(): Promise<void> {
     ];
     const validationOverCount = validateImages(validFourImages);
     assert.equal(validationOverCount.valid, false);
-    assert.ok(validationOverCount.message.includes("maximum of 3"));
+    assert.equal(validationOverCount.message, "At most 3 images");
 
     const oversizeImage = [
         { mime: "image/png", data: "a".repeat(3 * 1024 * 1024 + 10) }
     ];
     const validationOversize = validateImages(oversizeImage);
     assert.equal(validationOversize.valid, false);
-    assert.ok(validationOversize.message.includes("exceeds 3 MB limit"));
+    assert.equal(validationOversize.message, "Image too large");
 
     // 6b. Vision unavailable without fallback key
     const noFallbackConfig = {
@@ -1222,6 +1244,40 @@ async function main(): Promise<void> {
         assert.equal(imgPart.image_url.url, "data:image/png;base64,aGVsbG8=");
     } finally {
         globalThis.fetch = originalFetchForVision;
+    }
+
+    // 6c-2. Vision fallback error handling returns structured message
+    try {
+        globalThis.fetch = (async () => {
+            return new Response(JSON.stringify({ error: { message: "Resource exhausted" } }), {
+                status: 429,
+                headers: { "Content-Type": "application/json", "retry-after": "45" }
+            });
+        }) as typeof fetch;
+
+        const visionFailConfig = {
+            apiKey: "primary-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile",
+            fallbackApiKey: "fallback-gemini-key",
+            fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+            fallbackModel: "gemini-2.5-flash"
+        };
+        const failProvider = new OpenAIProvider(visionFailConfig);
+        const failRes = await failProvider.answer({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "Look at this screenshot",
+            facts: { files: [{ path: "src/auth.ts" }], commits: [] },
+            images: [{ mime: "image/png", data: "aGVsbG8=" }]
+        });
+        assert.equal(failRes.status, "error");
+        assert.equal(failRes.error?.code, "rate_limited");
+        assert.equal(failRes.retryAfterSeconds, 45);
+        assert.equal(failRes.error?.message, "Image analysis failed: Gemini returned 429 for gemini-2.5-flash");
+    } finally {
+        globalThis.fetch = originalFetchForVision;
+        OpenAIProvider.setCooldown("fallback", "gemini-2.5-flash", 0);
     }
 
     // 6d. No caching for image requests

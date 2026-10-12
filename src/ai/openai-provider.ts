@@ -435,12 +435,21 @@ export class OpenAIProvider implements LlmProvider {
 
         let hadRateLimit = false;
         const remainingCooldowns: number[] = [];
+        let lastImageError: { status: number; model: string; code?: string; retrySec?: number } | null = null;
 
         for (const candidate of candidates) {
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
             if (cooldown > 0) {
                 hadRateLimit = true;
                 remainingCooldowns.push(cooldown);
+                if (hasImages) {
+                    lastImageError = {
+                        status: 429,
+                        model: candidate.model,
+                        code: "rate_limited",
+                        retrySec: cooldown
+                    };
+                }
                 continue;
             }
 
@@ -484,22 +493,76 @@ export class OpenAIProvider implements LlmProvider {
                         }
                     };
                 } else {
+                    const errBody = await response.text().catch(() => "");
+                    const snippet = errBody.slice(0, 200);
+                    if (hasImages || candidate.provider === "fallback") {
+                        console.error(`[AI ${candidate.provider}] model=${candidate.model} status=${response.status} body="${snippet}"`);
+                    }
                     const retrySec = parseRetryAfter(response.headers.get("retry-after"));
                     if (response.status === 429) {
                         hadRateLimit = true;
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
                         remainingCooldowns.push(retrySec);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "rate_limited",
+                                retrySec
+                            };
+                        }
                     } else if (response.status >= 500) {
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "provider_error"
+                            };
+                        }
                     } else {
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, 180);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "provider_error"
+                            };
+                        }
                     }
                     continue;
                 }
-            } catch {
+            } catch (err) {
+                if (hasImages || candidate.provider === "fallback") {
+                    const snippet = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+                    console.error(`[AI ${candidate.provider}] model=${candidate.model} status=500 body="${snippet}"`);
+                    if (hasImages) {
+                        lastImageError = {
+                            status: 500,
+                            model: candidate.model,
+                            code: "provider_error"
+                        };
+                    }
+                }
                 OpenAIProvider.setCooldown(candidate.provider, candidate.model, 60);
                 continue;
             }
+        }
+
+        if (hasImages && lastImageError) {
+            const isRateLimit = hadRateLimit || lastImageError.code === "rate_limited";
+            const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : (lastImageError.retrySec ?? 60);
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                ...(isRateLimit ? { retryAfterSeconds: minRetry } : {}),
+                error: {
+                    code: isRateLimit ? "rate_limited" : "provider_unavailable",
+                    message: `Image analysis failed: Gemini returned ${lastImageError.status} for ${lastImageError.model}`
+                }
+            };
         }
 
         if (hadRateLimit) {
@@ -569,12 +632,21 @@ export class OpenAIProvider implements LlmProvider {
 
         let hadRateLimit = false;
         const remainingCooldowns: number[] = [];
+        let lastImageError: { status: number; model: string; code?: string; retrySec?: number } | null = null;
 
         for (const candidate of candidates) {
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
             if (cooldown > 0) {
                 hadRateLimit = true;
                 remainingCooldowns.push(cooldown);
+                if (hasImages) {
+                    lastImageError = {
+                        status: 429,
+                        model: candidate.model,
+                        code: "rate_limited",
+                        retrySec: cooldown
+                    };
+                }
                 continue;
             }
 
@@ -582,15 +654,42 @@ export class OpenAIProvider implements LlmProvider {
                 const response = await this.fetchCompletionCandidate(candidate, messages, request, true, timeoutMs);
 
                 if (!response.ok) {
+                    const errBody = await response.text().catch(() => "");
+                    const snippet = errBody.slice(0, 200);
+                    if (hasImages || candidate.provider === "fallback") {
+                        console.error(`[AI ${candidate.provider}] model=${candidate.model} status=${response.status} body="${snippet}"`);
+                    }
                     const retrySec = parseRetryAfter(response.headers.get("retry-after"));
                     if (response.status === 429) {
                         hadRateLimit = true;
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
                         remainingCooldowns.push(retrySec);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "rate_limited",
+                                retrySec
+                            };
+                        }
                     } else if (response.status >= 500) {
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "provider_error"
+                            };
+                        }
                     } else {
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, 180);
+                        if (hasImages) {
+                            lastImageError = {
+                                status: response.status,
+                                model: candidate.model,
+                                code: "provider_error"
+                            };
+                        }
                     }
                     continue;
                 }
@@ -666,10 +765,37 @@ export class OpenAIProvider implements LlmProvider {
                         images: request.images ? request.images.length : 0
                     }
                 };
-            } catch {
+            } catch (err) {
+                if (hasImages || candidate.provider === "fallback") {
+                    const snippet = (err instanceof Error ? err.message : String(err)).slice(0, 200);
+                    console.error(`[AI ${candidate.provider}] model=${candidate.model} status=500 body="${snippet}"`);
+                    if (hasImages) {
+                        lastImageError = {
+                            status: 500,
+                            model: candidate.model,
+                            code: "provider_error"
+                        };
+                    }
+                }
                 OpenAIProvider.setCooldown(candidate.provider, candidate.model, 60);
                 continue;
             }
+        }
+
+        if (hasImages && lastImageError) {
+            const isRateLimit = hadRateLimit || lastImageError.code === "rate_limited";
+            const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : (lastImageError.retrySec ?? 60);
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                ...(isRateLimit ? { retryAfterSeconds: minRetry } : {}),
+                error: {
+                    code: isRateLimit ? "rate_limited" : "provider_unavailable",
+                    message: `Image analysis failed: Gemini returned ${lastImageError.status} for ${lastImageError.model}`
+                }
+            };
         }
 
         if (hadRateLimit) {

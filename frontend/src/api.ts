@@ -5,15 +5,18 @@ export interface ApiErrorBody {
 
 export class ApiError extends Error {
     public status: number;
+    public code?: string;
     public missingData?: string[];
     constructor(
         status: number,
         message: string,
-        missingData?: string[]
+        missingData?: string[],
+        code?: string
     ) {
         super(message);
         this.status = status;
         this.missingData = missingData;
+        this.code = code;
         this.name = 'ApiError';
     }
 }
@@ -30,13 +33,17 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
     if (!res.ok) {
         let msg = 'An unexpected error occurred';
         let missing = undefined;
+        let code = undefined;
         try {
             const text = await res.text();
             try {
                 const body = JSON.parse(text) as any;
-                if (body.error) {
+                if (body.message) {
+                    msg = typeof body.message === 'string' ? body.message : JSON.stringify(body.message);
+                } else if (body.error) {
                     msg = typeof body.error === 'string' ? body.error : JSON.stringify(body.error);
                 }
+                code = body.code;
                 missing = body.missingData;
             } catch {
                 if (text) msg = text;
@@ -44,7 +51,7 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
         } catch (e) {
             msg = 'Failed to read response body';
         }
-        throw new ApiError(res.status, msg, missing);
+        throw new ApiError(res.status, msg, missing, code);
     }
     return res.json() as Promise<T>;
 }
@@ -386,9 +393,11 @@ export const api = {
                 });
 
                 if (!response.ok) {
-                    const error = await response.json().catch(() => ({ error: 'Request failed' }));
-                    const err = new Error(error.error || error.message || `HTTP ${response.status}`);
+                    const error = await response.json().catch(() => ({}));
+                    const errMsg = error.message || error.error || `HTTP ${response.status}`;
+                    const err = new Error(errMsg);
                     (err as any).data = error;
+                    (err as any).status = response.status;
                     (err as any).code = error.code;
                     (err as any).retryAfterSeconds = error.retryAfterSeconds;
                     throw err;
@@ -459,6 +468,7 @@ export const api = {
                             } else if (currentEvent === 'error') {
                                 const err = new Error(data.message || data.code || 'AI service error');
                                 (err as any).data = data;
+                                (err as any).status = data.status || 500;
                                 (err as any).code = data.code;
                                 (err as any).retryAfterSeconds = data.retryAfterSeconds;
                                 throw err;
@@ -473,7 +483,7 @@ export const api = {
                 if (signal?.aborted) {
                     throw err;
                 }
-                if (err.data || err.code || err.retryAfterSeconds) {
+                if (err.data || err.code || err.retryAfterSeconds || err.status) {
                     throw err;
                 }
                 return post<AskPayload>('/api/ai/ask-repository', {

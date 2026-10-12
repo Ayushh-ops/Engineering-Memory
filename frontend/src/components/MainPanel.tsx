@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info, Pencil } from 'lucide-react';
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
@@ -2870,7 +2870,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [maxRes, setMaxRes] = useState(50);
     const [analyzing, setAnalyzing] = useState(false);
     const [askQ, setAskQ] = useState('');
-    const [aiError, setAiError] = useState<{ message: string; code?: string; retryAfterSeconds?: number } | null>(null);
+    const [aiError, setAiError] = useState<{ message: string; backendMessage?: string; status?: number; code?: string; retryAfterSeconds?: number } | null>(null);
     const [rateLimitCountdown, setRateLimitCountdown] = useState<number>(0);
     const [askMode, setAskMode] = useState<import('../api').AskMode>('auto');
     const [askScope, setAskScope] = useState<import('../api').AskScope>('auto');
@@ -2906,6 +2906,9 @@ export function MainPanel({ className }: { className?: string }) {
     const [chatSearchQuery, setChatSearchQuery] = useState('');
     const [normalChatsOpen, setNormalChatsOpen] = useState(false);
     const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
+    const [copiedUserMsgIdx, setCopiedUserMsgIdx] = useState<number | null>(null);
+    const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
+    const [editingHasMissingImages, setEditingHasMissingImages] = useState(false);
     const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
     const [imageWarning, setImageWarning] = useState<string | null>(null);
     const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
@@ -3700,56 +3703,72 @@ ${lastAssistant.content}${evidenceList}
         setAskQ('');
     }, [selectedFile]);
 
-    const formatAiError = (err: any): { message: string; code?: string; retryAfterSeconds?: number } => {
+    const formatAiError = (err: any): { message: string; backendMessage?: string; status?: number; code?: string; retryAfterSeconds?: number } => {
         const rawCode = String(err?.code || (err?.data && err.data.code) || '').toLowerCase();
-        const rawMsg = err instanceof Error ? err.message : (typeof err === 'object' ? (err.message || '') : String(err));
+        const rawMsg = typeof err?.message === 'string'
+            ? err.message
+            : (typeof err?.data?.message === 'string'
+                ? err.data.message
+                : (err instanceof Error ? err.message : (typeof err === 'object' && err ? (err.message || '') : String(err))));
         const combined = `${rawCode} ${rawMsg}`.toLowerCase();
         const retryAfter = typeof err?.retryAfterSeconds === 'number'
             ? err.retryAfterSeconds
             : (typeof err?.data?.retryAfterSeconds === 'number' ? err.data.retryAfterSeconds : undefined);
+
+        const status = typeof err?.status === 'number'
+            ? err.status
+            : (typeof err?.data?.status === 'number' ? err.data.status : undefined);
+
+        const rawBackendMsg = (err?.data?.message || err?.message || (typeof err === 'string' ? err : ''));
+        const backendMessage = typeof rawBackendMsg === 'string' && rawBackendMsg.trim() ? rawBackendMsg.slice(0, 160) : undefined;
+
+        let friendly = "An unexpected error occurred while communicating with the AI service.";
+        let finalCode = rawCode || 'unknown';
 
         if (combined.includes('rate_limited') || combined.includes('rate_limit')) {
             const sec = retryAfter && retryAfter > 0 ? retryAfter : 30;
             return {
                 code: 'rate_limited',
                 message: `Rate limit reached. You can try again in ${sec}s.`,
+                backendMessage: backendMessage && !backendMessage.startsWith('Rate limit reached') ? backendMessage : undefined,
+                status,
                 retryAfterSeconds: sec
             };
+        } else if (combined.includes('invalid_api_key') || combined.includes('missing_api_key')) {
+            friendly = "API key is missing or invalid. Check your .env file.";
+            finalCode = 'invalid_api_key';
+        } else if (combined.includes('model_not_found')) {
+            friendly = "The configured model is not available. Check LLM_MODEL in .env.";
+            finalCode = 'model_not_found';
+        } else if (combined.includes('provider_unavailable') || combined.includes('timeout')) {
+            friendly = "AI service unreachable. Please retry.";
+            finalCode = 'provider_unavailable';
+        } else if (combined.includes('insufficient_context')) {
+            friendly = "The supplied repository context is insufficient to answer this question.";
+            finalCode = 'insufficient_context';
+        } else if (combined.includes('oversized_context')) {
+            friendly = "Context is too large for this model. Try asking about a single file.";
+            finalCode = 'oversized_context';
+        } else if (combined.includes('vision_unavailable')) {
+            friendly = "Vision analysis is unavailable (missing fallback key). Remove image or configure LLM_FALLBACK_API_KEY.";
+            finalCode = 'vision_unavailable';
+        } else if (combined.includes('413') || combined.includes('too large') || combined.includes('payload too large') || combined.includes('limit of 3 mb')) {
+            friendly = "Image too large, please attach a smaller file.";
+            finalCode = 'bad_request';
+        } else if (combined.includes('bad_request') || combined.includes('invalid_question') || combined.includes('invalid_graph')) {
+            friendly = "The AI request could not be processed. Check the server logs.";
+            finalCode = 'bad_request';
+        } else if (rawMsg && !rawMsg.startsWith('{') && !rawMsg.includes('JSON')) {
+            friendly = rawMsg;
         }
-        if (combined.includes('invalid_api_key') || combined.includes('missing_api_key')) {
-            return { message: "API key is missing or invalid. Check your .env file.", code: 'invalid_api_key' };
-        }
-        if (combined.includes('model_not_found')) {
-            return { message: "The configured model is not available. Check LLM_MODEL in .env.", code: 'model_not_found' };
-        }
-        if (combined.includes('provider_unavailable') || combined.includes('timeout')) {
-            return { message: "AI service unreachable. Please retry.", code: 'provider_unavailable' };
-        }
-        if (combined.includes('insufficient_context')) {
-            return { message: "The supplied repository context is insufficient to answer this question.", code: 'insufficient_context' };
-        }
-        if (combined.includes('oversized_context')) {
-            return { message: "Context is too large for this model. Try asking about a single file.", code: 'oversized_context' };
-        }
-        if (combined.includes('vision_unavailable')) {
-            return {
-                message: "Vision analysis is unavailable (missing fallback key). Remove image or configure LLM_FALLBACK_API_KEY.",
-                code: 'vision_unavailable'
-            };
-        }
-        if (combined.includes('413') || combined.includes('too large') || combined.includes('payload too large') || combined.includes('limit of 3 mb')) {
-            return {
-                message: "Image too large, please attach a smaller file.",
-                code: 'bad_request'
-            };
-        }
-        if (combined.includes('bad_request') || combined.includes('invalid_question') || combined.includes('invalid_graph')) {
-            return { message: "The AI request could not be processed. Check the server logs.", code: 'bad_request' };
-        }
-        if (rawMsg && !rawMsg.startsWith('{') && !rawMsg.includes('JSON')) {
-            return { message: rawMsg, code: 'unknown' };
-        }
-        return { message: "An unexpected error occurred while communicating with the AI service.", code: 'unknown' };
+
+        return {
+            message: friendly,
+            backendMessage: backendMessage && backendMessage !== friendly ? backendMessage : undefined,
+            status,
+            code: finalCode,
+            retryAfterSeconds: retryAfter
+        };
     };
 
     const handleStopAi = useCallback(() => {
@@ -3984,7 +4003,11 @@ ${lastAssistant.content}${evidenceList}
             );
 
             if (res.status === 'error' && res.error) {
-                setChatMessages(prev => prev.filter(m => !m.isThinking && m.content.length > 0));
+                setChatMessages(prev => {
+                    const kept = prev.filter(m => !m.isThinking);
+                    saveChatMessages(kept);
+                    return kept;
+                });
                 setAiError(formatAiError(res.error));
             } else {
                 const updated = [
@@ -4019,7 +4042,11 @@ ${lastAssistant.content}${evidenceList}
                     setChatMessages(prev => prev.filter(m => !m.isThinking));
                 }
             } else {
-                setChatMessages(prev => prev.filter(m => !m.isThinking && m.content.length > 0));
+                setChatMessages(prev => {
+                    const kept = prev.filter(m => !m.isThinking);
+                    saveChatMessages(kept);
+                    return kept;
+                });
                 setAiError(formatAiError(e));
             }
         } finally {
@@ -4036,18 +4063,90 @@ ${lastAssistant.content}${evidenceList}
 
     const handleRetry = useCallback(() => {
         setAiError(null);
-        const lastUser = [...chatMessages].reverse().find(m => m.role === 'user');
-        if (lastUser) {
-            const imagesToRetry: AttachedImage[] | undefined = lastUser.images?.map((img, idx) => ({
-                id: 'retry_' + idx,
-                mime: (img.mime || 'image/jpeg') as any,
-                data: img.data || '',
-                thumbUrl: img.thumbUrl,
-                name: img.name || 'image'
-            }));
-            askAI(lastUser.content, askMode, askScope, undefined, imagesToRetry);
+        const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user');
+        if (lastUserIdx === -1) return;
+        const lastUser = chatMessages[lastUserIdx];
+        const baseHistory = chatMessages.slice(0, lastUserIdx);
+        const imagesToRetry: AttachedImage[] | undefined = lastUser.images?.map((img, idx) => ({
+            id: 'retry_' + idx,
+            mime: (img.mime || 'image/jpeg') as any,
+            data: img.data || '',
+            thumbUrl: img.thumbUrl,
+            name: img.name || 'image'
+        }));
+        askAI(lastUser.content, askMode, askScope, baseHistory, imagesToRetry);
+    }, [chatMessages, askMode, askScope]);
+
+    const handleCopyUserMessage = async (msgIdx: number) => {
+        const msg = chatMessages[msgIdx];
+        if (!msg || !msg.content.trim()) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(msg.content);
+            setCopiedUserMsgIdx(msgIdx);
+            setTimeout(() => setCopiedUserMsgIdx(null), 2000);
         }
-    }, [chatMessages, askMode, askScope, attachedImages]);
+    };
+
+    const handleResendMessage = (msgIdx: number) => {
+        if (isStreaming) return;
+        const msg = chatMessages[msgIdx];
+        if (!msg || msg.role !== 'user') return;
+        const hasMissing = Boolean(msg.images && msg.images.some(img => !img.data));
+        if (hasMissing) return;
+        const imagesToResend: AttachedImage[] | undefined = msg.images?.map((img, idx) => ({
+            id: 'resend_' + idx + '_' + Date.now(),
+            mime: (img.mime || 'image/jpeg') as any,
+            data: img.data || '',
+            thumbUrl: img.thumbUrl,
+            name: img.name || 'image'
+        }));
+        askAI(msg.content, askMode, askScope, chatMessages, imagesToResend);
+    };
+
+    const handleEditMessage = (msgIdx: number) => {
+        if (isStreaming) return;
+        const msg = chatMessages[msgIdx];
+        if (!msg || msg.role !== 'user') return;
+        setEditingMessageIdx(msgIdx);
+        setAskQ(msg.content);
+        const hasMissing = Boolean(msg.images && msg.images.some(img => !img.data));
+        setEditingHasMissingImages(hasMissing);
+        if (msg.images && msg.images.length > 0) {
+            const attached: AttachedImage[] = msg.images
+                .filter(img => Boolean(img.data))
+                .map((img, i) => ({
+                    id: 'edit_' + i + '_' + Date.now(),
+                    mime: (img.mime || 'image/jpeg') as any,
+                    data: img.data!,
+                    thumbUrl: img.thumbUrl,
+                    name: img.name || 'image'
+                }));
+            setAttachedImages(attached);
+        } else {
+            setAttachedImages([]);
+        }
+        textareaRef.current?.focus();
+    };
+
+    const handleCancelEdit = () => {
+        setEditingMessageIdx(null);
+        setEditingHasMissingImages(false);
+        setAskQ('');
+        setAttachedImages([]);
+    };
+
+    const handleSendMessage = () => {
+        if (isStreaming || (!askQ.trim() && attachedImages.length === 0)) return;
+        if (editingMessageIdx !== null) {
+            const editIdx = editingMessageIdx;
+            const base = chatMessages.slice(0, editIdx);
+            setEditingMessageIdx(null);
+            setEditingHasMissingImages(false);
+            askAI(askQ, askMode, askScope, base, attachedImages);
+        } else {
+            askAI();
+        }
+    };
 
     const handleRegenerate = useCallback((questionOverride?: string) => {
         if (isStreaming) return;
@@ -5752,17 +5851,33 @@ ${lastAssistant.content}${evidenceList}
                                             )}
                                             <div className={cn("space-y-3", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
                                                 {aiError && (
-                                                    <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
+                                                    <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2">
                                                         <div className="flex items-start justify-between gap-3">
-                                                            <div className="flex items-center gap-2 text-xs font-medium text-red-200">
-                                                                <ShieldAlert size={14} className="text-red-400 shrink-0" />
-                                                                <span>
-                                                                    {aiError.code === 'rate_limited'
-                                                                        ? (rateLimitCountdown > 0
-                                                                            ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
-                                                                            : "Rate limit reached. You can now try again.")
-                                                                        : aiError.message}
-                                                                </span>
+                                                            <div className="space-y-1.5 flex-1 min-w-0">
+                                                                <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                                                                    <ShieldAlert size={14} className="text-red-400 shrink-0" />
+                                                                    <span>
+                                                                        {aiError.code === 'rate_limited'
+                                                                            ? (rateLimitCountdown > 0
+                                                                                ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
+                                                                                : "Rate limit reached. You can now try again.")
+                                                                            : aiError.message}
+                                                                    </span>
+                                                                </div>
+                                                                {aiError.backendMessage && (
+                                                                    <div className="text-[11px] text-red-300/80 break-words font-mono pl-5">
+                                                                        {aiError.backendMessage}
+                                                                    </div>
+                                                                )}
+                                                                {(aiError.status !== undefined || aiError.code) && (
+                                                                    <details className="text-[10px] text-red-400/70 cursor-pointer select-none pl-5">
+                                                                        <summary className="hover:text-red-300 transition-colors">Details</summary>
+                                                                        <div className="mt-1 font-mono text-[10px] space-y-0.5 text-red-300/80">
+                                                                            {aiError.status !== undefined && <div>Status: {aiError.status}</div>}
+                                                                            {aiError.code && <div>Code: {aiError.code}</div>}
+                                                                        </div>
+                                                                    </details>
+                                                                )}
                                                             </div>
                                                             <button
                                                                 disabled={aiError.code === 'rate_limited' && rateLimitCountdown > 0}
@@ -5810,35 +5925,93 @@ ${lastAssistant.content}${evidenceList}
                                                     </div>
                                                 ) : (
                                                     chatMessages.map((msg, idx) => (
-                                                        <div key={idx} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
+                                                        <div key={idx} className={cn("group flex items-center gap-1.5", msg.role === 'user' ? "justify-end" : "justify-start")}>
                                                             {msg.role === 'user' ? (
-                                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
-                                                                    {msg.images && msg.images.length > 0 && (
-                                                                        <div className="flex items-center gap-2 flex-wrap">
-                                                                            {msg.images.map((img, imgIdx) => {
-                                                                                const src = img.thumbUrl || (img.data ? `data:${img.mime};base64,${img.data}` : undefined);
-                                                                                if (!src) return null;
-                                                                                const fullSrc = img.data ? `data:${img.mime};base64,${img.data}` : (img.thumbUrl || src);
-                                                                                return (
-                                                                                    <button
-                                                                                        key={imgIdx}
-                                                                                        type="button"
-                                                                                        onClick={() => setLightboxImage(fullSrc)}
-                                                                                        className="group relative rounded-lg border border-white/15 overflow-hidden hover:border-[#4FD1B5]/60 transition-colors cursor-pointer bg-black/40"
-                                                                                        title="Click to zoom image"
-                                                                                    >
-                                                                                        <img
-                                                                                            src={src}
-                                                                                            alt={img.name || `Attachment ${imgIdx + 1}`}
-                                                                                            className="max-h-[120px] object-contain rounded-lg"
-                                                                                        />
-                                                                                    </button>
-                                                                                );
-                                                                            })}
-                                                                        </div>
-                                                                    )}
-                                                                    {msg.content ? <div>{msg.content}</div> : null}
-                                                                </div>
+                                                                <>
+                                                                    <div className={cn(
+                                                                        "flex items-center gap-1 transition-opacity shrink-0",
+                                                                        "opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
+                                                                    )}>
+                                                                        {/* Copy */}
+                                                                        <button
+                                                                            type="button"
+                                                                            disabled={isStreaming || !msg.content.trim()}
+                                                                            onClick={() => handleCopyUserMessage(idx)}
+                                                                            aria-label="Copy message"
+                                                                            title={!msg.content.trim() ? "Cannot copy image-only message" : (copiedUserMsgIdx === idx ? "Copied" : "Copy")}
+                                                                            className={cn(
+                                                                                "p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08] transition-colors focus:opacity-100",
+                                                                                (isStreaming || !msg.content.trim()) ? "opacity-30 cursor-not-allowed" : "cursor-pointer"
+                                                                            )}
+                                                                        >
+                                                                            {copiedUserMsgIdx === idx ? <Check size={12} className="text-[#4FD1B5]" /> : <Copy size={12} />}
+                                                                        </button>
+
+                                                                        {/* Resend */}
+                                                                        {(() => {
+                                                                            const hasMissingImageData = Boolean(msg.images && msg.images.some(img => !img.data));
+                                                                            const resendDisabled = isStreaming || hasMissingImageData;
+                                                                            return (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    disabled={resendDisabled}
+                                                                                    onClick={() => handleResendMessage(idx)}
+                                                                                    aria-label="Resend message"
+                                                                                    title={hasMissingImageData ? "Attach the image again" : "Resend"}
+                                                                                    className={cn(
+                                                                                        "p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08] transition-colors focus:opacity-100",
+                                                                                        resendDisabled ? "opacity-30 cursor-not-allowed" : "cursor-pointer"
+                                                                                    )}
+                                                                                >
+                                                                                    <RefreshCw size={12} />
+                                                                                </button>
+                                                                            );
+                                                                        })()}
+
+                                                                        {/* Edit */}
+                                                                        <button
+                                                                            type="button"
+                                                                            disabled={isStreaming}
+                                                                            onClick={() => handleEditMessage(idx)}
+                                                                            aria-label="Edit message"
+                                                                            title="Edit message"
+                                                                            className={cn(
+                                                                                "p-1 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.08] transition-colors focus:opacity-100",
+                                                                                isStreaming ? "opacity-30 cursor-not-allowed" : "cursor-pointer"
+                                                                            )}
+                                                                        >
+                                                                            <Pencil size={12} />
+                                                                        </button>
+                                                                    </div>
+
+                                                                    <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                                        {msg.images && msg.images.length > 0 && (
+                                                                            <div className="flex items-center gap-2 flex-wrap">
+                                                                                {msg.images.map((img, imgIdx) => {
+                                                                                    const src = img.thumbUrl || (img.data ? `data:${img.mime};base64,${img.data}` : undefined);
+                                                                                    if (!src) return null;
+                                                                                    const fullSrc = img.data ? `data:${img.mime};base64,${img.data}` : (img.thumbUrl || src);
+                                                                                    return (
+                                                                                        <button
+                                                                                            key={imgIdx}
+                                                                                            type="button"
+                                                                                            onClick={() => setLightboxImage(fullSrc)}
+                                                                                            className="group relative rounded-lg border border-white/15 overflow-hidden hover:border-[#4FD1B5]/60 transition-colors cursor-pointer bg-black/40"
+                                                                                            title="Click to zoom image"
+                                                                                        >
+                                                                                            <img
+                                                                                                src={src}
+                                                                                                alt={img.name || `Attachment ${imgIdx + 1}`}
+                                                                                                className="max-h-[120px] object-contain rounded-lg"
+                                                                                            />
+                                                                                        </button>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        )}
+                                                                        {msg.content ? <div>{msg.content}</div> : null}
+                                                                    </div>
+                                                                </>
                                                             ) : (
                                                                 <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
                                                                     {msg.isThinking ? (
@@ -6084,6 +6257,24 @@ ${lastAssistant.content}${evidenceList}
                                                         <span>{imageWarning}</span>
                                                     </div>
                                                 )}
+                                                {editingMessageIdx !== null && (
+                                                    <div className="mb-2 px-2.5 py-1.5 rounded-md bg-white/[0.04] border border-[#4FD1B5]/30 flex items-center justify-between text-xs text-[#E8EAE6]">
+                                                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#4FD1B5]">
+                                                            <Pencil size={12} />
+                                                            <span>Editing message</span>
+                                                            {editingHasMissingImages && (
+                                                                <span className="text-amber-300 font-normal">· Re-attach the image to include it</span>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleCancelEdit}
+                                                            className="text-[10px] text-[#8A918C] hover:text-[#E8EAE6] px-1.5 py-0.5 rounded hover:bg-white/[0.06] transition-colors cursor-pointer"
+                                                        >
+                                                            Cancel
+                                                        </button>
+                                                    </div>
+                                                )}
                                                 <div className="flex items-end gap-2 glass-surface p-1.5 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
                                                     <input
                                                         ref={fileInputRef}
@@ -6143,7 +6334,7 @@ ${lastAssistant.content}${evidenceList}
                                                                 }
                                                                 e.preventDefault();
                                                                 if (!isStreaming && (askQ.trim() || attachedImages.length > 0)) {
-                                                                    askAI();
+                                                                    handleSendMessage();
                                                                 }
                                                             } else if (e.key === 'Escape') {
                                                                 e.preventDefault();
@@ -6173,7 +6364,7 @@ ${lastAssistant.content}${evidenceList}
                                                         </button>
                                                     ) : (
                                                         <Button
-                                                            onClick={() => askAI()}
+                                                            onClick={handleSendMessage}
                                                             className="px-3 py-1.5 text-xs shrink-0 mb-0.5"
                                                             disabled={(!askQ.trim() && attachedImages.length === 0) || isStreaming}
                                                         >

@@ -55,15 +55,15 @@ function parseAndTrimHistory(history: unknown): Array<{ role: string; content: s
     }));
 }
 
-export function validateImages(images: unknown): { valid: true; parsed?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }> } | { valid: false; message: string } {
+export function validateImages(images: unknown): { valid: true; parsed?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }> } | { valid: false; code: string; message: string } {
     if (images === undefined || images === null) {
         return { valid: true, parsed: undefined };
     }
     if (!Array.isArray(images)) {
-        return { valid: false, message: "images must be an array." };
+        return { valid: false, code: "bad_request", message: "images must be an array." };
     }
     if (images.length > 3) {
-        return { valid: false, message: "A maximum of 3 images can be attached." };
+        return { valid: false, code: "bad_request", message: "At most 3 images" };
     }
     const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
     const MAX_BASE64_LENGTH = 3 * 1024 * 1024; // 3 MB of base64 text
@@ -72,14 +72,14 @@ export function validateImages(images: unknown): { valid: true; parsed?: Array<{
     for (let i = 0; i < images.length; i++) {
         const item = images[i];
         if (!item || typeof item !== "object") {
-            return { valid: false, message: `Image ${i + 1} is invalid.` };
+            return { valid: false, code: "bad_request", message: `Image ${i + 1} is invalid.` };
         }
         const { mime, data } = item as { mime?: unknown; data?: unknown };
         if (typeof mime !== "string" || !ALLOWED_MIMES.has(mime)) {
-            return { valid: false, message: `Image ${i + 1} has unsupported mime type. Supported: image/jpeg, image/png, image/webp.` };
+            return { valid: false, code: "bad_request", message: `Unsupported image type. Supported: image/jpeg, image/png, image/webp.` };
         }
         if (typeof data !== "string" || data.trim().length === 0) {
-            return { valid: false, message: `Image ${i + 1} is missing data.` };
+            return { valid: false, code: "bad_request", message: `Image ${i + 1} is missing data.` };
         }
         let cleanData = data;
         if (cleanData.startsWith("data:")) {
@@ -89,11 +89,21 @@ export function validateImages(images: unknown): { valid: true; parsed?: Array<{
             }
         }
         if (cleanData.length > MAX_BASE64_LENGTH) {
-            return { valid: false, message: `Image ${i + 1} exceeds 3 MB limit.` };
+            return { valid: false, code: "bad_request", message: "Image too large" };
         }
         parsed.push({ mime: mime as "image/jpeg" | "image/png" | "image/webp", data: cleanData });
     }
     return { valid: true, parsed };
+}
+
+function sendError(res: Response, route: string, status: number, code: string, message: string) {
+    console.error(`[AI ${route}] status=${status} code=${code} message="${message}"`);
+    return res.status(status).json({
+        status: "error",
+        code,
+        message,
+        error: message
+    });
 }
 
 export function createAiRouter(
@@ -108,42 +118,42 @@ export function createAiRouter(
 
     router.post("/ai/ask", async (req: Request, res: Response) => {
         if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-            return res.status(400).json({ error: "Malformed request body." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "Malformed request body.");
         }
 
         const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners, mode, scope, images, repoFacts } = req.body as Record<string, unknown>;
 
         const imageValidation = validateImages(images);
         if (!imageValidation.valid) {
-            return res.status(400).json({ error: imageValidation.message, code: "bad_request" });
+            return sendError(res, "/ai/ask", 400, imageValidation.code, imageValidation.message);
         }
 
         if (typeof repository !== "string" || repository.trim().length === 0) {
-            return res.status(400).json({ error: "Repository is required." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "Repository is required.");
         }
 
         const rawQuestion = typeof question === "string" ? question.trim() : "";
         const hasImages = Boolean(imageValidation.parsed && imageValidation.parsed.length > 0);
 
         if (!rawQuestion && !hasImages) {
-            return res.status(400).json({ error: "Question is required." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "A question is required when no image is attached");
         }
         const resolvedQuestion = rawQuestion;
 
         if (!isValidRepositoryTarget(target)) {
-            return res.status(400).json({ error: "Invalid target." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "Invalid target.");
         }
 
         if (graph !== undefined && !isRepositoryGraph(graph)) {
-            return res.status(400).json({ error: "A valid repository graph is required." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "A valid repository graph is required.");
         }
 
         if (graph === undefined) {
-            return res.status(400).json({ error: "A repository graph is required." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "A repository graph is required.");
         }
 
         if (limits !== undefined && (typeof limits !== "object" || Array.isArray(limits))) {
-            return res.status(400).json({ error: "Invalid limits." });
+            return sendError(res, "/ai/ask", 400, "bad_request", "Invalid limits.");
         }
 
         const parsedHistory = parseAndTrimHistory(history);
@@ -171,7 +181,29 @@ export function createAiRouter(
                 res.setHeader("Retry-After", String(result.retryAfterSeconds));
             }
 
-            return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : (result.error?.code === "bad_request" || result.error?.code === "vision_unavailable") ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
+            if (result.status === "error") {
+                const errCode = result.error?.code || "provider_unavailable";
+                const errMsg = result.error?.message || "AI service failed.";
+                const statusCode = (errCode === "bad_request" || errCode === "vision_unavailable" || errCode === "invalid_question") ? 400
+                    : errCode === "invalid_api_key" ? 401
+                    : (errCode === "rate_limit" || errCode === "rate_limited") ? 429
+                    : errCode === "model_not_found" ? 404
+                    : 502;
+                console.error(`[AI /ai/ask] status=${statusCode} code=${errCode} message="${errMsg}"`);
+                return res.status(statusCode).json({
+                    status: "error",
+                    code: errCode,
+                    message: errMsg,
+                    error: result.error,
+                    answer: result.answer || "",
+                    citations: result.citations || [],
+                    confidence: result.confidence || "low",
+                    missingData: result.missingData ?? [],
+                    ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {})
+                });
+            }
+
+            return res.status(200).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,
@@ -184,84 +216,78 @@ export function createAiRouter(
                 ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {})
             });
         } catch (error) {
-            if (error instanceof Error) {
-                return res.status(500).json({
-                    status: "error",
-                    answer: "",
-                    citations: [],
-                    confidence: "low",
-                    missingData: [],
-                    error: { code: "provider_unavailable", message: error.message }
-                });
-            }
-
-            return res.status(500).json({
-                status: "error",
-                answer: "",
-                citations: [],
-                confidence: "low",
-                missingData: [],
-                error: { code: "provider_unavailable", message: "AI service failed." }
-            });
+            const errMsg = error instanceof Error ? error.message : "AI service failed.";
+            return sendError(res, "/ai/ask", 500, "provider_unavailable", errMsg);
         }
     });
 
     router.post("/ai/ask-repository", async (req: Request, res: Response) => {
         if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-            return res.status(400).json({ error: "Malformed request body." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Malformed request body.");
         }
 
         const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners, mode, scope, images, repoFacts } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
-            return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "A valid GitHub repository URL is required.");
         }
 
         const imageValidation = validateImages(images);
         if (!imageValidation.valid) {
             const isSseEarly = req.headers.accept?.includes("text/event-stream");
             if (isSseEarly) {
+                console.error(`[AI /ai/ask-repository] status=400 code=${imageValidation.code} message="${imageValidation.message}"`);
                 res.setHeader("Content-Type", "text/event-stream");
                 res.setHeader("Cache-Control", "no-cache");
                 res.setHeader("Connection", "keep-alive");
-                res.write(`event: error\ndata: ${JSON.stringify({ code: "bad_request", message: imageValidation.message })}\n\n`);
+                res.write(`event: error\ndata: ${JSON.stringify({ status: "error", code: imageValidation.code, message: imageValidation.message })}\n\n`);
                 res.end();
                 return;
             }
-            return res.status(400).json({ error: imageValidation.message, code: "bad_request" });
+            return sendError(res, "/ai/ask-repository", 400, imageValidation.code, imageValidation.message);
         }
 
         if (typeof sha !== "string" || sha.trim().length === 0) {
-            return res.status(400).json({ error: "A non-empty commit SHA is required." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "A non-empty commit SHA is required.");
         }
 
         if (!Array.isArray(paths) || paths.length === 0 || paths.length > 20) {
-            return res.status(400).json({ error: "Between 1 and 20 file paths are required." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Between 1 and 20 file paths are required.");
         }
 
         if (paths.some((path) => typeof path !== "string" || path.trim().length === 0)) {
-            return res.status(400).json({ error: "Every path must be a non-empty string." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Every path must be a non-empty string.");
         }
 
         if (new Set(paths).size !== paths.length) {
-            return res.status(400).json({ error: "Every path must be unique." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Every path must be unique.");
         }
 
         const rawQuestion = typeof question === "string" ? question.trim() : "";
         const hasImages = Boolean(imageValidation.parsed && imageValidation.parsed.length > 0);
 
         if (!rawQuestion && !hasImages) {
-            return res.status(400).json({ error: "Question is required." });
+            const isSseEarly = req.headers.accept?.includes("text/event-stream");
+            if (isSseEarly) {
+                console.error(`[AI /ai/ask-repository] status=400 code=bad_request message="A question is required when no image is attached"`);
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.write(`event: error\ndata: ${JSON.stringify({ status: "error", code: "bad_request", message: "A question is required when no image is attached" })}\n\n`);
+                res.end();
+                return;
+            }
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "A question is required when no image is attached");
         }
         const resolvedQuestion = rawQuestion;
 
         if (!isValidRepositoryTarget(target)) {
-            return res.status(400).json({ error: "Invalid target." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Invalid target.");
         }
 
         if (limits !== undefined && (typeof limits !== "object" || Array.isArray(limits))) {
-            return res.status(400).json({ error: "Invalid limits." });
+            return sendError(res, "/ai/ask-repository", 400, "bad_request", "Invalid limits.");
         }
 
         const parsedHistory = parseAndTrimHistory(history);
@@ -330,7 +356,9 @@ export function createAiRouter(
                 }
 
                 if (streamResult.status === "error" && streamResult.error) {
+                    console.error(`[AI /ai/ask-repository] status=502 code=${streamResult.error.code} message="${streamResult.error.message}"`);
                     sendEvent("error", {
+                        status: "error",
                         code: streamResult.error.code,
                         message: streamResult.error.message,
                         ...(streamResult.retryAfterSeconds !== undefined ? { retryAfterSeconds: streamResult.retryAfterSeconds } : {})
@@ -356,7 +384,12 @@ export function createAiRouter(
                     ? (error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "provider_unavailable")
                     : "provider_unavailable";
                 const errMsg = error instanceof Error ? error.message : "Unable to load and analyze repository.";
+                const status = error instanceof GitHubRepositoryFileError
+                    ? (error.code === "not_found" ? 404 : error.code === "not_file" ? 400 : error.code === "rate_limit" ? 429 : 502)
+                    : 500;
+                console.error(`[AI /ai/ask-repository] status=${status} code=${errCode} message="${errMsg}"`);
                 sendEvent("error", {
+                    status: "error",
                     code: errCode,
                     message: errMsg
                 });
@@ -390,7 +423,29 @@ export function createAiRouter(
                 res.setHeader("Retry-After", String(result.retryAfterSeconds));
             }
 
-            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : (result.error?.code === "bad_request" || result.error?.code === "vision_unavailable") ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
+            if (result.status === "error") {
+                const errCode = result.error?.code || "provider_unavailable";
+                const errMsg = result.error?.message || "AI service failed.";
+                const statusCode = (errCode === "bad_request" || errCode === "vision_unavailable" || errCode === "invalid_question") ? 400
+                    : errCode === "invalid_api_key" ? 401
+                    : (errCode === "rate_limit" || errCode === "rate_limited") ? 429
+                    : errCode === "model_not_found" ? 404
+                    : 502;
+                console.error(`[AI /ai/ask-repository] status=${statusCode} code=${errCode} message="${errMsg}"`);
+                return res.status(statusCode).json({
+                    status: "error",
+                    code: errCode,
+                    message: errMsg,
+                    error: result.error,
+                    answer: result.answer || "",
+                    citations: result.citations || [],
+                    confidence: result.confidence || "low",
+                    missingData: result.missingData ?? [],
+                    ...(result.retryAfterSeconds !== undefined ? { retryAfterSeconds: result.retryAfterSeconds } : {})
+                });
+            }
+
+            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : 502).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,
@@ -405,10 +460,11 @@ export function createAiRouter(
         } catch (error) {
             if (error instanceof GitHubRepositoryFileError) {
                 const status = error.code === "not_found" ? 404 : error.code === "not_file" ? 400 : error.code === "rate_limit" ? 429 : 502;
-                return res.status(status).json({ error: error.message });
+                const code = error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "bad_request";
+                return sendError(res, "/ai/ask-repository", status, code, error.message);
             }
 
-            return res.status(502).json({ error: "Unable to load and analyze the GitHub repository." });
+            return sendError(res, "/ai/ask-repository", 502, "provider_unavailable", "Unable to load and analyze the GitHub repository.");
         }
     });
 
