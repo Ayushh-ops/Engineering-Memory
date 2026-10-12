@@ -13,13 +13,20 @@ export function getLlmConfig(): OpenAIConfig {
     return createOpenAIConfigFromEnvironment();
 }
 
-export function createOpenAIConfigFromEnvironment(env: Record<string, string | undefined> = process.env): OpenAIConfig {
-    const apiKey = (env.LLM_API_KEY ?? env.OPENAI_API_KEY ?? "").trim();
-    const model = (env.LLM_MODEL ?? env.OPENAI_MODEL ?? "openai/gpt-oss-120b").trim() || "openai/gpt-oss-120b";
-    const timeoutMs = Number.parseInt(env.LLM_TIMEOUT_MS ?? "20000", 10);
-    const maxTokens = Number.parseInt(env.LLM_MAX_TOKENS ?? "1500", 10);
+export function cleanEnvVal(val: string | undefined): string {
+    if (!val) return "";
+    const idx = val.indexOf(" #");
+    const cleaned = idx !== -1 ? val.slice(0, idx) : val;
+    return cleaned.trim();
+}
 
-    const baseUrl = (env.LLM_BASE_URL ?? env.OPENAI_BASE_URL ?? "https://api.groq.com/openai/v1").trim() || "https://api.groq.com/openai/v1";
+export function createOpenAIConfigFromEnvironment(env: Record<string, string | undefined> = process.env): OpenAIConfig {
+    const apiKey = cleanEnvVal(env.LLM_API_KEY ?? env.OPENAI_API_KEY);
+    const model = cleanEnvVal(env.LLM_MODEL ?? env.OPENAI_MODEL) || "openai/gpt-oss-120b";
+    const timeoutMs = Number.parseInt(cleanEnvVal(env.LLM_TIMEOUT_MS) || "20000", 10);
+    const maxTokens = Number.parseInt(cleanEnvVal(env.LLM_MAX_TOKENS) || "1500", 10);
+
+    const baseUrl = cleanEnvVal(env.LLM_BASE_URL ?? env.OPENAI_BASE_URL) || "https://api.groq.com/openai/v1";
 
     const config: OpenAIConfig = {
         apiKey,
@@ -29,11 +36,11 @@ export function createOpenAIConfigFromEnvironment(env: Record<string, string | u
         baseUrl
     };
 
-    const fallbackApiKey = (env.LLM_FALLBACK_API_KEY ?? "").trim();
+    const fallbackApiKey = cleanEnvVal(env.LLM_FALLBACK_API_KEY);
     if (fallbackApiKey) {
         config.fallbackApiKey = fallbackApiKey;
-        config.fallbackBaseUrl = (env.LLM_FALLBACK_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta/openai/").trim() || "https://generativelanguage.googleapis.com/v1beta/openai/";
-        const fallbackModel = (env.LLM_FALLBACK_MODEL ?? "").trim();
+        config.fallbackBaseUrl = cleanEnvVal(env.LLM_FALLBACK_BASE_URL) || "https://generativelanguage.googleapis.com/v1beta/openai/";
+        const fallbackModel = cleanEnvVal(env.LLM_FALLBACK_MODEL);
         if (fallbackModel) {
             config.fallbackModel = fallbackModel;
         }

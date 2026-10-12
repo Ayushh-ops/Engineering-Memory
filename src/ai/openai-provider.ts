@@ -114,12 +114,63 @@ export class StreamDelimiterFilter {
     }
 }
 
-let cachedGeminiModel: { model: string; expiresAt: number } | null = null;
+export function filterAndSortGeminiModels(modelIds: string[]): string[] {
+    const validIdRegex = /^[A-Za-z0-9][A-Za-z0-9._-]{1,80}$/;
+    const excludedKeywords = [
+        "preview", "exp", "experimental", "omni", "live", "tts", "audio",
+        "image", "embedding", "thinking", "robotics", "computer-use", "native"
+    ];
 
-export async function discoverGeminiModel(baseUrl: string, apiKey: string): Promise<string> {
-    if (cachedGeminiModel && Date.now() < cachedGeminiModel.expiresAt) {
-        return cachedGeminiModel.model;
+    const validModels = modelIds
+        .map((id) => id.replace(/^models\//, "").trim())
+        .filter((id) => {
+            if (!validIdRegex.test(id)) return false;
+            const lower = id.toLowerCase();
+            if (!lower.startsWith("gemini-") || !lower.includes("flash")) return false;
+            return !excludedKeywords.some((ex) => lower.includes(ex));
+        });
+
+    function parseVersion(id: string): number[] {
+        const match = id.match(/^gemini-(\d+(?:\.\d+)*)/i);
+        if (!match) return [];
+        return match[1].split(".").map((num) => parseInt(num, 10));
     }
+
+    validModels.sort((a, b) => {
+        const vA = parseVersion(a);
+        const vB = parseVersion(b);
+        const maxLen = Math.max(vA.length, vB.length);
+        for (let i = 0; i < maxLen; i++) {
+            const numA = vA[i] ?? 0;
+            const numB = vB[i] ?? 0;
+            if (numA !== numB) return numB - numA; // Descending
+        }
+        const aIsLite = a.toLowerCase().includes("lite");
+        const bIsLite = b.toLowerCase().includes("lite");
+        if (!aIsLite && bIsLite) return -1;
+        if (aIsLite && !bIsLite) return 1;
+        return a.localeCompare(b);
+    });
+
+    return validModels;
+}
+
+let cachedFallbackCandidates: { candidates: string[]; expiresAt: number } | null = null;
+let loggedFallbackCandidates = false;
+
+export function resetGeminiCandidatesCache(): void {
+    cachedFallbackCandidates = null;
+    loggedFallbackCandidates = false;
+}
+
+export async function getGeminiCandidateModels(baseUrl: string, apiKey: string, fallbackModelConfig?: string): Promise<string[]> {
+    if (cachedFallbackCandidates && Date.now() < cachedFallbackCandidates.expiresAt) {
+        return cachedFallbackCandidates.candidates;
+    }
+
+    const staticTail = ["gemini-flash-latest", "gemini-flash-lite-latest"];
+    let discovered: string[] = [];
+
     try {
         const cleaned = baseUrl.replace(/\/+$/, "");
         const controller = new AbortController();
@@ -129,40 +180,124 @@ export async function discoverGeminiModel(baseUrl: string, apiKey: string): Prom
             signal: controller.signal
         });
         clearTimeout(timeout);
-        if (!res.ok) {
-            return "gemini-flash-latest";
+
+        if (res.ok) {
+            const json = (await res.json()) as { data?: Array<{ id: string }>; models?: Array<{ name?: string; id?: string }> };
+            const rawList: string[] = [];
+            if (Array.isArray(json.data)) {
+                for (const item of json.data) {
+                    if (item && typeof item.id === "string") rawList.push(item.id);
+                }
+            } else if (Array.isArray(json.models)) {
+                for (const item of json.models) {
+                    const id = item?.id || item?.name;
+                    if (id && typeof id === "string") rawList.push(id);
+                }
+            }
+            discovered = filterAndSortGeminiModels(rawList);
         }
-        const json = (await res.json()) as { data?: Array<{ id: string }> };
-        const items = Array.isArray(json.data) ? json.data : [];
-        const excluded = ["lite", "image", "tts", "live", "audio", "embedding", "preview"];
-        const matches = items
-            .map((m) => m.id)
-            .filter((id) => {
-                const lower = id.toLowerCase();
-                return lower.includes("flash") && !excluded.some((ex) => lower.includes(ex));
-            });
-        if (matches.length === 0) {
-            return "gemini-flash-latest";
-        }
-        matches.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-        const selected = matches[0] || "gemini-flash-latest";
-        cachedGeminiModel = { model: selected, expiresAt: Date.now() + 60 * 60 * 1000 };
-        return selected;
     } catch {
-        return "gemini-flash-latest";
+        // Discovery failed, fallback to static tail
     }
+
+    const validIdRegex = /^[A-Za-z0-9][A-Za-z0-9._-]{1,80}$/;
+    const validConfigModel = fallbackModelConfig && validIdRegex.test(fallbackModelConfig.trim())
+        ? fallbackModelConfig.trim()
+        : null;
+
+    const list: string[] = [];
+    if (validConfigModel) {
+        list.push(validConfigModel);
+    }
+    list.push(...discovered.slice(0, 4));
+    list.push(...staticTail);
+
+    const deduped = Array.from(new Set(list));
+
+    cachedFallbackCandidates = {
+        candidates: deduped,
+        expiresAt: Date.now() + 60 * 60 * 1000 // 1 hour
+    };
+
+    if (!loggedFallbackCandidates) {
+        console.log(`[AI Gemini candidates] order: ${deduped.join(", ")}`);
+        loggedFallbackCandidates = true;
+    }
+
+    return deduped;
 }
 
-function parseRetryAfter(header: string | null): number {
-    if (!header) return 60;
-    const sec = Number.parseInt(header, 10);
-    if (Number.isFinite(sec) && sec > 0) return sec;
-    const dateMs = Date.parse(header);
-    if (!Number.isNaN(dateMs)) {
-        return Math.max(1, Math.ceil((dateMs - Date.now()) / 1000));
+export async function discoverGeminiModel(baseUrl: string, apiKey: string): Promise<string> {
+    const list = await getGeminiCandidateModels(baseUrl, apiKey);
+    return list[0] || "gemini-flash-latest";
+}
+
+export function parseRetryAfter(header: string | null, body?: string): number {
+    if (header) {
+        const sec = Number.parseInt(header, 10);
+        if (Number.isFinite(sec) && sec > 0) return sec;
+        const dateMs = Date.parse(header);
+        if (!Number.isNaN(dateMs)) {
+            return Math.max(1, Math.ceil((dateMs - Date.now()) / 1000));
+        }
+    }
+    if (body) {
+        const match = body.match(/retryDelay["']?\s*:\s*["']?(\d+)/i);
+        if (match && match[1]) {
+            const sec = Number.parseInt(match[1], 10);
+            if (Number.isFinite(sec) && sec > 0) return sec;
+        }
     }
     return 60;
 }
+
+export class ImageRequestLock {
+    private inFlight = false;
+    private waitQueue: Array<() => void> = [];
+
+    async acquire(timeoutMs = 5000): Promise<boolean> {
+        if (!this.inFlight) {
+            this.inFlight = true;
+            return true;
+        }
+
+        return new Promise<boolean>((resolve) => {
+            let timer: NodeJS.Timeout | null = null;
+            let resolved = false;
+
+            const onAvailable = () => {
+                if (resolved) return;
+                resolved = true;
+                if (timer) clearTimeout(timer);
+                this.inFlight = true;
+                resolve(true);
+            };
+
+            timer = setTimeout(() => {
+                if (resolved) return;
+                resolved = true;
+                const idx = this.waitQueue.indexOf(onAvailable);
+                if (idx !== -1) {
+                    this.waitQueue.splice(idx, 1);
+                }
+                resolve(false);
+            }, timeoutMs);
+
+            this.waitQueue.push(onAvailable);
+        });
+    }
+
+    release(): void {
+        const next = this.waitQueue.shift();
+        if (next) {
+            next();
+        } else {
+            this.inFlight = false;
+        }
+    }
+}
+
+export const imageRequestLock = new ImageRequestLock();
 
 export class OpenAIProvider implements LlmProvider {
     public static cooldowns: Map<string, number> = new Map();
@@ -210,16 +345,13 @@ export class OpenAIProvider implements LlmProvider {
                 return [];
             }
             const fallbackBase = config.fallbackBaseUrl || "https://generativelanguage.googleapis.com/v1beta/openai/";
-            let fallbackModel = config.fallbackModel;
-            if (!fallbackModel) {
-                fallbackModel = await discoverGeminiModel(fallbackBase, config.fallbackApiKey);
-            }
-            return [{
+            const candidateModels = await getGeminiCandidateModels(fallbackBase, config.fallbackApiKey, config.fallbackModel);
+            return candidateModels.map((model) => ({
                 provider: "fallback",
-                apiKey: config.fallbackApiKey,
+                apiKey: config.fallbackApiKey!,
                 baseUrl: fallbackBase,
-                model: fallbackModel
-            }];
+                model
+            }));
         }
 
         const chain: ProviderCandidate[] = [];
@@ -244,16 +376,15 @@ export class OpenAIProvider implements LlmProvider {
 
         if (config.fallbackApiKey) {
             const fallbackBase = config.fallbackBaseUrl || "https://generativelanguage.googleapis.com/v1beta/openai/";
-            let fallbackModel = config.fallbackModel;
-            if (!fallbackModel) {
-                fallbackModel = await discoverGeminiModel(fallbackBase, config.fallbackApiKey);
+            const candidateModels = await getGeminiCandidateModels(fallbackBase, config.fallbackApiKey, config.fallbackModel);
+            for (const model of candidateModels) {
+                chain.push({
+                    provider: "fallback",
+                    apiKey: config.fallbackApiKey,
+                    baseUrl: fallbackBase,
+                    model
+                });
             }
-            chain.push({
-                provider: "fallback",
-                apiKey: config.fallbackApiKey,
-                baseUrl: fallbackBase,
-                model: fallbackModel
-            });
         }
 
         return chain;
@@ -429,13 +560,54 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
+        if (hasImages) {
+            const acquired = await imageRequestLock.acquire(5000);
+            if (!acquired) {
+                return {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    retryAfterSeconds: 5,
+                    error: {
+                        code: "rate_limited",
+                        message: "Image analysis is rate limited. Try again in 5s."
+                    }
+                };
+            }
+            try {
+                return await this.executeAnswer(request, config, true);
+            } finally {
+                imageRequestLock.release();
+            }
+        }
+
+        return await this.executeAnswer(request, config, false);
+    }
+
+    private async executeAnswer(request: LlmRequest, config: OpenAIConfig, hasImages: boolean): Promise<LlmResponse> {
         const messages = this.buildMessages(request);
         const candidates = await this.getCandidates(config, hasImages);
         const timeoutMs = config.timeoutMs || 20000;
 
+        if (hasImages && candidates.length > 0 && candidates.every(c => OpenAIProvider.getCooldown(c.provider, c.model) > 0)) {
+            const minCd = Math.min(...candidates.map(c => OpenAIProvider.getCooldown(c.provider, c.model)));
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                retryAfterSeconds: minCd,
+                error: {
+                    code: "rate_limited",
+                    message: `Image analysis is rate limited. Try again in ${minCd}s.`
+                }
+            };
+        }
+
         let hadRateLimit = false;
         const remainingCooldowns: number[] = [];
-        let lastImageError: { status: number; model: string; code?: string; retrySec?: number } | null = null;
+        let lastImageError: { status: number; model: string; code?: string; snippet?: string } | null = null;
 
         for (const candidate of candidates) {
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
@@ -446,8 +618,7 @@ export class OpenAIProvider implements LlmProvider {
                     lastImageError = {
                         status: 429,
                         model: candidate.model,
-                        code: "rate_limited",
-                        retrySec: cooldown
+                        code: "rate_limited"
                     };
                 }
                 continue;
@@ -495,72 +666,113 @@ export class OpenAIProvider implements LlmProvider {
                 } else {
                     const errBody = await response.text().catch(() => "");
                     const snippet = errBody.slice(0, 200);
-                    if (hasImages || candidate.provider === "fallback") {
-                        console.error(`[AI ${candidate.provider}] model=${candidate.model} status=${response.status} body="${snippet}"`);
-                    }
-                    const retrySec = parseRetryAfter(response.headers.get("retry-after"));
+                    const retrySec = Math.min(300, Math.max(1, parseRetryAfter(response.headers.get("retry-after"), errBody)));
+
                     if (response.status === 429) {
                         hadRateLimit = true;
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                        console.log(`[AI fallback hop] model=${candidate.model} status=429 cooldown=${retrySec}s`);
                         remainingCooldowns.push(retrySec);
                         if (hasImages) {
                             lastImageError = {
-                                status: response.status,
+                                status: 429,
                                 model: candidate.model,
                                 code: "rate_limited",
-                                retrySec
+                                snippet
                             };
                         }
-                    } else if (response.status >= 500) {
-                        OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
-                        if (hasImages) {
+                        continue;
+                    }
+
+                    if (response.status === 400 && hasImages) {
+                        const bodyLower = errBody.toLowerCase();
+                        const canContinue = bodyLower.includes(candidate.model.toLowerCase()) ||
+                            bodyLower.includes("not supported") ||
+                            bodyLower.includes("image");
+                        if (canContinue) {
+                            OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                            console.log(`[AI fallback hop] model=${candidate.model} status=400 (unsupported) cooldown=${retrySec}s`);
+                            remainingCooldowns.push(retrySec);
                             lastImageError = {
-                                status: response.status,
+                                status: 400,
                                 model: candidate.model,
-                                code: "provider_error"
+                                code: "image_failed",
+                                snippet
+                            };
+                            continue;
+                        } else {
+                            console.log(`[AI fallback hop] model=${candidate.model} status=400 (fatal) cooldown=0s`);
+                            return {
+                                status: "error",
+                                answer: "",
+                                citations: [],
+                                confidence: "low",
+                                error: {
+                                    code: "image_failed",
+                                    message: `Image analysis failed (status 400). ${snippet.slice(0, 120)}`
+                                }
                             };
                         }
-                    } else {
-                        OpenAIProvider.setCooldown(candidate.provider, candidate.model, 180);
-                        if (hasImages) {
-                            lastImageError = {
-                                status: response.status,
-                                model: candidate.model,
-                                code: "provider_error"
-                            };
-                        }
+                    }
+
+                    OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                    console.log(`[AI fallback hop] model=${candidate.model} status=${response.status} cooldown=${retrySec}s`);
+                    remainingCooldowns.push(retrySec);
+                    if (hasImages) {
+                        lastImageError = {
+                            status: response.status,
+                            model: candidate.model,
+                            code: "image_failed",
+                            snippet
+                        };
                     }
                     continue;
                 }
             } catch (err) {
-                if (hasImages || candidate.provider === "fallback") {
-                    const snippet = (err instanceof Error ? err.message : String(err)).slice(0, 200);
-                    console.error(`[AI ${candidate.provider}] model=${candidate.model} status=500 body="${snippet}"`);
-                    if (hasImages) {
-                        lastImageError = {
-                            status: 500,
-                            model: candidate.model,
-                            code: "provider_error"
-                        };
-                    }
+                const errMsg = err instanceof Error ? err.message : String(err);
+                const snippet = errMsg.slice(0, 200);
+                const cooldownSec = 60;
+                OpenAIProvider.setCooldown(candidate.provider, candidate.model, cooldownSec);
+                console.log(`[AI fallback hop] model=${candidate.model} status=500 cooldown=${cooldownSec}s`);
+                remainingCooldowns.push(cooldownSec);
+                if (hasImages) {
+                    lastImageError = {
+                        status: 500,
+                        model: candidate.model,
+                        code: "image_failed",
+                        snippet
+                    };
                 }
-                OpenAIProvider.setCooldown(candidate.provider, candidate.model, 60);
                 continue;
             }
         }
 
-        if (hasImages && lastImageError) {
-            const isRateLimit = hadRateLimit || lastImageError.code === "rate_limited";
-            const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : (lastImageError.retrySec ?? 60);
+        if (hasImages) {
+            const allRateLimited = hadRateLimit || lastImageError?.status === 429;
+            if (allRateLimited) {
+                const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : 60;
+                return {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    retryAfterSeconds: minRetry,
+                    error: {
+                        code: "rate_limited",
+                        message: `Image analysis is rate limited. Try again in ${minRetry}s.`
+                    }
+                };
+            }
+            const status = lastImageError?.status ?? 502;
+            const snippet = (lastImageError?.snippet ?? "").slice(0, 120);
             return {
                 status: "error",
                 answer: "",
                 citations: [],
                 confidence: "low",
-                ...(isRateLimit ? { retryAfterSeconds: minRetry } : {}),
                 error: {
-                    code: isRateLimit ? "rate_limited" : "provider_unavailable",
-                    message: `Image analysis failed: Gemini returned ${lastImageError.status} for ${lastImageError.model}`
+                    code: "image_failed",
+                    message: `Image analysis failed (status ${status}). ${snippet}`
                 }
             };
         }
@@ -626,13 +838,59 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
+        if (hasImages) {
+            const acquired = await imageRequestLock.acquire(5000);
+            if (!acquired) {
+                return {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    retryAfterSeconds: 5,
+                    error: {
+                        code: "rate_limited",
+                        message: "Image analysis is rate limited. Try again in 5s."
+                    }
+                };
+            }
+            try {
+                return await this.executeStreamAnswer(request, onToken, config, true);
+            } finally {
+                imageRequestLock.release();
+            }
+        }
+
+        return await this.executeStreamAnswer(request, onToken, config, false);
+    }
+
+    private async executeStreamAnswer(
+        request: LlmRequest,
+        onToken: (token: string) => void,
+        config: OpenAIConfig,
+        hasImages: boolean
+    ): Promise<LlmResponse> {
         const messages = this.buildMessages(request);
         const candidates = await this.getCandidates(config, hasImages);
         const timeoutMs = config.timeoutMs || 20000;
 
+        if (hasImages && candidates.length > 0 && candidates.every(c => OpenAIProvider.getCooldown(c.provider, c.model) > 0)) {
+            const minCd = Math.min(...candidates.map(c => OpenAIProvider.getCooldown(c.provider, c.model)));
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                retryAfterSeconds: minCd,
+                error: {
+                    code: "rate_limited",
+                    message: `Image analysis is rate limited. Try again in ${minCd}s.`
+                }
+            };
+        }
+
         let hadRateLimit = false;
         const remainingCooldowns: number[] = [];
-        let lastImageError: { status: number; model: string; code?: string; retrySec?: number } | null = null;
+        let lastImageError: { status: number; model: string; code?: string; snippet?: string } | null = null;
 
         for (const candidate of candidates) {
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
@@ -643,8 +901,7 @@ export class OpenAIProvider implements LlmProvider {
                     lastImageError = {
                         status: 429,
                         model: candidate.model,
-                        code: "rate_limited",
-                        retrySec: cooldown
+                        code: "rate_limited"
                     };
                 }
                 continue;
@@ -656,40 +913,65 @@ export class OpenAIProvider implements LlmProvider {
                 if (!response.ok) {
                     const errBody = await response.text().catch(() => "");
                     const snippet = errBody.slice(0, 200);
-                    if (hasImages || candidate.provider === "fallback") {
-                        console.error(`[AI ${candidate.provider}] model=${candidate.model} status=${response.status} body="${snippet}"`);
-                    }
-                    const retrySec = parseRetryAfter(response.headers.get("retry-after"));
+                    const retrySec = Math.min(300, Math.max(1, parseRetryAfter(response.headers.get("retry-after"), errBody)));
+
                     if (response.status === 429) {
                         hadRateLimit = true;
                         OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                        console.log(`[AI fallback hop] model=${candidate.model} status=429 cooldown=${retrySec}s`);
                         remainingCooldowns.push(retrySec);
                         if (hasImages) {
                             lastImageError = {
-                                status: response.status,
+                                status: 429,
                                 model: candidate.model,
                                 code: "rate_limited",
-                                retrySec
+                                snippet
                             };
                         }
-                    } else if (response.status >= 500) {
-                        OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
-                        if (hasImages) {
+                        continue;
+                    }
+
+                    if (response.status === 400 && hasImages) {
+                        const bodyLower = errBody.toLowerCase();
+                        const canContinue = bodyLower.includes(candidate.model.toLowerCase()) ||
+                            bodyLower.includes("not supported") ||
+                            bodyLower.includes("image");
+                        if (canContinue) {
+                            OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                            console.log(`[AI fallback hop] model=${candidate.model} status=400 (unsupported) cooldown=${retrySec}s`);
+                            remainingCooldowns.push(retrySec);
                             lastImageError = {
-                                status: response.status,
+                                status: 400,
                                 model: candidate.model,
-                                code: "provider_error"
+                                code: "image_failed",
+                                snippet
+                            };
+                            continue;
+                        } else {
+                            console.log(`[AI fallback hop] model=${candidate.model} status=400 (fatal) cooldown=0s`);
+                            return {
+                                status: "error",
+                                answer: "",
+                                citations: [],
+                                confidence: "low",
+                                error: {
+                                    code: "image_failed",
+                                    message: `Image analysis failed (status 400). ${snippet.slice(0, 120)}`
+                                }
                             };
                         }
-                    } else {
-                        OpenAIProvider.setCooldown(candidate.provider, candidate.model, 180);
-                        if (hasImages) {
-                            lastImageError = {
-                                status: response.status,
-                                model: candidate.model,
-                                code: "provider_error"
-                            };
-                        }
+                    }
+
+                    OpenAIProvider.setCooldown(candidate.provider, candidate.model, retrySec);
+                    console.log(`[AI fallback hop] model=${candidate.model} status=${response.status} cooldown=${retrySec}s`);
+                    remainingCooldowns.push(retrySec);
+                    if (hasImages) {
+                        lastImageError = {
+                            status: response.status,
+                            model: candidate.model,
+                            code: "image_failed",
+                            snippet
+                        };
                     }
                     continue;
                 }
@@ -766,34 +1048,50 @@ export class OpenAIProvider implements LlmProvider {
                     }
                 };
             } catch (err) {
-                if (hasImages || candidate.provider === "fallback") {
-                    const snippet = (err instanceof Error ? err.message : String(err)).slice(0, 200);
-                    console.error(`[AI ${candidate.provider}] model=${candidate.model} status=500 body="${snippet}"`);
-                    if (hasImages) {
-                        lastImageError = {
-                            status: 500,
-                            model: candidate.model,
-                            code: "provider_error"
-                        };
-                    }
+                const errMsg = err instanceof Error ? err.message : String(err);
+                const snippet = errMsg.slice(0, 200);
+                const cooldownSec = 60;
+                OpenAIProvider.setCooldown(candidate.provider, candidate.model, cooldownSec);
+                console.log(`[AI fallback hop] model=${candidate.model} status=500 cooldown=${cooldownSec}s`);
+                remainingCooldowns.push(cooldownSec);
+                if (hasImages) {
+                    lastImageError = {
+                        status: 500,
+                        model: candidate.model,
+                        code: "image_failed",
+                        snippet
+                    };
                 }
-                OpenAIProvider.setCooldown(candidate.provider, candidate.model, 60);
                 continue;
             }
         }
 
-        if (hasImages && lastImageError) {
-            const isRateLimit = hadRateLimit || lastImageError.code === "rate_limited";
-            const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : (lastImageError.retrySec ?? 60);
+        if (hasImages) {
+            const allRateLimited = hadRateLimit || lastImageError?.status === 429;
+            if (allRateLimited) {
+                const minRetry = remainingCooldowns.length > 0 ? Math.min(...remainingCooldowns) : 60;
+                return {
+                    status: "error",
+                    answer: "",
+                    citations: [],
+                    confidence: "low",
+                    retryAfterSeconds: minRetry,
+                    error: {
+                        code: "rate_limited",
+                        message: `Image analysis is rate limited. Try again in ${minRetry}s.`
+                    }
+                };
+            }
+            const status = lastImageError?.status ?? 502;
+            const snippet = (lastImageError?.snippet ?? "").slice(0, 120);
             return {
                 status: "error",
                 answer: "",
                 citations: [],
                 confidence: "low",
-                ...(isRateLimit ? { retryAfterSeconds: minRetry } : {}),
                 error: {
-                    code: isRateLimit ? "rate_limited" : "provider_unavailable",
-                    message: `Image analysis failed: Gemini returned ${lastImageError.status} for ${lastImageError.model}`
+                    code: "image_failed",
+                    message: `Image analysis failed (status ${status}). ${snippet}`
                 }
             };
         }

@@ -39,7 +39,7 @@ export interface LlmUsedContext {
 }
 
 export interface LlmProviderError {
-    code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context" | "vision_unavailable";
+    code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context" | "vision_unavailable" | "image_failed";
     message: string;
 }
 

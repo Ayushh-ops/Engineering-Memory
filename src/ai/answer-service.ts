@@ -872,9 +872,10 @@ export class AiAnswerService {
         const repo = request.repoSha || request.repository;
         const len = classification?.length || "standard";
         const fmt = classification?.format || "prose";
+        const hasImages = Boolean(request.images && request.images.length > 0);
         return crypto
             .createHash("sha256")
-            .update([repo, targetPath || "", normQ, mode, scope, directive, len, fmt].join("|"))
+            .update([repo, targetPath || "", normQ, mode, scope, directive, len, fmt, hasImages ? "img1" : "img0"].join("|"))
             .digest("hex");
     }
 
@@ -1362,7 +1363,7 @@ export class AiAnswerService {
         }
 
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
-        const cacheKey = this.buildCacheKey(request, targetPath, classification, effectiveScope);
+        const cacheKey = this.buildCacheKey(request, targetPath, classification, effectiveScope, questionForLLM);
 
         if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);

@@ -11,9 +11,16 @@ import { classifyQuestion, classifyScope } from "./question-class";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
-    createOpenAIConfigFromEnvironment
+    createOpenAIConfigFromEnvironment,
+    cleanEnvVal
 } from "./config";
-import { OpenAIProvider, StreamDelimiterFilter } from "./openai-provider";
+import {
+    OpenAIProvider,
+    StreamDelimiterFilter,
+    filterAndSortGeminiModels,
+    getGeminiCandidateModels,
+    resetGeminiCandidatesCache
+} from "./openai-provider";
 import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter, validateImages } from "../routes/ai";
 import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
@@ -1235,9 +1242,9 @@ async function main(): Promise<void> {
         assert.equal(visionRes.answer, "Vision analysis successful.");
         assert.equal(visionRes.usedContext?.model, "gemini-2.5-flash");
         assert.equal(visionRes.usedContext?.images, 1);
-        assert.equal(visionFetchCalls.length, 1);
-        assert.ok(visionFetchCalls[0].url.includes("generativelanguage.googleapis.com"));
-        const userMsg = visionFetchCalls[0].body.messages.find((m: any) => m.role === "user");
+        const completionCall = visionFetchCalls.find(c => c.url.includes("/chat/completions")) || visionFetchCalls[visionFetchCalls.length - 1];
+        assert.ok(completionCall.url.includes("generativelanguage.googleapis.com"));
+        const userMsg = completionCall.body.messages.find((m: any) => m.role === "user");
         assert.ok(Array.isArray(userMsg.content), "User message content should be an array");
         const imgPart = userMsg.content.find((p: any) => p.type === "image_url");
         assert.ok(imgPart, "Expected image_url part in user content");
@@ -1274,7 +1281,7 @@ async function main(): Promise<void> {
         assert.equal(failRes.status, "error");
         assert.equal(failRes.error?.code, "rate_limited");
         assert.equal(failRes.retryAfterSeconds, 45);
-        assert.equal(failRes.error?.message, "Image analysis failed: Gemini returned 429 for gemini-2.5-flash");
+        assert.equal(failRes.error?.message, "Image analysis is rate limited. Try again in 45s.");
     } finally {
         globalThis.fetch = originalFetchForVision;
         OpenAIProvider.setCooldown("fallback", "gemini-2.5-flash", 0);
@@ -1654,6 +1661,190 @@ async function main(): Promise<void> {
     });
     const explicitCall = imageProvider.calls[imageProvider.calls.length - 1];
     assert.equal(explicitCall.scope, "file");
+
+    // 17. Reliable image path: model filtering, sorting, fallback loop, cooldowns, env stripping
+    // 17a. cleanEnvVal inline comment stripping
+    assert.equal(cleanEnvVal("https://api.groq.com/openai/v1 # default base"), "https://api.groq.com/openai/v1");
+    assert.equal(cleanEnvVal("  gemini-2.5-flash  "), "gemini-2.5-flash");
+    assert.equal(cleanEnvVal("key123 # secret key"), "key123");
+    assert.equal(cleanEnvVal(""), "");
+    assert.equal(cleanEnvVal(undefined), "");
+
+    // 17b. filterAndSortGeminiModels
+    const rawModelList = [
+        "models/gemini-1.5-flash",
+        "models/gemini-2.0-flash",
+        "models/gemini-2.0-flash-lite",
+        "models/gemini-2.5-flash",
+        "models/gemini-2.5-flash-preview", // preview excluded
+        "models/gemini-2.0-flash-exp",     // exp excluded
+        "models/gemini-1.5-pro",           // pro (not flash) excluded
+        "models/gemini-omni-flash",        // omni excluded
+        "models/gemini-live-flash",        // live excluded
+        "models/gemini-thinking-flash",    // thinking excluded
+        "models/embedding-001",            // embedding excluded
+        "invalid model name with spaces!"  // invalid regex
+    ];
+    const filtered = filterAndSortGeminiModels(rawModelList);
+    assert.deepEqual(filtered, [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash"
+    ]);
+
+    // 17c. getGeminiCandidateModels with discovery
+    resetGeminiCandidatesCache();
+    const mockOriginalFetch = globalThis.fetch;
+    try {
+        globalThis.fetch = (async (url: any) => {
+            if (String(url).endsWith("/models")) {
+                return new Response(JSON.stringify({
+                    models: [
+                        { name: "models/gemini-1.5-flash" },
+                        { name: "models/gemini-2.5-flash" },
+                        { name: "models/gemini-2.0-flash" }
+                    ]
+                }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }
+            return new Response("Not found", { status: 404 });
+        }) as typeof fetch;
+
+        const candidatesWithConfig = await getGeminiCandidateModels("https://generativelanguage.googleapis.com/v1beta/openai", "test-key", "gemini-custom-flash");
+        assert.deepEqual(candidatesWithConfig, [
+            "gemini-custom-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest"
+        ]);
+    } finally {
+        globalThis.fetch = mockOriginalFetch;
+        resetGeminiCandidatesCache();
+    }
+
+    // 17d. Fallback loop: 429 hop -> 400 continue -> 200 success
+    resetGeminiCandidatesCache();
+    const fetchHops: string[] = [];
+    try {
+        globalThis.fetch = (async (url: any, init: any) => {
+            const urlStr = String(url);
+            if (urlStr.endsWith("/models")) {
+                return new Response(JSON.stringify({
+                    models: [
+                        { name: "models/gemini-hop2-flash" },
+                        { name: "models/gemini-hop3-flash" }
+                    ]
+                }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }
+
+            const bodyStr = typeof init?.body === "string" ? init.body : "";
+            const parsedBody = bodyStr ? JSON.parse(bodyStr) : {};
+            const modelUsed = parsedBody.model || "unknown";
+            fetchHops.push(modelUsed);
+
+            if (modelUsed === "gemini-hop1-flash") {
+                // Return 429 with Retry-After 60
+                return new Response(JSON.stringify({ error: { message: "Quota exceeded" } }), {
+                    status: 429,
+                    headers: { "Content-Type": "application/json", "retry-after": "60" }
+                });
+            }
+            if (modelUsed === "gemini-hop2-flash") {
+                // Return 400 not supported -> should continue
+                return new Response(JSON.stringify({ error: { message: "The model is not supported for images" } }), {
+                    status: 400,
+                    headers: { "Content-Type": "application/json" }
+                });
+            }
+            if (modelUsed === "gemini-hop3-flash") {
+                // Return 200 success
+                return new Response(JSON.stringify({
+                    choices: [{ message: { content: "Analyzed successfully via hop 3" } }]
+                }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }
+            return new Response("Not found", { status: 404 });
+        }) as typeof fetch;
+
+        const testCandidateConfig = {
+            apiKey: "primary-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile",
+            fallbackApiKey: "fallback-gemini-key",
+            fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+            fallbackModel: "gemini-hop1-flash"
+        };
+        const loopProvider = new OpenAIProvider(testCandidateConfig);
+
+        const loopRes = await loopProvider.answer({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "Analyze image hop loop",
+            facts: { files: [{ path: "src/auth.ts" }], commits: [] },
+            images: [{ mime: "image/png", data: "aGVsbG8=" }]
+        });
+
+        assert.equal(loopRes.status, "ok");
+        assert.equal(loopRes.answer, "Analyzed successfully via hop 3");
+        assert.deepEqual(fetchHops, ["gemini-hop1-flash", "gemini-hop2-flash", "gemini-hop3-flash"]);
+    } finally {
+        globalThis.fetch = mockOriginalFetch;
+        resetGeminiCandidatesCache();
+    }
+
+    // 17e. 400 fatal (other reason): stops immediately and returns image_failed
+    resetGeminiCandidatesCache();
+    const fatalHops: string[] = [];
+    try {
+        globalThis.fetch = (async (url: any, init: any) => {
+            const urlStr = String(url);
+            if (urlStr.endsWith("/models")) {
+                return new Response(JSON.stringify({
+                    models: [
+                        { name: "models/gemini-fatal-flash" },
+                        { name: "models/gemini-should-not-reach-flash" }
+                    ]
+                }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }
+
+            const bodyStr = typeof init?.body === "string" ? init.body : "";
+            const parsedBody = bodyStr ? JSON.parse(bodyStr) : {};
+            const modelUsed = parsedBody.model || "unknown";
+            fatalHops.push(modelUsed);
+
+            return new Response(JSON.stringify({ error: { message: "Invalid argument: bad parameter foo" } }), {
+                status: 400,
+                headers: { "Content-Type": "application/json" }
+            });
+        }) as typeof fetch;
+
+        const fatalConfig = {
+            apiKey: "primary-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile",
+            fallbackApiKey: "fallback-gemini-key",
+            fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+            fallbackModel: "gemini-fatal-flash"
+        };
+        const fatalProvider = new OpenAIProvider(fatalConfig);
+
+        const fatalRes = await fatalProvider.answer({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "Analyze fatal 400",
+            facts: { files: [{ path: "src/auth.ts" }], commits: [] },
+            images: [{ mime: "image/png", data: "aGVsbG8=" }]
+        });
+
+        assert.equal(fatalRes.status, "error");
+        assert.equal(fatalRes.error?.code, "image_failed");
+        assert.ok(fatalRes.error?.message?.includes("Image analysis failed (status 400)"));
+        assert.deepEqual(fatalHops, ["gemini-fatal-flash"]);
+    } finally {
+        globalThis.fetch = mockOriginalFetch;
+        resetGeminiCandidatesCache();
+    }
 
     console.log("AI fixtures passed");
 }

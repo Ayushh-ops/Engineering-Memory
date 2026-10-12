@@ -1,7 +1,7 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
 import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip, Info, Pencil } from 'lucide-react';
-import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo, memo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import Graph3D, { G3Node } from './Graph3D';
@@ -2934,6 +2934,15 @@ export function MainPanel({ className }: { className?: string }) {
         return -1;
     }, [chatMessages]);
 
+    const lastUserIdx = useMemo(() => {
+        for (let i = chatMessages.length - 1; i >= 0; i--) {
+            if (chatMessages[i].role === 'user') {
+                return i;
+            }
+        }
+        return -1;
+    }, [chatMessages]);
+
     const activeAssistantIdx = useMemo(() => {
         if (selectedAnswerIdx !== null && selectedAnswerIdx >= 0 && selectedAnswerIdx < chatMessages.length) {
             if (chatMessages[selectedAnswerIdx]?.role === 'assistant') {
@@ -2955,6 +2964,35 @@ export function MainPanel({ className }: { className?: string }) {
     const activeAssistantMsg = activeAssistantIdx !== null ? chatMessages[activeAssistantIdx] : null;
     const activeEvidence = useMemo(() => activeAssistantMsg?.evidence || [], [activeAssistantMsg]);
 
+    const hasLineCitations = useCallback((text?: string) => {
+        if (!text) return false;
+        return /\b(lines?\s+\d+(?:-\d+)?|l\d+(?:-l?\d+)?)\b|:\d+(?:-\d+)?\b/i.test(text);
+    }, []);
+
+    const getPrecedingUserQuestion = useCallback((msgIdx: number) => {
+        for (let i = msgIdx - 1; i >= 0; i--) {
+            if (chatMessages[i]?.role === 'user') {
+                return chatMessages[i].content;
+            }
+        }
+        return '';
+    }, [chatMessages]);
+
+    const isBriefCountAnswerWithoutLineCitation = useCallback((msg: AskChatMessage, prevQuestion?: string) => {
+        if (msg.role !== 'assistant') return false;
+        const mode = (msg.usedContext as any)?.mode || askMode;
+        const isBrief = mode === 'brief';
+        const isCount = Boolean(prevQuestion && /\b(how\s+many|kitne)\b/i.test(prevQuestion));
+        if (!isBrief && !isCount) return false;
+        return !hasLineCitations(msg.content);
+    }, [askMode, hasLineCitations]);
+
+    const isActiveBriefCountSuppressed = useMemo(() => {
+        if (!activeAssistantMsg || activeAssistantIdx === null) return false;
+        const prevQ = getPrecedingUserQuestion(activeAssistantIdx);
+        return isBriefCountAnswerWithoutLineCitation(activeAssistantMsg, prevQ);
+    }, [activeAssistantMsg, activeAssistantIdx, getPrecedingUserQuestion, isBriefCountAnswerWithoutLineCitation]);
+
     const askedQuestions = useMemo(() => {
         return chatMessages
             .filter(m => m.role === 'user')
@@ -2968,10 +3006,10 @@ export function MainPanel({ className }: { className?: string }) {
     }, [askedQuestions]);
 
     useEffect(() => {
-        if (activeEvidence.length > 0) {
+        if (activeEvidence.length > 0 && !isActiveBriefCountSuppressed) {
             setExpandedEvidenceOpen(true);
         }
-    }, [activeEvidence.length]);
+    }, [activeEvidence.length, isActiveBriefCountSuppressed]);
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -3741,7 +3779,7 @@ ${lastAssistant.content}${evidenceList}
         let friendly = "An unexpected error occurred while communicating with the AI service.";
         let finalCode = rawCode || 'unknown';
 
-        if (combined.includes('rate_limited') || combined.includes('rate_limit')) {
+        if (rawCode === 'rate_limited' || combined.includes('rate_limited') || combined.includes('rate_limit')) {
             const sec = retryAfter && retryAfter > 0 ? retryAfter : 30;
             return {
                 code: 'rate_limited',
@@ -3750,15 +3788,18 @@ ${lastAssistant.content}${evidenceList}
                 status,
                 retryAfterSeconds: sec
             };
+        } else if (rawCode === 'image_failed' || combined.includes('image_failed')) {
+            friendly = "Image analysis failed";
+            finalCode = 'image_failed';
+        } else if (rawCode === 'provider_unavailable' || combined.includes('provider_unavailable') || combined.includes('timeout')) {
+            friendly = "AI service unreachable";
+            finalCode = 'provider_unavailable';
         } else if (combined.includes('invalid_api_key') || combined.includes('missing_api_key')) {
             friendly = "API key is missing or invalid. Check your .env file.";
             finalCode = 'invalid_api_key';
         } else if (combined.includes('model_not_found')) {
             friendly = "The configured model is not available. Check LLM_MODEL in .env.";
             finalCode = 'model_not_found';
-        } else if (combined.includes('provider_unavailable') || combined.includes('timeout')) {
-            friendly = "AI service unreachable. Please retry.";
-            finalCode = 'provider_unavailable';
         } else if (combined.includes('insufficient_context')) {
             friendly = "The supplied repository context is insufficient to answer this question.";
             finalCode = 'insufficient_context';
@@ -4079,6 +4120,7 @@ ${lastAssistant.content}${evidenceList}
 
     const handleRetry = useCallback(() => {
         setAiError(null);
+        setRateLimitCountdown(0);
         const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user');
         if (lastUserIdx === -1) return;
         const lastUser = chatMessages[lastUserIdx];
@@ -4092,6 +4134,79 @@ ${lastAssistant.content}${evidenceList}
         }));
         askAI(lastUser.content, askMode, askScope, baseHistory, imagesToRetry);
     }, [chatMessages, askMode, askScope]);
+
+    const renderAiErrorCard = useCallback((userMsg?: AskChatMessage) => {
+        if (!aiError) return null;
+        let title = aiError.message;
+        if (aiError.code === 'rate_limited') {
+            title = rateLimitCountdown > 0
+                ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
+                : "Rate limit reached. You can now try again.";
+        } else if (aiError.code === 'image_failed') {
+            title = "Image analysis failed";
+        } else if (aiError.code === 'provider_unavailable') {
+            title = "AI service unreachable";
+        }
+
+        const hasMissingImageData = Boolean(userMsg?.images && userMsg.images.some(img => !img.data));
+        const isRateLimited = aiError.code === 'rate_limited';
+        const retryDisabled = isRateLimited && rateLimitCountdown > 0;
+        const secondLine = aiError.backendMessage && aiError.backendMessage !== title
+            ? aiError.backendMessage.slice(0, 160)
+            : null;
+
+        return (
+            <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2 mt-2">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1.5 flex-1 min-w-0">
+                        <div className="flex items-center gap-2 text-xs font-medium text-red-200">
+                            <ShieldAlert size={14} className="text-red-400 shrink-0" />
+                            <span>{title}</span>
+                        </div>
+                        {secondLine && (
+                            <div className="text-[11px] text-red-300/80 break-words font-mono pl-5">
+                                {secondLine}
+                            </div>
+                        )}
+                        {(aiError.status !== undefined || aiError.code) && (
+                            <details className="text-[10px] text-red-400/70 cursor-pointer select-none pl-5">
+                                <summary className="hover:text-red-300 transition-colors">Details</summary>
+                                <div className="mt-1 font-mono text-[10px] space-y-0.5 text-red-300/80">
+                                    {aiError.status !== undefined && <div>Status: {aiError.status}</div>}
+                                    {aiError.code && <div>Code: {aiError.code}</div>}
+                                </div>
+                            </details>
+                        )}
+                    </div>
+                    {hasMissingImageData ? (
+                        <span
+                            className="text-[11px] px-2.5 py-1 rounded font-medium bg-red-500/10 text-red-300/60 border border-red-500/20 cursor-not-allowed shrink-0 flex items-center gap-1"
+                            title="Attach the image again"
+                        >
+                            <Info size={11} />
+                            <span>Attach the image again</span>
+                        </span>
+                    ) : (
+                        <button
+                            type="button"
+                            disabled={retryDisabled}
+                            onClick={handleRetry}
+                            title={retryDisabled ? `Wait ${rateLimitCountdown}s` : "Retry"}
+                            className={cn(
+                                "text-[11px] px-2.5 py-1 rounded font-medium transition-colors shrink-0 flex items-center gap-1",
+                                retryDisabled
+                                    ? "opacity-50 cursor-not-allowed bg-red-500/10 text-red-400 border border-red-500/20"
+                                    : "bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 cursor-pointer"
+                            )}
+                        >
+                            <RefreshCw size={11} />
+                            <span>Retry</span>
+                        </button>
+                    )}
+                </div>
+            </div>
+        );
+    }, [aiError, rateLimitCountdown, handleRetry]);
 
     const handleCopyUserMessage = async (msgIdx: number) => {
         const msg = chatMessages[msgIdx];
@@ -4152,7 +4267,7 @@ ${lastAssistant.content}${evidenceList}
     };
 
     const handleSendMessage = () => {
-        if (isStreaming || (!askQ.trim() && attachedImages.length === 0)) return;
+        if (isStreaming || rateLimitCountdown > 0 || (!askQ.trim() && attachedImages.length === 0)) return;
         if (editingMessageIdx !== null) {
             const editIdx = editingMessageIdx;
             const base = chatMessages.slice(0, editIdx);
@@ -5800,7 +5915,7 @@ ${lastAssistant.content}${evidenceList}
                                                                 )}
                                                                 title="Toggle evidence panel"
                                                             >
-                                                                <span>Evidence ({activeEvidence.length})</span>
+                                                                <span>Evidence ({isActiveBriefCountSuppressed ? 0 : activeEvidence.length})</span>
                                                             </button>
                                                         )}
                                                     </div>
@@ -5944,52 +6059,6 @@ ${lastAssistant.content}${evidenceList}
                                                 </div>
                                             )}
                                             <div className={cn("space-y-3", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
-                                                {aiError && (
-                                                    <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2">
-                                                        <div className="flex items-start justify-between gap-3">
-                                                            <div className="space-y-1.5 flex-1 min-w-0">
-                                                                <div className="flex items-center gap-2 text-xs font-medium text-red-200">
-                                                                    <ShieldAlert size={14} className="text-red-400 shrink-0" />
-                                                                    <span>
-                                                                        {aiError.code === 'rate_limited'
-                                                                            ? (rateLimitCountdown > 0
-                                                                                ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
-                                                                                : "Rate limit reached. You can now try again.")
-                                                                            : aiError.message}
-                                                                    </span>
-                                                                </div>
-                                                                {aiError.backendMessage && (
-                                                                    <div className="text-[11px] text-red-300/80 break-words font-mono pl-5">
-                                                                        {aiError.backendMessage}
-                                                                    </div>
-                                                                )}
-                                                                {(aiError.status !== undefined || aiError.code) && (
-                                                                    <details className="text-[10px] text-red-400/70 cursor-pointer select-none pl-5">
-                                                                        <summary className="hover:text-red-300 transition-colors">Details</summary>
-                                                                        <div className="mt-1 font-mono text-[10px] space-y-0.5 text-red-300/80">
-                                                                            {aiError.status !== undefined && <div>Status: {aiError.status}</div>}
-                                                                            {aiError.code && <div>Code: {aiError.code}</div>}
-                                                                        </div>
-                                                                    </details>
-                                                                )}
-                                                            </div>
-                                                            <button
-                                                                disabled={aiError.code === 'rate_limited' && rateLimitCountdown > 0}
-                                                                onClick={handleRetry}
-                                                                className={cn(
-                                                                    "text-[11px] px-2.5 py-1 rounded font-medium transition-colors shrink-0 flex items-center gap-1",
-                                                                    aiError.code === 'rate_limited' && rateLimitCountdown > 0
-                                                                        ? "opacity-50 cursor-not-allowed bg-red-500/10 text-red-400 border border-red-500/20"
-                                                                        : "bg-red-500/20 text-red-200 border border-red-500/30 hover:bg-red-500/30 cursor-pointer"
-                                                                )}
-                                                            >
-                                                                <RefreshCw size={11} />
-                                                                <span>Retry</span>
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                )}
-
                                                 {chatMessages.length === 0 && !aiError ? (
                                                     <div className="h-full flex flex-col items-center justify-center text-center py-16 px-4">
                                                         <div className="w-10 h-10 rounded-full border border-white/10 flex items-center justify-center mb-3 text-[#8A918C]">
@@ -6018,8 +6087,11 @@ ${lastAssistant.content}${evidenceList}
                                                         </div>
                                                     </div>
                                                 ) : (
-                                                    chatMessages.map((msg, idx) => (
-                                                        <div key={idx} className={cn("group flex items-center gap-1.5", msg.role === 'user' ? "justify-end" : "justify-start")}>
+                                                    <>
+                                                        {chatMessages.length === 0 && aiError && renderAiErrorCard()}
+                                                        {chatMessages.map((msg, idx) => (
+                                                            <Fragment key={idx}>
+                                                                <div className={cn("group flex items-center gap-1.5", msg.role === 'user' ? "justify-end" : "justify-start")}>
                                                             {msg.role === 'user' ? (
                                                                 <>
                                                                     <div className={cn(
@@ -6128,7 +6200,7 @@ ${lastAssistant.content}${evidenceList}
                                                                             )}
 
                                                                             {/* Evidence chips: mono, path:line, base name bold, folder muted */}
-                                                                            {msg.evidence && msg.evidence.length > 0 && (
+                                                                            {msg.evidence && msg.evidence.length > 0 && !isBriefCountAnswerWithoutLineCitation(msg, getPrecedingUserQuestion(idx)) && (
                                                                                 <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
                                                                                     <button
                                                                                         type="button"
@@ -6305,8 +6377,11 @@ ${lastAssistant.content}${evidenceList}
                                                                 </div>
                                                             )}
                                                         </div>
-                                                    ))
-                                                )}
+                                                        {msg.role === 'user' && idx === lastUserIdx && aiError && renderAiErrorCard(msg)}
+                                                    </Fragment>
+                                                ))}
+                                            </>
+                                        )}
                                                 <div ref={messagesEndRef} />
                                             </div>
                                         </div>
@@ -6427,7 +6502,7 @@ ${lastAssistant.content}${evidenceList}
                                                                     return;
                                                                 }
                                                                 e.preventDefault();
-                                                                if (!isStreaming && (askQ.trim() || attachedImages.length > 0)) {
+                                                                if (!isStreaming && rateLimitCountdown === 0 && (askQ.trim() || attachedImages.length > 0)) {
                                                                     handleSendMessage();
                                                                 }
                                                             } else if (e.key === 'Escape') {
@@ -6460,9 +6535,10 @@ ${lastAssistant.content}${evidenceList}
                                                         <Button
                                                             onClick={handleSendMessage}
                                                             className="px-3 py-1.5 text-xs shrink-0 mb-0.5"
-                                                            disabled={(!askQ.trim() && attachedImages.length === 0) || isStreaming}
+                                                            disabled={(!askQ.trim() && attachedImages.length === 0) || isStreaming || rateLimitCountdown > 0}
+                                                            title={rateLimitCountdown > 0 ? `Wait ${rateLimitCountdown}s` : undefined}
                                                         >
-                                                            Send
+                                                            {rateLimitCountdown > 0 ? `Wait ${rateLimitCountdown}s` : 'Send'}
                                                         </Button>
                                                     )}
                                                 </div>
@@ -6480,7 +6556,7 @@ ${lastAssistant.content}${evidenceList}
                                                 <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-[#E8EAE6]">
                                                     <MessageSquare size={13} className="text-[#4FD1B5]" />
                                                     <span>{activeAnswerNumber ? `Evidence for answer #${activeAnswerNumber}` : "Evidence"}</span>
-                                                    {activeEvidence.length > 0 && (
+                                                    {!isActiveBriefCountSuppressed && activeEvidence.length > 0 && (
                                                         <span className="text-[10px] text-[#4FD1B5] px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10">
                                                             {activeEvidence.length} cited
                                                         </span>
@@ -6495,9 +6571,11 @@ ${lastAssistant.content}${evidenceList}
                                                 </button>
                                             </div>
                                             <div className="flex-1 overflow-y-auto scrollbar-custom p-3 space-y-2">
-                                                {activeEvidence.length === 0 ? (
+                                                {activeEvidence.length === 0 || isActiveBriefCountSuppressed ? (
                                                     <div className="text-center py-8 text-xs text-[#8A918C] font-mono">
-                                                        No evidence for this answer
+                                                        {isActiveBriefCountSuppressed
+                                                            ? "No evidence needed for this answer"
+                                                            : "No evidence for this answer"}
                                                     </div>
                                                 ) : (
                                                     activeEvidence.map((item, idx) => {
