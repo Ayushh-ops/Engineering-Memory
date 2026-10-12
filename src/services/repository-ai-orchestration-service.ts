@@ -1,6 +1,6 @@
 import type { AiAnswerRequest, AiAnswerResult, AiAnswerService } from "../ai/answer-service";
 import type { RepositoryContextTarget, RepositoryContextLimits } from "../graph/repository-context";
-import type { GitHubRepositoryFileClient } from "../github/repository-file-client";
+import type { GitHubRepositoryFileClient, GitHubRepositoryFile } from "../github/repository-file-client";
 import type { RepositoryAnalysisService } from "./repository-analysis-service";
 import { RepositoryContextExpansionService } from "./repository-context-expansion-service";
 import { GitHubRepositoryFileError } from "../github/repository-file-client";
@@ -29,6 +29,53 @@ export interface RepositoryAiOrchestrationRequest {
     repoFacts?: any;
 }
 
+export function buildFallbackFactsAnswer(
+    targetPath: string,
+    facts: {
+        risk?: any;
+        dependents?: string[];
+        owners?: any;
+        recentCommits?: any[];
+    }
+): string {
+    const lines: string[] = [
+        "The file content could not be loaded from GitHub.",
+        `Here is what is known about \`${targetPath}\` from repository analysis:`
+    ];
+
+    if (facts.risk !== undefined && facts.risk !== null) {
+        const score = typeof facts.risk === "object" ? (facts.risk.score ?? facts.risk.riskScore) : facts.risk;
+        const level = typeof facts.risk === "object" ? (facts.risk.level ?? facts.risk.riskLevel) : undefined;
+        lines.push(`• **Risk**: Score is ${score}${level ? ` (${level})` : ""}.`);
+    }
+
+    if (Array.isArray(facts.dependents)) {
+        if (facts.dependents.length === 0) {
+            lines.push("• **Dependents**: No direct dependents found.");
+        } else {
+            const preview = facts.dependents.slice(0, 5).join(", ");
+            const extra = facts.dependents.length > 5 ? ` and ${facts.dependents.length - 5} more` : "";
+            lines.push(`• **Dependents**: ${facts.dependents.length} file(s) depend on this (${preview}${extra}).`);
+        }
+    }
+
+    if (facts.owners) {
+        const ownerList = Array.isArray(facts.owners) ? facts.owners : (facts.owners.owners || []);
+        if (ownerList.length > 0) {
+            const names = ownerList.slice(0, 3).map((o: any) => o.name || o.author || String(o)).join(", ");
+            lines.push(`• **Contributors**: Primary owners include ${names}.`);
+        }
+    }
+
+    if (Array.isArray(facts.recentCommits) && facts.recentCommits.length > 0) {
+        const latest = facts.recentCommits[0];
+        const msg = latest.message || latest.commit?.message || "Recent change";
+        lines.push(`• **Recent commits**: ${facts.recentCommits.length} recent commit(s) recorded (latest: "${String(msg).split("\n")[0]}").`);
+    }
+
+    return lines.join("\n\n");
+}
+
 export class RepositoryAiOrchestrationService {
     constructor(
         private readonly fileClient: Pick<GitHubRepositoryFileClient, "loadFiles">,
@@ -40,13 +87,14 @@ export class RepositoryAiOrchestrationService {
         private readonly changeImpactAnalysisService: Pick<ChangeImpactAnalysisService, "analyze"> = new ChangeImpactAnalysisService()
     ) {}
 
-    private async prepareAiRequest(request: RepositoryAiOrchestrationRequest): Promise<{ aiRequest: AiAnswerRequest } | { earlyResult: AiAnswerResult }> {
+    private async prepareAiRequest(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerRequest> {
         const files = await this.fileClient.loadFiles(
             request.owner,
             request.repository,
             request.paths,
             request.sha
         );
+
         const analysis = this.analysisService.analyzeFiles(
             { owner: request.owner, repository: request.repository },
             request.sha,
@@ -118,18 +166,7 @@ export class RepositoryAiOrchestrationService {
         const targetFile = targetFilePath ? analyzedFiles.find((f) => f.path === targetFilePath) : undefined;
 
         if (request.target.type === "file" && (!targetFile || typeof targetFile.content !== "string")) {
-            return {
-                earlyResult: {
-                    status: "error",
-                    answer: "",
-                    citations: [],
-                    confidence: "low",
-                    error: {
-                        code: "bad_request",
-                        message: `Could not load file content for ${request.target.path}.`
-                    }
-                }
-            };
+            throw new GitHubRepositoryFileError("not_found", `File "${request.target.path}" was not found.`);
         }
 
         const impactTarget = request.target.type === "symbol" || request.target.type === "file"
@@ -164,28 +201,22 @@ export class RepositoryAiOrchestrationService {
             repoFacts: request.repoFacts
         };
 
-        return { aiRequest };
+        return aiRequest;
     }
 
     async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
-        const prepared = await this.prepareAiRequest(request);
-        if ("earlyResult" in prepared) {
-            return prepared.earlyResult;
-        }
-        return this.aiService.answer(prepared.aiRequest);
+        const aiRequest = await this.prepareAiRequest(request);
+        return this.aiService.answer(aiRequest);
     }
 
     async streamAnswer(
         request: RepositoryAiOrchestrationRequest,
         onToken: (token: string) => void
     ): Promise<AiAnswerResult> {
-        const prepared = await this.prepareAiRequest(request);
-        if ("earlyResult" in prepared) {
-            return prepared.earlyResult;
-        }
+        const aiRequest = await this.prepareAiRequest(request);
         if (typeof this.aiService.streamAnswer === "function") {
-            return this.aiService.streamAnswer(prepared.aiRequest, onToken);
+            return this.aiService.streamAnswer(aiRequest, onToken);
         }
-        return this.aiService.answer(prepared.aiRequest);
+        return this.aiService.answer(aiRequest);
     }
 }

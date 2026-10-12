@@ -20,7 +20,10 @@ import {
 } from "../graph/repository-context";
 import {
     getGitHubRateLimitError,
-    getGitHubRequestOptions
+    getGitHubRequestOptions,
+    mapGitHubResponseToError,
+    mapGitHubFetchError,
+    type GitHubErrorMapping
 } from "../github/client";
 import { RepositoryAnalysisService } from "../services/repository-analysis-service";
 
@@ -93,13 +96,27 @@ interface GitHubTreeResponse {
 
 type HistoricalFileResult =
     | { status: "success"; content: string }
-    | { status: "not-found" }
+    | { status: "not-found"; error: GitHubErrorMapping }
+    | { status: "rate-limit"; error: GitHubErrorMapping }
+    | { status: "auth-failed"; error: GitHubErrorMapping }
+    | { status: "unreachable"; error: GitHubErrorMapping }
     | { status: "not-file" }
-    | { status: "rate-limit" }
-    | { status: "api-failure" };
+    | { status: "api-failure"; error: GitHubErrorMapping };
 
 const router = Router();
 const repositoryAnalysisService = new RepositoryAnalysisService();
+
+export function sendGitHubError(res: Response, mapped: GitHubErrorMapping) {
+    if (mapped.retryAfterSeconds) {
+        res.setHeader("Retry-After", String(mapped.retryAfterSeconds));
+    }
+    return res.status(mapped.status).json({
+        code: mapped.code,
+        error: mapped.message,
+        message: mapped.message,
+        ...(mapped.retryAfterSeconds ? { retryAfterSeconds: mapped.retryAfterSeconds } : {})
+    });
+}
 
 export function parseGitHubRepositoryUrl(value: unknown): { owner: string; repository: string } | null {
     if (typeof value !== "string") {
@@ -136,24 +153,43 @@ async function retrieveHistoricalFileContent(
     sha: string
 ): Promise<HistoricalFileResult> {
     const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-    const githubResponse = await fetch(
-        `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
-        getGitHubRequestOptions()
-    );
-
-    if (githubResponse.status === 404) {
-        return { status: "not-found" };
+    let githubResponse: globalThis.Response;
+    try {
+        githubResponse = await fetch(
+            `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`,
+            getGitHubRequestOptions()
+        );
+    } catch (error) {
+        return { status: "unreachable", error: mapGitHubFetchError(error) };
     }
 
-    if (getGitHubRateLimitError(githubResponse)) {
-        return { status: "rate-limit" };
+    const mapped = mapGitHubResponseToError(githubResponse);
+    if (mapped) {
+        if (mapped.code === "repo_not_found") {
+            return { status: "not-found", error: mapped };
+        }
+        if (mapped.code === "github_rate_limited") {
+            return { status: "rate-limit", error: mapped };
+        }
+        if (mapped.code === "github_auth_failed") {
+            return { status: "auth-failed", error: mapped };
+        }
+        return { status: "api-failure", error: mapped };
     }
 
-    if (!githubResponse.ok) {
-        return { status: "api-failure" };
+    let githubFile: GitHubFileContent | GitHubFileContent[];
+    try {
+        githubFile = (await githubResponse.json()) as GitHubFileContent | GitHubFileContent[];
+    } catch {
+        return {
+            status: "api-failure",
+            error: {
+                status: 502,
+                code: "api_failure",
+                message: "GitHub API request failed."
+            }
+        };
     }
-
-    const githubFile = (await githubResponse.json()) as GitHubFileContent | GitHubFileContent[];
 
     if (Array.isArray(githubFile) || githubFile.type !== "file") {
         return { status: "not-file" };
@@ -169,7 +205,7 @@ router.post("/repositories", async (req: Request, res: Response) => {
     const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -180,17 +216,9 @@ router.post("/repositories", async (req: Request, res: Response) => {
             getGitHubRequestOptions()
         );
 
-        if (githubResponse.status === 404) {
-            return res.status(404).json({ error: "GitHub repository not found." });
-        }
-
-        const rateLimitError = getGitHubRateLimitError(githubResponse);
-        if (rateLimitError) {
-            return res.status(429).json({ error: rateLimitError });
-        }
-
-        if (!githubResponse.ok) {
-            return res.status(502).json({ error: "GitHub API request failed." });
+        const mapped = mapGitHubResponseToError(githubResponse);
+        if (mapped) {
+            return sendGitHubError(res, mapped);
         }
 
         const githubRepository = (await githubResponse.json()) as GitHubRepository;
@@ -205,8 +233,8 @@ router.post("/repositories", async (req: Request, res: Response) => {
             forks: githubRepository.forks_count,
             htmlUrl: githubRepository.html_url
         });
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -214,7 +242,7 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
     const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -230,17 +258,9 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
 
             const githubResponse = await fetch(commitsUrl, getGitHubRequestOptions());
 
-            if (githubResponse.status === 404) {
-                return res.status(404).json({ error: "GitHub repository or path not found." });
-            }
-
-            const rateLimitError = getGitHubRateLimitError(githubResponse);
-            if (rateLimitError) {
-                return res.status(429).json({ error: rateLimitError });
-            }
-
-            if (!githubResponse.ok) {
-                return res.status(502).json({ error: "GitHub API request failed." });
+            const mapped = mapGitHubResponseToError(githubResponse);
+            if (mapped) {
+                return sendGitHubError(res, mapped);
             }
 
             const githubCommits = (await githubResponse.json()) as GitHubCommit[];
@@ -264,17 +284,9 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             getGitHubRequestOptions()
         );
 
-        if (githubResponse.status === 404) {
-            return res.status(404).json({ error: "GitHub repository not found." });
-        }
-
-        const rateLimitError = getGitHubRateLimitError(githubResponse);
-        if (rateLimitError) {
-            return res.status(429).json({ error: rateLimitError });
-        }
-
-        if (!githubResponse.ok) {
-            return res.status(502).json({ error: "GitHub API request failed." });
+        const mapped = mapGitHubResponseToError(githubResponse);
+        if (mapped) {
+            return sendGitHubError(res, mapped);
         }
 
         const githubCommits = (await githubResponse.json()) as GitHubCommit[];
@@ -286,13 +298,11 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
                     getGitHubRequestOptions()
                 );
 
-                const rateLimitError = getGitHubRateLimitError(commitDetailsResponse);
-                if (rateLimitError) {
-                    throw new Error(rateLimitError);
-                }
-
-                if (!commitDetailsResponse.ok) {
-                    throw new Error("GitHub commit details request failed.");
+                const detailMapped = mapGitHubResponseToError(commitDetailsResponse);
+                if (detailMapped) {
+                    const err = new Error(detailMapped.message);
+                    (err as any).mapped = detailMapped;
+                    throw err;
                 }
 
                 const commitDetails = (await commitDetailsResponse.json()) as GitHubCommitDetails;
@@ -317,16 +327,11 @@ router.post("/repositories/commits", async (req: Request, res: Response) => {
             repository: `${owner}/${repository}`,
             commits
         });
-    } catch (error) {
-        if (error instanceof Error && error.message === "GitHub commit details request failed.") {
-            return res.status(502).json({ error: "GitHub API request failed." });
+    } catch (error: any) {
+        if (error?.mapped) {
+            return sendGitHubError(res, error.mapped);
         }
-
-        if (error instanceof Error && error.message.startsWith("GitHub API rate limit exceeded.")) {
-            return res.status(429).json({ error: error.message });
-        }
-
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -351,7 +356,7 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
     const parsedRepository = parseGitHubRepositoryUrl(req.body?.url);
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -359,7 +364,7 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
     const sha = typeof req.body?.sha === "string" && req.body.sha.trim().length > 0 ? req.body.sha.trim() : undefined;
 
     if (!path) {
-        return res.status(400).json({ error: "A file path is required." });
+        return res.status(400).json({ code: "bad_request", error: "A file path is required.", message: "A file path is required." });
     }
 
     const cacheKey = `${owner}/${repository}:${path}:${sha || "default"}`;
@@ -376,17 +381,9 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
 
         const githubResponse = await fetch(commitsUrl, getGitHubRequestOptions());
 
-        if (githubResponse.status === 404) {
-            return res.status(404).json({ error: "GitHub repository or path not found." });
-        }
-
-        const rateLimitError = getGitHubRateLimitError(githubResponse);
-        if (rateLimitError) {
-            return res.status(429).json({ error: rateLimitError });
-        }
-
-        if (!githubResponse.ok) {
-            return res.status(502).json({ error: "GitHub API request failed." });
+        const mapped = mapGitHubResponseToError(githubResponse);
+        if (mapped) {
+            return sendGitHubError(res, mapped);
         }
 
         const githubCommits = (await githubResponse.json()) as GitHubCommit[];
@@ -435,8 +432,8 @@ router.post("/repositories/owners", async (req: Request, res: Response) => {
         fileOwnersCache.set(cacheKey, { timestamp: Date.now(), data: result });
 
         return res.status(200).json(result);
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -445,11 +442,11 @@ router.post("/repositories/tree", async (req: Request, res: Response) => {
     const sha = req.body?.sha;
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     if (typeof sha !== "string" || sha.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty commit SHA is required.", message: "A non-empty commit SHA is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -460,17 +457,9 @@ router.post("/repositories/tree", async (req: Request, res: Response) => {
             getGitHubRequestOptions()
         );
 
-        if (githubResponse.status === 404) {
-            return res.status(404).json({ error: "GitHub repository or commit not found." });
-        }
-
-        const rateLimitError = getGitHubRateLimitError(githubResponse);
-        if (rateLimitError) {
-            return res.status(429).json({ error: rateLimitError });
-        }
-
-        if (!githubResponse.ok) {
-            return res.status(502).json({ error: "GitHub API request failed." });
+        const mapped = mapGitHubResponseToError(githubResponse);
+        if (mapped) {
+            return sendGitHubError(res, mapped);
         }
 
         const treeResponse = (await githubResponse.json()) as GitHubTreeResponse;
@@ -487,8 +476,8 @@ router.post("/repositories/tree", async (req: Request, res: Response) => {
             files,
             truncated: !!treeResponse.truncated
         });
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -498,15 +487,15 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
     const sha = req.body?.sha;
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     if (typeof path !== "string" || path.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty file path is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty file path is required.", message: "A non-empty file path is required." });
     }
 
     if (typeof sha !== "string" || sha.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty commit SHA is required.", message: "A non-empty commit SHA is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -514,20 +503,11 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
     try {
         const result = await retrieveHistoricalFileContent(owner, repository, path, sha);
 
-        if (result.status === "not-found") {
-            return res.status(404).json({ error: "GitHub repository or file not found." });
-        }
-
-        if (result.status === "rate-limit") {
-            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
-        }
-
-        if (result.status === "api-failure") {
-            return res.status(502).json({ error: "GitHub API request failed." });
-        }
-
-        if (result.status === "not-file") {
-            return res.status(400).json({ error: "The requested path must refer to a file." });
+        if (result.status !== "success") {
+            if (result.status === "not-file") {
+                return res.status(400).json({ code: "not_file", error: "The requested path must refer to a file.", message: "The requested path must refer to a file." });
+            }
+            return sendGitHubError(res, result.error);
         }
 
         return res.status(200).json({
@@ -536,8 +516,8 @@ router.post("/repositories/file", async (req: Request, res: Response) => {
             sha,
             content: result.content
         });
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -548,37 +528,31 @@ router.get("/file", async (req: Request, res: Response) => {
 
     const parsedRepository = parseGitHubRepositoryUrl(rawUrl);
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     if (!rawPath.trim()) {
-        return res.status(400).json({ error: "A non-empty file path is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty file path is required.", message: "A non-empty file path is required." });
     }
 
     // Path traversal check
     const normalized = rawPath.replace(/\\/g, "/");
     if (normalized.startsWith("/") || normalized.includes("..") || normalized.split("/").includes("..")) {
-        return res.status(400).json({ error: "Invalid file path (path traversal detected)." });
+        return res.status(400).json({ code: "bad_request", error: "Invalid file path (path traversal detected).", message: "Invalid file path (path traversal detected)." });
     }
 
     if (!rawSha.trim()) {
-        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty commit SHA is required.", message: "A non-empty commit SHA is required." });
     }
 
     const { owner, repository } = parsedRepository;
     try {
         const result = await retrieveHistoricalFileContent(owner, repository, normalized, rawSha.trim());
-        if (result.status === "not-found") {
-            return res.status(404).json({ error: "GitHub repository or file not found." });
-        }
-        if (result.status === "rate-limit") {
-            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
-        }
-        if (result.status === "api-failure") {
-            return res.status(502).json({ error: "GitHub API request failed." });
-        }
-        if (result.status === "not-file") {
-            return res.status(400).json({ error: "The requested path must refer to a file." });
+        if (result.status !== "success") {
+            if (result.status === "not-file") {
+                return res.status(400).json({ code: "not_file", error: "The requested path must refer to a file.", message: "The requested path must refer to a file." });
+            }
+            return sendGitHubError(res, result.error);
         }
 
         // Cap content at 200 KB (200 * 1024 bytes)
@@ -597,8 +571,8 @@ router.get("/file", async (req: Request, res: Response) => {
             content,
             truncated
         });
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -608,15 +582,15 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
     const sha = req.body?.sha;
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     if (typeof path !== "string" || path.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty file path is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty file path is required.", message: "A non-empty file path is required." });
     }
 
     if (typeof sha !== "string" || sha.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty commit SHA is required.", message: "A non-empty commit SHA is required." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -624,20 +598,11 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
     try {
         const result = await retrieveHistoricalFileContent(owner, repository, path, sha);
 
-        if (result.status === "not-found") {
-            return res.status(404).json({ error: "GitHub repository or file not found." });
-        }
-
-        if (result.status === "rate-limit") {
-            return res.status(429).json({ error: "GitHub API rate limit exceeded." });
-        }
-
-        if (result.status === "api-failure") {
-            return res.status(502).json({ error: "GitHub API request failed." });
-        }
-
-        if (result.status === "not-file") {
-            return res.status(400).json({ error: "The requested path must refer to a file." });
+        if (result.status !== "success") {
+            if (result.status === "not-file") {
+                return res.status(400).json({ code: "not_file", error: "The requested path must refer to a file.", message: "The requested path must refer to a file." });
+            }
+            return sendGitHubError(res, result.error);
         }
 
         return res.status(200).json(
@@ -648,8 +613,8 @@ router.post("/repositories/analyze-file", async (req: Request, res: Response) =>
                 result.content
             )
         );
-    } catch {
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+    } catch (error) {
+        return sendGitHubError(res, mapGitHubFetchError(error));
     }
 });
 
@@ -659,24 +624,24 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
     const paths = req.body?.paths;
 
     if (!parsedRepository || !parsedRepository.repository) {
-        return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        return res.status(400).json({ code: "bad_request", error: "A valid GitHub repository URL is required.", message: "A valid GitHub repository URL is required." });
     }
 
     if (typeof sha !== "string" || sha.trim().length === 0) {
-        return res.status(400).json({ error: "A non-empty commit SHA is required." });
+        return res.status(400).json({ code: "bad_request", error: "A non-empty commit SHA is required.", message: "A non-empty commit SHA is required." });
     }
 
     if (!Array.isArray(paths) || paths.length === 0) {
-        return res.status(400).json({ error: "A non-empty paths array is required." });
+        return res.status(400).json({ code: "repo_empty", error: "No supported source files found in this repository.", message: "No supported source files found in this repository." });
     }
 
     const maxAnalysisFiles = parseInt(process.env.ANALYSIS_MAX_FILES || "500", 10);
     if (paths.length > maxAnalysisFiles) {
-        return res.status(400).json({ error: `A maximum of ${maxAnalysisFiles} file paths is allowed.` });
+        return res.status(400).json({ code: "bad_request", error: `A maximum of ${maxAnalysisFiles} file paths is allowed.`, message: `A maximum of ${maxAnalysisFiles} file paths is allowed.` });
     }
 
     if (paths.some((path) => typeof path !== "string" || path.trim().length === 0)) {
-        return res.status(400).json({ error: "Every path must be a non-empty string." });
+        return res.status(400).json({ code: "bad_request", error: "Every path must be a non-empty string.", message: "Every path must be a non-empty string." });
     }
 
     const { owner, repository } = parsedRepository;
@@ -704,36 +669,25 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
         );
 
         for (const result of results) {
-            if (result.status === "not-found") {
-                if (isSse) {
-                    res.write(`data: ${JSON.stringify({ error: "GitHub repository or file not found." })}\n\n`);
-                    return res.end();
+            if (result.status !== "success") {
+                if (result.status === "not-file") {
+                    if (isSse) {
+                        res.write(`data: ${JSON.stringify({ error: "The requested path must refer to a file.", code: "not_file", message: "The requested path must refer to a file." })}\n\n`);
+                        return res.end();
+                    }
+                    return res.status(400).json({ code: "not_file", error: "The requested path must refer to a file.", message: "The requested path must refer to a file." });
                 }
-                return res.status(404).json({ error: "GitHub repository or file not found." });
-            }
 
-            if (result.status === "rate-limit") {
                 if (isSse) {
-                    res.write(`data: ${JSON.stringify({ error: "GitHub API rate limit exceeded." })}\n\n`);
+                    res.write(`data: ${JSON.stringify({
+                        error: result.error.message,
+                        code: result.error.code,
+                        message: result.error.message,
+                        ...(result.error.retryAfterSeconds ? { retryAfterSeconds: result.error.retryAfterSeconds } : {})
+                    })}\n\n`);
                     return res.end();
                 }
-                return res.status(429).json({ error: "GitHub API rate limit exceeded." });
-            }
-
-            if (result.status === "api-failure") {
-                if (isSse) {
-                    res.write(`data: ${JSON.stringify({ error: "GitHub API request failed." })}\n\n`);
-                    return res.end();
-                }
-                return res.status(502).json({ error: "GitHub API request failed." });
-            }
-
-            if (result.status === "not-file") {
-                if (isSse) {
-                    res.write(`data: ${JSON.stringify({ error: "The requested path must refer to a file." })}\n\n`);
-                    return res.end();
-                }
-                return res.status(400).json({ error: "The requested path must refer to a file." });
+                return sendGitHubError(res, result.error);
             }
         }
 
@@ -764,12 +718,13 @@ router.post("/repositories/analyze", async (req: Request, res: Response) => {
         }
 
         return res.status(200).json(analyzeResult);
-    } catch {
+    } catch (error) {
+        const mapped = mapGitHubFetchError(error);
         if (isSse) {
-            res.write(`data: ${JSON.stringify({ error: "Unable to reach the GitHub API." })}\n\n`);
+            res.write(`data: ${JSON.stringify({ error: mapped.message, code: mapped.code, message: mapped.message })}\n\n`);
             return res.end();
         }
-        return res.status(502).json({ error: "Unable to reach the GitHub API." });
+        return sendGitHubError(res, mapped);
     }
 });
 
@@ -837,7 +792,14 @@ router.post("/repositories/analyze-history", async (req: Request, res: Response)
             const [parentResult, currentResult] = await Promise.all([
                 parentSha
                     ? retrieveHistoricalFileContent(owner, repository, path, parentSha)
-                    : Promise.resolve<HistoricalFileResult>({ status: "not-found" }),
+                    : Promise.resolve<HistoricalFileResult>({
+                        status: "not-found",
+                        error: {
+                            status: 404,
+                            code: "repo_not_found",
+                            message: "Repository not found. Check the URL, or it may be private."
+                        }
+                    }),
                 retrieveHistoricalFileContent(owner, repository, path, sha)
             ]);
 

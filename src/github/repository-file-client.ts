@@ -1,4 +1,9 @@
-import { getGitHubRateLimitError, getGitHubRequestOptions } from "./client";
+import {
+    getGitHubRateLimitError,
+    getGitHubRequestOptions,
+    mapGitHubFetchError,
+    mapGitHubResponseToError
+} from "./client";
 
 export interface GitHubRepositoryFile {
     path: string;
@@ -9,13 +14,15 @@ export type GitHubRepositoryFileErrorCode =
     | "not_found"
     | "not_file"
     | "rate_limit"
+    | "auth_failed"
     | "api_failure"
     | "network_failure";
 
 export class GitHubRepositoryFileError extends Error {
     constructor(
         public readonly code: GitHubRepositoryFileErrorCode,
-        message: string
+        message: string,
+        public readonly retryAfterSeconds?: number
     ) {
         super(message);
         this.name = "GitHubRepositoryFileError";
@@ -44,26 +51,34 @@ export class GitHubRepositoryFileClient {
         } catch {
             throw new GitHubRepositoryFileError(
                 "network_failure",
-                "Unable to reach the GitHub API."
+                "Cannot reach GitHub. Check your internet connection."
             );
         }
 
-        if (response.status === 404) {
-            throw new GitHubRepositoryFileError(
-                "not_found",
-                "GitHub repository or file not found."
-            );
-        }
-
-        const rateLimitError = getGitHubRateLimitError(response);
-        if (rateLimitError) {
-            throw new GitHubRepositoryFileError("rate_limit", rateLimitError);
-        }
-
-        if (!response.ok) {
+        const mappedError = mapGitHubResponseToError(response);
+        if (mappedError) {
+            if (mappedError.code === "repo_not_found") {
+                throw new GitHubRepositoryFileError(
+                    "not_found",
+                    "Repository not found. Check the URL, or it may be private."
+                );
+            }
+            if (mappedError.code === "github_rate_limited") {
+                throw new GitHubRepositoryFileError(
+                    "rate_limit",
+                    mappedError.message,
+                    mappedError.retryAfterSeconds
+                );
+            }
+            if (mappedError.code === "github_auth_failed") {
+                throw new GitHubRepositoryFileError(
+                    "auth_failed",
+                    mappedError.message
+                );
+            }
             throw new GitHubRepositoryFileError(
                 "api_failure",
-                "GitHub API request failed."
+                mappedError.message
             );
         }
 

@@ -63,12 +63,12 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
     return res.json() as Promise<T>;
 }
 
-export function post<T>(url: string, body: any): Promise<T> {
-    return fetchJson<T>(url, { method: 'POST', body: JSON.stringify(body) });
+export function post<T>(url: string, body: any, options: RequestInit = {}): Promise<T> {
+    return fetchJson<T>(url, { ...options, method: 'POST', body: JSON.stringify(body) });
 }
 
-export function get<T>(url: string): Promise<T> {
-    return fetchJson<T>(url, { method: 'GET' });
+export function get<T>(url: string, options: RequestInit = {}): Promise<T> {
+    return fetchJson<T>(url, { ...options, method: 'GET' });
 }
 
 // ------ DOMAIN TYPES ------ //
@@ -224,16 +224,16 @@ export interface FileOwnersResponse {
 // ------ API ENDPOINTS ------ //
 export const api = {
     repositories: {
-        getMeta(url: string) { return post<RepositoryMetadata>('/api/repositories', { url }); },
-        getCommits(url: string, sha?: string | null, path?: string) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url, sha: sha || undefined, path }); },
-        getOwners(url: string, path: string, sha?: string | null) { return post<FileOwnersResponse>('/api/repositories/owners', { url, path, sha: sha || undefined }); },
-        getTree(url: string, sha: string) { return post<RepositoryTreeResponse>('/api/repositories/tree', { url, sha }); },
-        getFile(url: string, sha: string, path: string) {
+        getMeta(url: string, signal?: AbortSignal) { return post<RepositoryMetadata>('/api/repositories', { url }, { signal }); },
+        getCommits(url: string, sha?: string | null, path?: string, signal?: AbortSignal) { return post<{ repository: string, commits: CommitMetadata[] }>('/api/repositories/commits', { url, sha: sha || undefined, path }, { signal }); },
+        getOwners(url: string, path: string, sha?: string | null, signal?: AbortSignal) { return post<FileOwnersResponse>('/api/repositories/owners', { url, path, sha: sha || undefined }, { signal }); },
+        getTree(url: string, sha: string, signal?: AbortSignal) { return post<RepositoryTreeResponse>('/api/repositories/tree', { url, sha }, { signal }); },
+        getFile(url: string, sha: string, path: string, signal?: AbortSignal) {
             const query = new URLSearchParams({ url, sha, path }).toString();
-            return get<FileContentResponse>(`/api/file?${query}`);
+            return get<FileContentResponse>(`/api/file?${query}`, { signal });
         },
-        analyze(url: string, sha: string, paths: string[]) { return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }); },
-        async analyzeStream(url: string, sha: string, paths: string[], onProgress?: (stage: string, percent: number) => void): Promise<AnalyzeResponse> {
+        analyze(url: string, sha: string, paths: string[], signal?: AbortSignal) { return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }, { signal }); },
+        async analyzeStream(url: string, sha: string, paths: string[], onProgress?: (stage: string, percent: number) => void, signal?: AbortSignal): Promise<AnalyzeResponse> {
             try {
                 const response = await fetch('/api/repositories/analyze', {
                     method: 'POST',
@@ -241,12 +241,13 @@ export const api = {
                         'Content-Type': 'application/json',
                         'Accept': 'text/event-stream'
                     },
-                    body: JSON.stringify({ url, sha, paths })
+                    body: JSON.stringify({ url, sha, paths }),
+                    signal
                 });
 
                 if (!response.ok) {
                     const errJson = await response.json().catch(() => ({}));
-                    throw new Error(errJson.error || `Request failed with status ${response.status}`);
+                    throw new ApiError(response.status, errJson.error || `Request failed with status ${response.status}`, undefined, errJson.code);
                 }
 
                 if (!response.body) {
@@ -259,6 +260,9 @@ export const api = {
                 let finalResult: AnalyzeResponse | null = null;
 
                 while (true) {
+                    if (signal?.aborted) {
+                        throw new Error('Analysis was cancelled');
+                    }
                     const { done, value } = await reader.read();
                     if (done) break;
                     buffer += decoder.decode(value, { stream: true });
@@ -272,7 +276,9 @@ export const api = {
                         if (!jsonStr) continue;
                         try {
                             const data = JSON.parse(jsonStr);
-                            if (data.error) throw new Error(data.error);
+                            if (data.error) {
+                                throw new ApiError(400, data.error, undefined, data.code);
+                            }
                             if (data.stage && typeof data.percent === 'number') {
                                 onProgress?.(data.stage, data.percent);
                             }
@@ -280,6 +286,7 @@ export const api = {
                                 finalResult = data.result;
                             }
                         } catch (err: any) {
+                            if (err instanceof ApiError) throw err;
                             if (err.message && !err.message.includes('JSON')) throw err;
                         }
                     }
@@ -287,9 +294,12 @@ export const api = {
 
                 if (finalResult) return finalResult;
                 throw new Error('Analysis completed without result');
-            } catch (err) {
+            } catch (err: any) {
+                if (signal?.aborted || err.name === 'AbortError' || err instanceof ApiError) {
+                    throw err;
+                }
                 // Fallback to standard analyze endpoint if streaming fails
-                return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths });
+                return post<AnalyzeResponse>('/api/repositories/analyze', { url, sha, paths }, { signal });
             }
         },
         analyzeHistory(url: string, sha: string, paths: string[]) { return post<any>('/api/repositories/analyze-history', { url, sha, paths }); },

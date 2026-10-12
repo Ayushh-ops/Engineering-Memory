@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
+import { ShieldAlert } from 'lucide-react';
 import { api } from '../api';
 import { useAppStore } from '../store';
 import { selectRepoStats } from '../graph-helpers';
+import { parseGitHubRepoInput } from '../repo-url';
 
 const LOADING_STEPS = [
     'Cloning repository',
@@ -28,17 +30,6 @@ function formatRecentTime(ts?: number): string {
     return `${Math.floor(diffDays / 30)}mo ago`;
 }
 
-function isValidGitHubUrl(input: string): boolean {
-    try {
-        const u = new URL(input.trim());
-        if (u.hostname !== 'github.com') return false;
-        const parts = u.pathname.split('/').filter(Boolean);
-        return parts.length >= 2;
-    } catch {
-        return false;
-    }
-}
-
 export function LandingPage() {
     const [url, setUrl] = useState('');
     const [error, setError] = useState('');
@@ -46,6 +37,15 @@ export function LandingPage() {
     const [loadingStep, setLoadingStep] = useState(0);
     const [loadingPercent, setLoadingPercent] = useState<number | null>(null);
     const [analyzingTarget, setAnalyzingTarget] = useState('');
+    const [analysisError, setAnalysisError] = useState<{
+        title: string;
+        message: string;
+        code?: string;
+    } | null>(null);
+    const [isTimedOut, setIsTimedOut] = useState(false);
+    const [lastTargetUrl, setLastTargetUrl] = useState('');
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [recent, setRecent] = useState<RecentItem[]>([]);
     const { setRepoUrl, setMeta, setCommits } = useAppStore();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -411,8 +411,57 @@ export function LandingPage() {
         }
     };
 
+    const getErrorTitle = (code?: string): string => {
+        switch (code) {
+            case 'repo_not_found':
+                return 'Repository not found';
+            case 'github_rate_limited':
+                return 'GitHub rate limit reached';
+            case 'github_auth_failed':
+                return 'GitHub authentication failed';
+            case 'github_unreachable':
+                return 'Cannot reach GitHub';
+            case 'repo_empty':
+                return 'Repository empty';
+            default:
+                return 'Analysis failed';
+        }
+    };
+
+    const handleCancel = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        if (timeoutIdRef.current) {
+            clearTimeout(timeoutIdRef.current);
+            timeoutIdRef.current = null;
+        }
+        setLoading(false);
+        setIsTimedOut(false);
+        setAnalysisError(null);
+    };
+
     const handleAnalyze = async (repoUrlToAnalyze: string) => {
         if (!repoUrlToAnalyze) return;
+        setLastTargetUrl(repoUrlToAnalyze);
+        setAnalysisError(null);
+        setIsTimedOut(false);
+
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        if (timeoutIdRef.current) {
+            clearTimeout(timeoutIdRef.current);
+        }
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
+        timeoutIdRef.current = setTimeout(() => {
+            setIsTimedOut(true);
+        }, 90000);
+
         setAnalyzingTarget(repoUrlToAnalyze.replace('https://github.com/', ''));
         setLoading(true);
         setLoadingStep(0);
@@ -440,13 +489,13 @@ export function LandingPage() {
 
             let meta = cache.meta;
             if (!meta) {
-                meta = await api.repositories.getMeta(repoUrlToAnalyze);
+                meta = await api.repositories.getMeta(repoUrlToAnalyze, controller.signal);
                 state.repoCache[repoUrlToAnalyze] = { ...state.repoCache[repoUrlToAnalyze], meta };
             }
 
             let commits = cache.commits;
             if (!commits) {
-                const commitData = await api.repositories.getCommits(repoUrlToAnalyze);
+                const commitData = await api.repositories.getCommits(repoUrlToAnalyze, null, undefined, controller.signal);
                 commits = commitData.commits;
                 state.repoCache[repoUrlToAnalyze] = { ...state.repoCache[repoUrlToAnalyze], commits };
             }
@@ -457,7 +506,7 @@ export function LandingPage() {
                 headSha = commits[0].sha;
                 let cachedTree = cache.trees?.[headSha];
                 if (!cachedTree) {
-                    const treeRes = await api.repositories.getTree(repoUrlToAnalyze, headSha);
+                    const treeRes = await api.repositories.getTree(repoUrlToAnalyze, headSha, controller.signal);
                     cachedTree = treeRes.files;
                     state.repoCache[repoUrlToAnalyze] = {
                         ...(state.repoCache[repoUrlToAnalyze] || {}),
@@ -477,7 +526,7 @@ export function LandingPage() {
                     const cacheKey = paths.slice().sort().join('|');
                     let cachedGraph = state.repoCache[repoUrlToAnalyze]?.graphs?.[cacheKey];
                     if (!cachedGraph) {
-                        const data = await api.repositories.analyzeStream(repoUrlToAnalyze, headSha, paths, onProgress);
+                        const data = await api.repositories.analyzeStream(repoUrlToAnalyze, headSha, paths, onProgress, controller.signal);
                         cachedGraph = data.graph;
                         state.repoCache[repoUrlToAnalyze] = {
                             ...(state.repoCache[repoUrlToAnalyze] || {}),
@@ -500,6 +549,10 @@ export function LandingPage() {
             if (treeFilesResult.length > 0) useAppStore.getState().setTreeFiles(treeFilesResult);
 
             clearInterval(stepInterval);
+            if (timeoutIdRef.current) {
+                clearTimeout(timeoutIdRef.current);
+                timeoutIdRef.current = null;
+            }
             setLoadingStep(3);
             setLoadingPercent(100);
 
@@ -507,9 +560,33 @@ export function LandingPage() {
                 setRepoUrl(repoUrlToAnalyze);
             }, 300);
         } catch (e: any) {
-            console.error('Failed to fetch repo', e);
             clearInterval(stepInterval);
+            if (timeoutIdRef.current) {
+                clearTimeout(timeoutIdRef.current);
+                timeoutIdRef.current = null;
+            }
             setLoading(false);
+            if (controller.signal.aborted || e?.name === 'AbortError' || e?.message === 'Analysis was cancelled') {
+                return;
+            }
+            console.error('Failed to analyze repository:', e);
+            const code = e?.code || (e?.status === 404 ? 'repo_not_found' : e?.status === 401 ? 'github_auth_failed' : e?.status === 403 ? 'github_rate_limited' : undefined);
+            const title = getErrorTitle(code);
+            let message = e?.message || 'Failed to analyze repository.';
+            if (code === 'repo_not_found') {
+                message = 'Repository not found. Check the URL, or it may be private.';
+            } else if (code === 'github_auth_failed') {
+                message = 'The GitHub token is invalid. Check GITHUB_TOKEN in .env.';
+            } else if (code === 'github_unreachable') {
+                message = 'Cannot reach GitHub. Check your internet connection.';
+            } else if (code === 'repo_empty') {
+                message = 'No supported source files found in this repository.';
+            }
+            setAnalysisError({
+                code,
+                title,
+                message
+            });
         }
     };
 
@@ -599,6 +676,53 @@ export function LandingPage() {
                                         style={{ width: `${loadingPercent !== null ? loadingPercent : (loadingStep + 1) * 25}%` }}
                                     />
                                 </div>
+                                {isTimedOut && (
+                                    <p className="mt-4 text-xs text-[#E3A04A] font-mono">
+                                        This is taking longer than expected
+                                    </p>
+                                )}
+                                <div className="mt-4 pt-3 border-t border-white/[0.08] flex items-center justify-between">
+                                    <button
+                                        type="button"
+                                        onClick={handleCancel}
+                                        className="text-xs text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer py-1 px-2.5 rounded border border-white/10"
+                                    >
+                                        Cancel
+                                    </button>
+                                </div>
+                            </div>
+                        ) : analysisError ? (
+                            <div className="glass-surface max-w-md p-6 rounded-2xl hairline-border shadow-2xl flex flex-col justify-center">
+                                <div className="flex items-start gap-3 mb-3">
+                                    <ShieldAlert className="w-5 h-5 text-[#E3A04A] shrink-0 mt-0.5" />
+                                    <div>
+                                        <h3 className="text-base font-semibold text-[#E8EAE6]">
+                                            {analysisError.title}
+                                        </h3>
+                                        <p className="mt-1.5 text-xs text-[#8A918C] leading-relaxed">
+                                            {analysisError.message}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="mt-5 pt-4 border-t border-white/[0.08] flex items-center gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => handleAnalyze(lastTargetUrl)}
+                                        className="px-4 py-2 bg-[#4FD1B5] text-[#04100D] font-semibold text-xs rounded-[8px] hover:bg-[#45bd9f] transition-colors cursor-pointer"
+                                    >
+                                        Try again
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setAnalysisError(null);
+                                            setError('');
+                                        }}
+                                        className="text-xs text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer underline"
+                                    >
+                                        Back to home
+                                    </button>
+                                </div>
                             </div>
                         ) : (
                             <>
@@ -637,11 +761,12 @@ export function LandingPage() {
                                             }}
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
-                                                    if (!isValidGitHubUrl(url)) {
-                                                        setError('Enter a full GitHub URL, for example https://github.com/owner/repository');
+                                                    const parsed = parseGitHubRepoInput(url);
+                                                    if (!parsed.valid || !parsed.normalizedUrl) {
+                                                        setError('Enter a GitHub repository URL, for example https://github.com/owner/repo');
                                                         return;
                                                     }
-                                                    handleAnalyze(url.trim());
+                                                    handleAnalyze(parsed.normalizedUrl);
                                                 }
                                             }}
                                             placeholder="https://github.com/owner/repository"
@@ -650,11 +775,12 @@ export function LandingPage() {
                                     </div>
                                     <button
                                         onClick={() => {
-                                            if (!isValidGitHubUrl(url)) {
-                                                setError('Enter a full GitHub URL, for example https://github.com/owner/repository');
+                                            const parsed = parseGitHubRepoInput(url);
+                                            if (!parsed.valid || !parsed.normalizedUrl) {
+                                                setError('Enter a GitHub repository URL, for example https://github.com/owner/repo');
                                                 return;
                                             }
-                                            handleAnalyze(url.trim());
+                                            handleAnalyze(parsed.normalizedUrl);
                                         }}
                                         disabled={loading || !url.trim()}
                                         className="landing-btn w-full sm:w-auto shrink-0 bg-[#4FD1B5] text-[#04100D] border-0 rounded-[10px] px-6 py-3 font-semibold text-sm sm:text-[15px] cursor-pointer disabled:opacity-50 flex items-center justify-center min-h-[44px]"
@@ -685,9 +811,14 @@ export function LandingPage() {
                                                 <div
                                                     key={idx}
                                                     onClick={() => {
-                                                        setUrl(item.url);
+                                                        const parsed = parseGitHubRepoInput(item.url);
+                                                        if (!parsed.valid || !parsed.normalizedUrl) {
+                                                            setError('Enter a GitHub repository URL, for example https://github.com/owner/repo');
+                                                            return;
+                                                        }
+                                                        setUrl(parsed.normalizedUrl);
                                                         setError('');
-                                                        handleAnalyze(item.url);
+                                                        handleAnalyze(parsed.normalizedUrl);
                                                     }}
                                                     className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.04] cursor-pointer transition-colors group"
                                                 >

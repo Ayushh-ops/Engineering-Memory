@@ -1,235 +1,80 @@
 # Engineering Memory
 
-Engineering Memory is a TypeScript and Express backend for retrieving public GitHub repository metadata.
-
-## Current capabilities
-
-- `GET /api/health` returns a health status and timestamp.
-- `POST /api/repositories` accepts a GitHub repository URL and returns selected public metadata.
-- `POST /api/repositories/commits` accepts a GitHub repository URL and returns its 10 most recent commits with changed-file statistics.
-- `POST /api/repositories/file` accepts a GitHub repository URL, path, and commit SHA and returns the file's UTF-8 content at that revision.
-- `POST /api/repositories/analyze-file` retrieves one historical TypeScript file and returns its AST-derived structure.
-- `POST /api/repositories/analyze` retrieves and analyzes up to 20 user-selected historical files from one commit, resolves supported relative imports, and builds an in-memory structural code graph.
-- `POST /api/repositories/graph/context` assembles bounded, deterministic context for a file, symbol, or commit from a caller-supplied graph.
-- `POST /api/repositories/graph/impact` returns the full deterministic change-impact result for a file or symbol target in a caller-supplied graph.
-- `POST /api/ai/ask-repository` provides repository context, deterministic graph analysis, bounded source evidence, question-aware context planning, and optional change-impact analysis.
-- `POST /api/ai/ask` answers a question from a repository graph the caller already has, without contacting GitHub.
-- `POST /api/analyze` accepts TypeScript source code and returns focused AST-derived code structure.
-
-## Run locally
-
-```bash
-npm run dev
-```
-
-The service listens on port `3000` by default. Set `PORT` to use a different port.
-
-### Optional GitHub authentication
-
-GitHub requests work without configuration and use the public unauthenticated API quota. For local development and repeated repository testing, set an optional Personal Access Token in the process environment:
-
-```text
-GITHUB_TOKEN=your-token-here
-```
-
-The service sends `Authorization: Bearer <token>` when `GITHUB_TOKEN` is non-empty. Authenticated requests receive GitHub's substantially higher API rate limit. Never commit a real token; `.env` files are ignored and [.env.example](.env.example) contains only a placeholder. The application does not load `.env` files automatically, so configure the variable through your shell, VS Code launch configuration, or another environment manager.
-
-## API
-
-### Health check
-
-```http
-GET /api/health
-```
-
-### Repository metadata
-
-```http
-POST /api/repositories
-Content-Type: application/json
-
-{
-  "url": "https://github.com/owner/repository"
-}
-```
-
-The endpoint retrieves public metadata from the GitHub API. It does not currently use GitHub authentication or store repository data.
-
-### Recent commits
-
-```http
-POST /api/repositories/commits
-Content-Type: application/json
-
-{
-  "url": "https://github.com/vercel/next.js"
-}
-```
-
-The endpoint returns the repository identifier and commit SHA, message, author name, author date, and changed-file statistics for the 10 most recent commits.
-
-### Historical file content
-
-```http
-POST /api/repositories/file
-Content-Type: application/json
-
-{
-  "url": "https://github.com/vercel/next.js",
-  "path": "package.json",
-  "sha": "<commit-sha>"
-}
-```
-
-The supplied SHA is sent to GitHub as the contents API `ref`, so the endpoint returns the file at that exact commit rather than the repository's current default branch.
-
-### TypeScript analysis
-
-```http
-POST /api/analyze
-Content-Type: application/json
-
-{
-  "code": "const x = 10;"
-}
-```
-
-The endpoint returns import sources, classes and their methods, function declarations, variable declarations, and structural code relationships. Each import produces an `imports` relationship from `file` to its module path. Calls made inside a named function or class method produce `calls` relationships; class methods use `ClassName.methodName` as the source. It performs local analysis only and does not contact GitHub or store data.
-
-### Historical TypeScript file analysis
-
-```http
-POST /api/repositories/analyze-file
-Content-Type: application/json
-
-{
-  "url": "https://github.com/vercel/next.js",
-  "path": "packages/example/file.ts",
-  "sha": "<commit-sha>"
-}
-```
-
-The endpoint retrieves and decodes exactly the requested file at the supplied SHA, then passes its UTF-8 source to the existing TypeScript analyzer. It returns `repository`, `path`, `sha`, and `analysis`, including structural import and call relationships; it does not analyze any other files or commits.
-
-### Repository-level historical TypeScript analysis
-
-```http
-POST /api/repositories/analyze
-Content-Type: application/json
-
-{
-  "url": "https://github.com/vercel/next.js",
-  "sha": "<commit-sha>",
-  "paths": [
-    "packages/example/auth.ts",
-    "packages/example/user.ts"
-  ]
-}
-```
-
-The endpoint analyzes only the supplied paths (between 1 and 20) and retrieves every file using the same supplied commit SHA. Its response contains `repository`, `sha`, a `files` array, `resolvedRelationships`, and `graph`. Each file entry preserves the requested `path` and contains that file's focused `analysis` result; the original AST-derived import relationship is retained there. `resolvedRelationships` adds unambiguous links between supplied files for relative imports beginning with `./` or `../`, including `.ts`, `.tsx`, `.js`, `.jsx`, and supported `index` files.
-
-`graph` is an in-memory graph with deterministic node IDs. Its structural portion has `repository`, `file`, `class`, `function`, and `method` nodes plus `contains`, `imports`, and safely resolvable local `calls` edges. Resolved call edges have deterministic IDs and preserve every analyzed call occurrence with its file, source range, and exact expression; repeated calls between the same symbols remain one topology edge with multiple call-site records. The graph builder can additionally compose GitHub commit data into `commit` nodes (`commit:<sha>`) and `changed` edges to already-known `file` nodes. A changed path that is not among the analyzed graph inputs is deliberately not made into a file node or edge. IDs use forms such as `repository:owner/repository`, `file:src/auth.ts`, `class:src/user.ts:UserService`, `function:src/auth.ts:getUser`, and `method:src/user.ts:UserService.getUser`; delimiter characters inside components are encoded to prevent collisions. Import edges come only from verified `resolvedRelationships`. A call edge is emitted only when both endpoints are unambiguously declared in the same analyzed file; unresolved and cross-file calls are not guessed. The graph is not persisted and is structural rather than semantic: it does not type-check, resolve packages or aliases, infer runtime behavior, or explain why code changed. Call-site preservation does not provide complete impact paths; line-level historical diffing remains future work.
-
-### Historical graph analysis
-
-`POST /api/repositories/analyze-history` preserves its existing `repository`, `sha`, `parentSha`, and `files` fields and additionally returns `graph`. The graph includes `symbol-change` nodes for applicable added, removed, and modified classes, functions, and methods. Each change node has a deterministic ID containing the commit SHA, file path, symbol type, symbol name, and change type. It has a `changed` edge from the commit and an `in-file` edge to the file. Added and modified changes also have an `affects` edge to an existing structural symbol node; removed symbols do not create phantom structural nodes. Inapplicable non-TypeScript files produce no symbol-change nodes.
-
-### Repository graph queries
-
-`POST /api/repositories/graph/query` accepts a graph returned by a repository analysis endpoint and a read-only query. Graphs are queried in memory and are not stored.
-
-```http
-POST /api/repositories/graph/query
-Content-Type: application/json
-
-{
-  "graph": { "nodes": [], "edges": [] },
-  "query": { "type": "file-imports", "path": "src/auth.ts" }
-}
-```
-
-Supported query types are `related-files`, `file-symbols`, `file-imports`, `symbol-callers`, `commit-changes`, `commit-symbol-changes`, and `affected-symbols`. The response contains the echoed `query` and `{ files, symbols, commits, symbolChanges }`. Results are direct relationships only, preserve graph insertion order, and deduplicate repeated node IDs. Unknown entities return empty result arrays.
-
-### Repository graph context
-
-`POST /api/repositories/graph/context` accepts a graph returned by a repository analysis endpoint and assembles one-hop context without making GitHub requests:
-
-```http
-POST /api/repositories/graph/context
-Content-Type: application/json
-
-{
-  "graph": { "nodes": [], "edges": [] },
-  "request": {
-    "target": { "type": "file", "path": "src/auth.ts" },
-    "limits": { "maxFiles": 5, "maxSymbols": 20 }
-  }
-}
-```
-
-Targets are `file`, `symbol` (with `class`, `function`, or `method` identity), and `commit`. The response contains `target`, `files`, `symbols`, `imports`, `callers`, `commits`, and `symbolChanges`. Defaults are 8 files, 40 symbols, 20 callers, 10 commits, and 40 symbol changes; hard maxima are 50, 200, 100, 50, and 200 respectively. Results preserve graph insertion order and are truncated after deduplication. Removed symbols appear only as `symbol-change` nodes and are never fabricated as structural symbols. Missing or ambiguous targets return `400`.
-
-### Deterministic change-impact analysis
-
-`POST /api/repositories/graph/impact` returns the full deterministic change-impact result for one `file` or `symbol` target in a caller-supplied graph. It makes no GitHub requests, never invokes an LLM, performs no persistence, and never exposes the raw graph:
-
-```http
-POST /api/repositories/graph/impact
-Content-Type: application/json
-
-{
-  "graph": { "nodes": [], "edges": [] },
-  "request": {
-    "target": {
-      "type": "symbol",
-      "symbol": { "type": "function", "path": "src/auth.ts", "name": "authenticate" }
-    },
-    "limits": { "maxDepth": 3, "maxResults": 50 }
-  },
-  "files": [
-    { "path": "src/auth.ts", "content": "export function authenticate() {}" }
-  ]
-}
-```
-
-The response is the complete change-impact result: `target`, an optional `targetNodeId`, `status`, `bounds`, `directCallers`, `transitiveConsumers`, `tests`, `relatedDependencies`, `reviewCandidates`, `sourceEvidence`, `paths`, `callSiteEvidence`, `impactNodes`, and `limitations`, with unset optional keys omitted. This is the full result that the AI path compacts for its own provider payload, never the compact projection, and it is returned unchanged instead of being reshaped into a separate response model.
-
-`status` is `ok`, `missing`, or `ambiguous`, and all three are returned with `200`: an absent or duplicated target is a deterministic outcome of the analysis, not a transport error, and the result still reports the requested target, the effective `bounds`, and why the arrays are empty. `commit` targets are rejected with `400` because change-impact analysis cannot represent them, and malformed requests return `400` as well.
-
-`maxDepth` and `maxResults` are optional and default to 3 and 50. The analysis service itself accepts any positive `maxDepth` and any non-negative `maxResults` and applies no maximum. This endpoint additionally enforces transport-level boundary limits of `maxDepth` 1–10 and `maxResults` 0–500 and rejects other limit keys, so a caller-supplied graph cannot amplify the response. Effective limits are always echoed in `bounds`, where `truncated` reports that bounds prevented complete traversal.
-
-Caller-supplied `files` (at most 20 unique `{ path, content }` entries) enable bounded `sourceEvidence` snippets. When they are omitted, `sourceEvidence` is empty and `limitations` states that no fetched files were supplied. Call-site evidence for relationships is read from the graph and does not require files.
-
-Every response is validated against the supplied graph before it is returned. If the derived result cannot be verified against that graph, the request fails closed with `400` and stable failure codes in `missingData`, so unverified impact facts are never served. Identical requests produce identical responses, and the ordering produced by the analysis is preserved exactly.
-
-### Repository AI Q&A
-
-`POST /api/ai/ask-repository` accepts a repository, commit SHA, selected file paths, target, and natural-language question. The orchestration analyzes the supplied files, builds the structural graph, plans context from the question, and provides bounded graph and source evidence to the configured LLM provider.
-
-Impact-shaped questions can additionally produce direct callers, transitive consumers, heuristic test consumers, file dependencies, review candidates, and bounded source evidence. These are potential impact and review signals based on the supplied graph. They do not prove that a change will break code or that a symbol is safe to remove. Analysis is bounded and uses only supplied repository files; cross-file semantic call resolution and runtime behavior are not inferred.
-Whatever the answer, the AI context carries a bounded, deterministic compact projection of any change-impact result rather than the full rich result. The projection keeps every affected consumer together with its relationship chains and call-site evidence, and it declares anything it had to omit so the model always knows it is reading a bounded view. The full change-impact result is unchanged and remains available to backend and future visualization consumers.
-
-### Repository AI Q&A with a supplied graph
-
-`POST /api/ai/ask` answers a question from a graph the caller already has, for example the `graph` returned by `POST /api/repositories/analyze`, instead of loading files from GitHub.
-
-```http
-POST /api/ai/ask
-Content-Type: application/json
-
-{
-  "repository": "owner/repository",
-  "target": { "type": "file", "path": "src/auth.ts" },
-  "question": "What does auth do?",
-  "graph": { "nodes": [], "edges": [] }
-}
-```
-
-The response contains `status`, `answer`, `citations`, `confidence`, `missingData`, and `error`. If the assembled context contradicts the supplied graph, the request is rejected with an `invalid_graph` error and nothing is sent to the provider.
-
-## Documentation
-
-- [Roadmap](docs/roadmap.md)
-- [Architecture](docs/architecture.md)
-- [Technical decisions](docs/decisions.md)
+Engineering Memory analyzes public GitHub repositories to map code dependencies, ownership, and history.
+It provides change impact analysis to reveal what might break before you make modifications.
+An integrated AI assistant answers questions grounded in code structure, commits, and file evidence.
+
+## Features
+
+- Interactive dependency graph visualization for files, classes, functions, and imports
+- Change impact and blast-radius analysis across downstream dependents
+- Commit history, author ownership breakdown, and risk scoring
+- Question-aware Ask AI with streaming responses, evidence citations, and offline fallback
+- Source parsing support for TypeScript, JavaScript, Python, Go, Java, and C++
+
+## Requirements
+
+- Node.js 20+
+- npm
+
+## Setup
+
+1. Install root dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Install frontend dependencies:
+   ```bash
+   npm install --prefix frontend
+   ```
+
+3. Copy environment configuration:
+   ```bash
+   cp .env.example .env
+   ```
+
+4. Configure environment variables (names only):
+   - `GITHUB_TOKEN`: (Optional) GitHub Personal Access Token to raise the API rate limit from 60 to 5,000 requests per hour.
+   - `LLM_API_KEY`: (Optional) API key for the primary LLM provider.
+   - `LLM_BASE_URL`: (Optional) Base URL for the primary LLM provider endpoint.
+   - `LLM_MODEL`: (Optional) Primary model identifier.
+   - `LLM_FALLBACK_API_KEY`: (Optional) API key for the fallback LLM provider.
+   - `LLM_FALLBACK_MODEL`: (Optional) Fallback model identifier.
+
+   Models and URLs have built-in defaults. Providers such as Groq and Gemini impose free-tier rate limits and quotas.
+
+## How to Run
+
+- Backend:
+  ```bash
+  npm run dev
+  ```
+  Runs on port `3000` (`http://localhost:3000`).
+
+- Frontend:
+  ```bash
+  npm run dev --prefix frontend
+  ```
+  Runs on port `5173` (`http://localhost:5173`).
+
+## How to Use
+
+1. Open the application in your browser at `http://localhost:5173`.
+2. Enter a GitHub repository URL (e.g. `https://github.com/owner/repo` or shorthand `owner/repo`).
+3. Explore the visual graph, file tree, commit logs, risk levels, and blast radius.
+4. Use Ask AI to investigate dependencies, understand impact, and inspect file details.
+
+## Troubleshooting
+
+| Issue | Cause | Solution |
+| --- | --- | --- |
+| Rate limit | LLM provider token or request quota reached | Wait for the provider cooldown or configure `LLM_FALLBACK_API_KEY` in `.env`. |
+| No API key | `LLM_API_KEY` is not set | Add your LLM provider key to `.env`. Basic facts and greetings still operate without a key. |
+| GitHub rate limit | GitHub anonymous rate limit (60 requests/hr) reached | Add a `GITHUB_TOKEN` to `.env` to raise the limit to 5,000 requests/hr. |
+| Private repos are not supported yet | Attempted to analyze a private repository | Currently only public GitHub repositories are supported. Verify repository visibility. |
+| 413 | The repository or context payload is too large | Select a specific file to analyze or reduce the number of queried files. |
+
+## Security Note
+
+Never commit your `.env` file or expose your API tokens. Keep credentials local and verify that `.env` is ignored by version control.

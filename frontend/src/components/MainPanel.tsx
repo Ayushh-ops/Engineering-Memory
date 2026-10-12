@@ -3675,6 +3675,7 @@ ${lastAssistant.content}${evidenceList}
 
 
     const formatAiError = (err: any): { message: string; backendMessage?: string; status?: number; code?: string; retryAfterSeconds?: number } => {
+        const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
         const rawCode = String(err?.code || (err?.data && err.data.code) || '').toLowerCase();
         const rawMsg = typeof err?.message === 'string'
             ? err.message
@@ -3682,6 +3683,16 @@ ${lastAssistant.content}${evidenceList}
                 ? err.data.message
                 : (err instanceof Error ? err.message : (typeof err === 'object' && err ? (err.message || '') : String(err))));
         const combined = `${rawCode} ${rawMsg}`.toLowerCase();
+
+        if (isOffline || rawCode === 'offline' || combined.includes('failed to fetch') || combined.includes('networkerror') || combined.includes('network error')) {
+            return {
+                code: 'offline',
+                message: "You are offline",
+                backendMessage: "Reconnect to the internet and retry.",
+                status: 0
+            };
+        }
+
         const retryAfter = typeof err?.retryAfterSeconds === 'number'
             ? err.retryAfterSeconds
             : (typeof err?.data?.retryAfterSeconds === 'number' ? err.data.retryAfterSeconds : undefined);
@@ -3696,15 +3707,18 @@ ${lastAssistant.content}${evidenceList}
         let friendly = "An unexpected error occurred while communicating with the AI service.";
         let finalCode = rawCode || 'unknown';
 
-        if (rawCode === 'rate_limited' || combined.includes('rate_limited') || combined.includes('rate_limit')) {
+        if (rawCode === 'rate_limited' || rawCode === 'github_rate_limited' || combined.includes('rate_limited') || combined.includes('rate_limit')) {
             const sec = retryAfter && retryAfter > 0 ? retryAfter : 30;
             return {
-                code: 'rate_limited',
+                code: rawCode === 'github_rate_limited' ? 'github_rate_limited' : 'rate_limited',
                 message: `Rate limit reached. You can try again in ${sec}s.`,
                 backendMessage: backendMessage && !backendMessage.startsWith('Rate limit reached') ? backendMessage : undefined,
                 status,
                 retryAfterSeconds: sec
             };
+        } else if (rawCode === 'github_unreachable' || combined.includes('github_unreachable')) {
+            friendly = "Cannot reach GitHub";
+            finalCode = 'github_unreachable';
         } else if (rawCode === 'image_failed' || combined.includes('image_failed')) {
             friendly = "Image analysis failed";
             finalCode = 'image_failed';
@@ -3763,6 +3777,16 @@ ${lastAssistant.content}${evidenceList}
         const imagesToSend = continuation ? [] : (imagesToPass !== undefined ? imagesToPass : attachedImages);
         const q = continuation ? "Continue from where you stopped" : (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
         if ((!q && imagesToSend.length === 0) || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
+
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            handleAskAiStreamError({
+                code: 'offline',
+                message: 'You are offline',
+                backendMessage: 'Reconnect to the internet and retry.',
+                status: 0
+            });
+            return;
+        }
 
         setAskQ('');
         setAttachedImages([]);
@@ -4050,7 +4074,16 @@ ${lastAssistant.content}${evidenceList}
     const renderAiErrorCard = useCallback((userMsg?: AskChatMessage) => {
         if (!aiError) return null;
         let title = aiError.message;
-        if (aiError.code === 'rate_limited') {
+        let subtitle = aiError.backendMessage && aiError.backendMessage !== title
+            ? aiError.backendMessage.slice(0, 160)
+            : null;
+
+        if (aiError.code === 'offline') {
+            title = "You are offline";
+            subtitle = "Reconnect to the internet and retry.";
+        } else if (aiError.code === 'github_unreachable') {
+            title = "Cannot reach GitHub";
+        } else if (aiError.code === 'rate_limited' || aiError.code === 'github_rate_limited') {
             title = rateLimitCountdown > 0
                 ? `Rate limit reached. You can try again in ${rateLimitCountdown}s.`
                 : "Rate limit reached. You can now try again.";
@@ -4061,11 +4094,9 @@ ${lastAssistant.content}${evidenceList}
         }
 
         const hasMissingImageData = Boolean(userMsg?.images && userMsg.images.some(img => !img.data));
-        const isRateLimited = aiError.code === 'rate_limited';
+        const isRateLimited = aiError.code === 'rate_limited' || aiError.code === 'github_rate_limited';
         const retryDisabled = isRateLimited && rateLimitCountdown > 0;
-        const secondLine = aiError.backendMessage && aiError.backendMessage !== title
-            ? aiError.backendMessage.slice(0, 160)
-            : null;
+        const secondLine = subtitle;
 
         return (
             <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2 mt-2">

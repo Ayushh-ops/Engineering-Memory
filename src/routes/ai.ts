@@ -1,11 +1,12 @@
 import { Request, Response, Router } from "express";
-import { AiAnswerService } from "../ai/answer-service";
+import { AiAnswerService, getGreetingOrSmallTalkResponse } from "../ai/answer-service";
+import { classifyQuestion } from "../ai/question-class";
 import { createLlmProviderFromEnvironment } from "../ai/provider-factory";
 import { type RepositoryContextTarget } from "../graph/repository-context";
 import { GitHubRepositoryFileClient, GitHubRepositoryFileError } from "../github/repository-file-client";
 import { isRepositoryGraph } from "../graph/repository-query";
 import { parseGitHubRepositoryUrl } from "./repositories";
-import { RepositoryAiOrchestrationService } from "../services/repository-ai-orchestration-service";
+import { RepositoryAiOrchestrationService, buildFallbackFactsAnswer } from "../services/repository-ai-orchestration-service";
 import { RepositoryAnalysisService } from "../services/repository-analysis-service";
 
 function isValidRepositoryTarget(value: unknown): value is RepositoryContextTarget {
@@ -298,6 +299,61 @@ export function createAiRouter(
         const parsedScope = (typeof scope === "string" && ["file", "dependents", "repo", "auto"].includes(scope)) ? (scope as any) : "auto";
         const isSse = req.headers.accept?.includes("text/event-stream");
 
+        const greetingReply = rawQuestion ? getGreetingOrSmallTalkResponse(rawQuestion) : null;
+        const classification = classifyQuestion(rawQuestion, parsedMode, hasImages);
+
+        if (greetingReply || (classification.isGreetingOrThanks && rawQuestion)) {
+            const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
+            if (isSse) {
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.write(`event: token\ndata: ${JSON.stringify({ token: finalGreeting })}\n\n`);
+                res.write(`event: done\ndata: ${JSON.stringify({
+                    status: "ok",
+                    answer: finalGreeting,
+                    citations: [],
+                    confidence: "high",
+                    missingData: [],
+                    error: null,
+                    followUps: [],
+                    evidence: [],
+                    usedContext: {
+                        files: 0,
+                        commits: 0,
+                        provider: "internal",
+                        model: "deterministic",
+                        cached: false,
+                        length: "brief",
+                        format: "prose",
+                        scope: parsedScope
+                    }
+                })}\n\n`);
+                res.end();
+                return;
+            }
+            return res.status(200).json({
+                status: "ok",
+                answer: finalGreeting,
+                citations: [],
+                confidence: "high",
+                missingData: [],
+                error: null,
+                followUps: [],
+                evidence: [],
+                usedContext: {
+                    files: 0,
+                    commits: 0,
+                    provider: "internal",
+                    model: "deterministic",
+                    cached: false,
+                    length: "brief",
+                    format: "prose",
+                    scope: parsedScope
+                }
+            });
+        }
+
         if (isSse) {
             res.setHeader("Content-Type", "text/event-stream");
             res.setHeader("Cache-Control", "no-cache");
@@ -397,6 +453,24 @@ export function createAiRouter(
                     res.end();
                     return;
                 }
+                if (target && (target as any).type === "file" && !res.writableEnded) {
+                    const fallbackAns = buildFallbackFactsAnswer((target as any).path, {
+                        risk,
+                        dependents: parsedDependents,
+                        owners,
+                        recentCommits: parsedRecentCommits
+                    });
+                    sendEvent("done", {
+                        status: "ok",
+                        answer: fallbackAns,
+                        citations: [],
+                        confidence: "medium",
+                        missingData: ["file_content_unavailable"],
+                        error: null
+                    });
+                    res.end();
+                    return;
+                }
                 const errCode = error instanceof GitHubRepositoryFileError
                     ? (error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "provider_unavailable")
                     : "provider_unavailable";
@@ -476,6 +550,23 @@ export function createAiRouter(
                 ...(result.truncated !== undefined ? { truncated: result.truncated } : {})
             });
         } catch (error) {
+            if (target && (target as any).type === "file") {
+                const fallbackAns = buildFallbackFactsAnswer((target as any).path, {
+                    risk,
+                    dependents: parsedDependents,
+                    owners,
+                    recentCommits: parsedRecentCommits
+                });
+                return res.status(200).json({
+                    status: "ok",
+                    answer: fallbackAns,
+                    citations: [],
+                    confidence: "medium",
+                    missingData: ["file_content_unavailable"],
+                    error: null
+                });
+            }
+
             if (error instanceof GitHubRepositoryFileError) {
                 const status = error.code === "not_found" ? 404 : error.code === "not_file" ? 400 : error.code === "rate_limit" ? 429 : 502;
                 const code = error.code === "not_found" ? "model_not_found" : error.code === "rate_limit" ? "rate_limited" : "bad_request";
