@@ -10,6 +10,7 @@ import repositoriesRouter from "./routes/repositories";
 const app: Application = express();
 const aiService = new AiAnswerService(createLlmProviderFromEnvironment());
 
+app.use("/api/ai", express.json({ limit: "12mb" }));
 app.use(express.json());
 app.use("/api", analysisRouter);
 app.use("/api", healthRouter);

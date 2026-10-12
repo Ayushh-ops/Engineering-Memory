@@ -23,6 +23,9 @@ export interface RepositoryAiOrchestrationRequest {
     dependents?: string[];
     recentCommits?: Array<{ sha: string; message: string; author?: string; authorName?: string; date?: string; authorDate?: string }>;
     owners?: any;
+    mode?: any;
+    scope?: any;
+    images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
 }
 
 export class RepositoryAiOrchestrationService {
@@ -153,7 +156,10 @@ export class RepositoryAiOrchestrationService {
             risk: request.risk,
             dependents: request.dependents,
             recentCommits: request.recentCommits,
-            owners: request.owners
+            owners: request.owners,
+            mode: request.mode,
+            scope: request.scope,
+            images: request.images
         };
 
         return { aiRequest };

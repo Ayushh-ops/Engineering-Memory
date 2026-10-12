@@ -150,12 +150,18 @@ export interface AskEvidenceItem {
     snippet?: string;
 }
 
+export interface AskImage {
+    mime: 'image/jpeg' | 'image/png' | 'image/webp' | string;
+    data: string;
+}
+
 export interface AskUsedContext {
     files: number;
     commits: number;
     provider: string;
     model: string;
     cached: boolean;
+    images?: number;
 }
 
 export interface AskPayload {
@@ -289,10 +295,13 @@ export const api = {
                 owners?: any;
                 mode?: AskMode;
                 scope?: AskScope;
+                images?: AskImage[];
             },
             mode: AskMode = 'detailed',
-            scope: AskScope = 'file'
+            scope: AskScope = 'file',
+            images?: AskImage[]
         ) {
+            const effectiveImages = images || extraContext?.images;
             return post<AskPayload>('/api/ai/ask-repository', {
                 url,
                 sha,
@@ -305,7 +314,8 @@ export const api = {
                 recentCommits: extraContext?.recentCommits,
                 owners: extraContext?.owners,
                 mode: extraContext?.mode || mode,
-                scope: extraContext?.scope || scope
+                scope: extraContext?.scope || scope,
+                ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
             });
         },
         async askStream(
@@ -324,12 +334,15 @@ export const api = {
                 owners?: any;
                 mode?: AskMode;
                 scope?: AskScope;
+                images?: AskImage[];
             },
             mode: AskMode = 'detailed',
-            scope: AskScope = 'file'
+            scope: AskScope = 'file',
+            images?: AskImage[]
         ): Promise<AskPayload> {
             const effectiveMode = extraContext?.mode || mode;
             const effectiveScope = extraContext?.scope || scope;
+            const effectiveImages = images || extraContext?.images;
             try {
                 const response = await fetch('/api/ai/ask-repository', {
                     method: 'POST',
@@ -349,7 +362,8 @@ export const api = {
                         recentCommits: extraContext?.recentCommits,
                         owners: extraContext?.owners,
                         mode: effectiveMode,
-                        scope: effectiveScope
+                        scope: effectiveScope,
+                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
                     }),
                     signal
                 });
@@ -376,7 +390,8 @@ export const api = {
                         recentCommits: extraContext?.recentCommits,
                         owners: extraContext?.owners,
                         mode: effectiveMode,
-                        scope: effectiveScope
+                        scope: effectiveScope,
+                        ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
                     });
                 }
 
@@ -456,7 +471,8 @@ export const api = {
                     recentCommits: extraContext?.recentCommits,
                     owners: extraContext?.owners,
                     mode: effectiveMode,
-                    scope: effectiveScope
+                    scope: effectiveScope,
+                    ...(effectiveImages && effectiveImages.length > 0 ? { images: effectiveImages } : {})
                 });
             }
         }

@@ -46,8 +46,8 @@ export function getModeInstruction(mode?: string): string {
     }
 }
 
-export function getSystemInstructions(mode?: string, additionalInstructions?: string[]): string[] {
-    return [
+export function getSystemInstructions(mode?: string, additionalInstructions?: string[], hasImages = false): string[] {
+    const instructions = [
         "You are a repository Q&A assistant.",
         "Answer only from the supplied repository facts.",
         "Do not invent repository facts.",
@@ -65,9 +65,20 @@ export function getSystemInstructions(mode?: string, additionalInstructions?: st
         "Use inline code only for file names and at most 8 key symbols per answer, list other identifiers as plain text separated by commas.",
         "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
         "For greetings or small talk, reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
-        "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file.",
-        ...(additionalInstructions ?? [])
+        "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file."
     ];
+
+    if (hasImages) {
+        instructions.push(
+            "The user attached image(s) (screenshot, error message, diagram or UI). Read them carefully, quote any visible text that matters, and relate them to the selected file and the repository context. If the image is unclear or unrelated, say so briefly. Do not invent details that are not visible."
+        );
+    }
+
+    if (additionalInstructions) {
+        instructions.push(...additionalInstructions);
+    }
+
+    return instructions;
 }
 
 export interface PromptInput {

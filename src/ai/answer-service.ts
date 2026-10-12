@@ -10,15 +10,26 @@ import { detectLang, getLanguageDirective, getSystemInstructions } from "./promp
 
 export { detectLang, getLanguageDirective };
 
-export function sanitizeHistory(history?: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> | undefined {
+export function sanitizeHistory(history?: Array<{ role: string; content: string; images?: unknown }>): Array<{ role: string; content: string }> | undefined {
     if (!Array.isArray(history)) return undefined;
     const valid = history.filter((h) => Boolean(h && typeof h === "object" && typeof h.content === "string"));
-    return valid.slice(-4).map((h) => ({
-        role: h.role === "assistant" ? "assistant" : "user",
-        content: h.role === "assistant" && typeof h.content === "string" && h.content.length > 600
-            ? h.content.slice(0, 600)
-            : String(h.content ?? "")
-    }));
+    return valid.slice(-4).map((h) => {
+        const item = h as { role?: string; content?: string; images?: unknown };
+        let contentStr = String(item.content ?? "");
+        const hadImages = Boolean(Array.isArray(item.images) && item.images.length > 0) || (item as any).hasImages === true;
+        if (/data:image\/[a-zA-Z0-9+.-]+;base64,[a-zA-Z0-9+/=]+/i.test(contentStr)) {
+            contentStr = contentStr.replace(/data:image\/[a-zA-Z0-9+.-]+;base64,[a-zA-Z0-9+/=]+/gi, "[image attached]");
+        }
+        if (hadImages && !contentStr.includes("[image attached]")) {
+            contentStr = contentStr.trim() ? `${contentStr}\n[image attached]` : "[image attached]";
+        }
+        return {
+            role: item.role === "assistant" ? "assistant" : "user",
+            content: item.role === "assistant" && contentStr.length > 600
+                ? contentStr.slice(0, 600)
+                : contentStr
+        };
+    });
 }
 
 export interface AiAnswerRequest extends RepositoryContextRequest {
@@ -39,6 +50,7 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     scope?: LlmScope;
     dependentFiles?: Array<{ path: string; content: string }>;
     repoSha?: string;
+    images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -716,8 +728,9 @@ export class AiAnswerService {
         const cleanHistory = sanitizeHistory(request.history);
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
         const cacheKey = this.buildCacheKey(request, targetPath);
+        const hasImages = Boolean(request.images && request.images.length > 0);
 
-        if (isHistoryEmpty) {
+        if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);
             if (cached) {
                 return cached;
@@ -828,7 +841,8 @@ export class AiAnswerService {
             instructions,
             history: cleanHistory,
             mode: request.mode,
-            scope: request.scope
+            scope: request.scope,
+            images: request.images
         };
 
         const providerResponse = await this.provider.answer(providerRequest);
@@ -918,11 +932,12 @@ export class AiAnswerService {
                 commits: aiContext.commits.length,
                 provider: "groq",
                 model: "openai/gpt-oss-120b",
-                cached: false
+                cached: false,
+                images: request.images ? request.images.length : 0
             }
         };
 
-        if (isHistoryEmpty) {
+        if (isHistoryEmpty && !hasImages) {
             this.cache.set(cacheKey, finalResult);
         }
 
@@ -985,8 +1000,9 @@ export class AiAnswerService {
         const cleanHistory = sanitizeHistory(request.history);
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
         const cacheKey = this.buildCacheKey(request, targetPath);
+        const hasImages = Boolean(request.images && request.images.length > 0);
 
-        if (isHistoryEmpty) {
+        if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);
             if (cached) {
                 onToken(cached.answer);
@@ -1098,7 +1114,8 @@ export class AiAnswerService {
             instructions,
             history: cleanHistory,
             mode: request.mode,
-            scope: request.scope
+            scope: request.scope,
+            images: request.images
         };
 
         try {
@@ -1189,11 +1206,12 @@ export class AiAnswerService {
                     commits: aiContext.commits.length,
                     provider: "groq",
                     model: "openai/gpt-oss-120b",
-                    cached: false
+                    cached: false,
+                    images: request.images ? request.images.length : 0
                 }
             };
 
-            if (isHistoryEmpty) {
+            if (isHistoryEmpty && !hasImages) {
                 this.cache.set(cacheKey, finalResult);
             }
 

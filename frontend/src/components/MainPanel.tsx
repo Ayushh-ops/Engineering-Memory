@@ -1,6 +1,6 @@
 import { useAppStore } from '../store';
 import { Card, Badge, cn, Button } from '../ui';
-import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2 } from 'lucide-react';
+import { Network, Activity, Clock, FileCode, FileText, ChevronRight, ChevronLeft, MoreHorizontal, Share2, Play, Send, ShieldAlert, GitCommit, Hexagon, MessageSquare, Loader2, Maximize2, Minimize2, X, Search, Copy, Check, Code2, ChevronDown, ChevronUp, HeartPulse, Download, Plus, Square, Layers, RefreshCw, Trash2, Paperclip } from 'lucide-react';
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { ReactFlow, useNodesState, useEdgesState, Background, Controls, useReactFlow, Position, Handle, MarkerType, useViewport } from '@xyflow/react';
 import Graph3D, { G3Node } from './Graph3D';
@@ -23,6 +23,108 @@ function downloadTextFile(filename: string, content: string, mime = 'text/markdo
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+}
+
+export interface AttachedImage {
+    id: string;
+    mime: 'image/jpeg' | 'image/png' | 'image/webp';
+    data: string;
+    thumbUrl: string;
+    name: string;
+}
+
+export async function processImageFile(file: File): Promise<AttachedImage | null> {
+    const validMimes = ['image/jpeg', 'image/png', 'image/webp'];
+    const mime = validMimes.includes(file.type) ? (file.type as 'image/jpeg' | 'image/png' | 'image/webp') : 'image/jpeg';
+
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const img = new Image();
+            img.onload = () => {
+                let { width, height } = img;
+                const maxDim = 1600;
+                if (width > maxDim || height > maxDim) {
+                    if (width > height) {
+                        height = Math.round((height * maxDim) / width);
+                        width = maxDim;
+                    } else {
+                        width = Math.round((width * maxDim) / height);
+                        height = maxDim;
+                    }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return resolve(null);
+                ctx.drawImage(img, 0, 0, width, height);
+
+                const quality = 0.85;
+                let dataUrl = canvas.toDataURL('image/jpeg', quality);
+                let base64 = dataUrl.split(',')[1] || '';
+
+                if (base64.length > 2 * 1024 * 1024) {
+                    const maxDim2 = 1200;
+                    let w2 = width;
+                    let h2 = height;
+                    if (w2 > maxDim2 || h2 > maxDim2) {
+                        if (w2 > h2) {
+                            h2 = Math.round((h2 * maxDim2) / w2);
+                            w2 = maxDim2;
+                        } else {
+                            w2 = Math.round((w2 * maxDim2) / h2);
+                            h2 = maxDim2;
+                        }
+                    }
+                    const canvas2 = document.createElement('canvas');
+                    canvas2.width = w2;
+                    canvas2.height = h2;
+                    const ctx2 = canvas2.getContext('2d');
+                    if (ctx2) {
+                        ctx2.drawImage(img, 0, 0, w2, h2);
+                        dataUrl = canvas2.toDataURL('image/jpeg', 0.70);
+                        base64 = dataUrl.split(',')[1] || '';
+                    }
+                }
+
+                const thumbMax = 160;
+                let tw = width;
+                let th = height;
+                if (tw > thumbMax || th > thumbMax) {
+                    if (tw > th) {
+                        th = Math.round((th * thumbMax) / tw);
+                        tw = thumbMax;
+                    } else {
+                        tw = Math.round((tw * thumbMax) / th);
+                        th = thumbMax;
+                    }
+                }
+                const thumbCanvas = document.createElement('canvas');
+                thumbCanvas.width = tw;
+                thumbCanvas.height = th;
+                const thumbCtx = thumbCanvas.getContext('2d');
+                let thumbUrl = dataUrl;
+                if (thumbCtx) {
+                    thumbCtx.drawImage(img, 0, 0, tw, th);
+                    thumbUrl = thumbCanvas.toDataURL('image/jpeg', 0.65);
+                }
+
+                resolve({
+                    id: 'img_' + Math.random().toString(36).slice(2, 9),
+                    mime,
+                    data: base64,
+                    thumbUrl,
+                    name: file.name
+                });
+            };
+            img.onerror = () => resolve(null);
+            img.src = reader.result as string;
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+    });
 }
 
 interface ComponentToolbarProps {
@@ -2477,6 +2579,7 @@ export function MainPanel({ className }: { className?: string }) {
     type AskChatMessage = {
         role: 'user' | 'assistant';
         content: string;
+        images?: Array<{ mime: string; data?: string; thumbUrl: string; name?: string }>;
         followups?: string[];
         evidence?: import('../api').AskEvidenceItem[];
         usedContext?: import('../api').AskUsedContext;
@@ -2503,6 +2606,11 @@ export function MainPanel({ className }: { className?: string }) {
     const [chatSearchQuery, setChatSearchQuery] = useState('');
     const [normalChatsOpen, setNormalChatsOpen] = useState(false);
     const [copiedMsgIdx, setCopiedMsgIdx] = useState<number | null>(null);
+    const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
+    const [imageWarning, setImageWarning] = useState<string | null>(null);
+    const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
+    const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
     const normalChatsDropdownRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const lastActiveChatByFile = useRef<Record<string, string>>({});
@@ -2533,7 +2641,9 @@ export function MainPanel({ className }: { className?: string }) {
                     textareaRef.current?.focus();
                 }
             } else if (e.key === 'Escape') {
-                if (abortControllerRef.current) {
+                if (lightboxImage) {
+                    setLightboxImage(null);
+                } else if (abortControllerRef.current) {
                     abortControllerRef.current.abort();
                     abortControllerRef.current = null;
                     setIsStreaming(false);
@@ -2544,7 +2654,7 @@ export function MainPanel({ className }: { className?: string }) {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [isChatExpanded, activeTab]);
+    }, [isChatExpanded, activeTab, lightboxImage]);
 
     useEffect(() => {
         if (!normalChatsOpen) return;
@@ -2718,11 +2828,41 @@ export function MainPanel({ className }: { className?: string }) {
         }
     }, [chatMessages, setAiEvidence, setAiCitations]);
 
+    const handleAttachFiles = useCallback(async (files: FileList | File[]) => {
+        setImageWarning(null);
+        const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+        if (imageFiles.length === 0) return;
+
+        if (attachedImages.length + imageFiles.length > 3) {
+            setImageWarning("Maximum 3 images can be attached.");
+            setTimeout(() => setImageWarning(null), 3000);
+        }
+
+        const availableSlots = Math.max(0, 3 - attachedImages.length);
+        const toProcess = imageFiles.slice(0, availableSlots);
+        const processed: AttachedImage[] = [];
+        for (const f of toProcess) {
+            const item = await processImageFile(f);
+            if (item) processed.push(item);
+        }
+        if (processed.length > 0) {
+            setAttachedImages(prev => [...prev, ...processed].slice(0, 3));
+        }
+    }, [attachedImages.length]);
+
     const saveChatMessages = useCallback((msgs: AskChatMessage[]) => {
         setChatMessages(msgs);
         if (!selectedFile || !chatsStorageKey) return;
 
-        const cleanMsgs = msgs.filter(m => !m.isThinking).slice(-30);
+        const cleanMsgs = msgs.filter(m => !m.isThinking).slice(-30).map(m => {
+            if (m.images && m.images.length > 0) {
+                return {
+                    ...m,
+                    images: m.images.map(img => ({ mime: img.mime, thumbUrl: img.thumbUrl, name: img.name }))
+                };
+            }
+            return m;
+        });
         const now = Date.now();
         const firstUserQ = cleanMsgs.find(m => m.role === 'user')?.content.trim() || '';
         const generatedTitle = firstUserQ ? firstUserQ.slice(0, 40) : 'New chat';
@@ -2756,7 +2896,7 @@ export function MainPanel({ className }: { className?: string }) {
             try {
                 localStorage.setItem(chatsStorageKey, JSON.stringify(trimmed));
             } catch (e) {
-                console.error('Failed to persist chats', e);
+                console.warn('Failed to persist chats to localStorage (quota exceeded?)', e);
             }
             return trimmed;
         });
@@ -2771,6 +2911,8 @@ export function MainPanel({ className }: { className?: string }) {
         setAiEvidence([]);
         setAiError(null);
         setAskQ('');
+        setAttachedImages([]);
+        setImageWarning(null);
         lastActiveChatByFile.current[selectedFile] = newId;
     }, [selectedFile, setAiCitations, setAiEvidence]);
 
@@ -3225,6 +3367,18 @@ ${lastAssistant.content}${evidenceList}
         if (combined.includes('oversized_context')) {
             return { message: "Context is too large for this model. Try asking about a single file.", code: 'oversized_context' };
         }
+        if (combined.includes('vision_unavailable')) {
+            return {
+                message: "Vision analysis is unavailable (missing fallback key). Remove image or configure LLM_FALLBACK_API_KEY.",
+                code: 'vision_unavailable'
+            };
+        }
+        if (combined.includes('413') || combined.includes('too large') || combined.includes('payload too large') || combined.includes('limit of 3 mb')) {
+            return {
+                message: "Image too large, please attach a smaller file.",
+                code: 'bad_request'
+            };
+        }
         if (combined.includes('bad_request') || combined.includes('invalid_question') || combined.includes('invalid_graph')) {
             return { message: "The AI request could not be processed. Check the server logs.", code: 'bad_request' };
         }
@@ -3258,21 +3412,36 @@ ${lastAssistant.content}${evidenceList}
         questionToAsk?: string,
         requestedMode?: import('../api').AskMode,
         requestedScope?: import('../api').AskScope,
-        baseMessages?: AskChatMessage[]
+        baseMessages?: AskChatMessage[],
+        imagesToPass?: AttachedImage[]
     ) => {
-        const q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
+        const imagesToSend = imagesToPass !== undefined ? imagesToPass : attachedImages;
+        let q = (typeof questionToAsk === 'string' ? questionToAsk : askQ).trim();
+        if (!q && imagesToSend.length > 0) {
+            const fileName = selectedSymbol?.name ? `${selectedSymbol.name}()` : (selectedFile ? selectedFile.split('/').pop() : 'the repository');
+            q = `Explain the issue or code shown in the attached image(s) in the context of ${fileName}`;
+        }
         if (!q || !repoUrl || !selectedSha || !graph || !selectedFile || isStreaming) return;
 
         setAskQ('');
+        setAttachedImages([]);
+        setImageWarning(null);
         setAiError(null);
 
         const currentMode = requestedMode || askMode;
         const currentScope = requestedScope || askScope;
 
         const pool = baseMessages !== undefined ? baseMessages : chatMessages;
-        const newMessages = [
+        const userMsg: AskChatMessage = {
+            role: 'user' as const,
+            content: q,
+            images: imagesToSend.length > 0
+                ? imagesToSend.map(img => ({ mime: img.mime, data: img.data, thumbUrl: img.thumbUrl, name: img.name }))
+                : undefined
+        };
+        const newMessages: AskChatMessage[] = [
             ...pool.filter(m => !m.isThinking),
-            { role: 'user' as const, content: q },
+            userMsg,
             { role: 'assistant' as const, content: '', isThinking: true }
         ];
         setChatMessages(newMessages);
@@ -3356,13 +3525,16 @@ ${lastAssistant.content}${evidenceList}
             // ignore
         }
 
+        const imagesPayload = imagesToSend.map(img => ({ mime: img.mime, data: img.data }));
+
         const extraContext = {
             risk: currentRisk,
             dependents: currentDependents,
             recentCommits: recentCommitsForFile,
             owners: fileOwners,
             mode: currentMode,
-            scope: currentScope
+            scope: currentScope,
+            images: imagesPayload.length > 0 ? imagesPayload : undefined
         };
 
         let accumulatedStreamedText = '';
@@ -3394,7 +3566,8 @@ ${lastAssistant.content}${evidenceList}
                 controller.signal,
                 extraContext,
                 currentMode,
-                currentScope
+                currentScope,
+                imagesPayload.length > 0 ? imagesPayload : undefined
             );
 
             if (res.status === 'error' && res.error) {
@@ -3452,33 +3625,58 @@ ${lastAssistant.content}${evidenceList}
         setAiError(null);
         const lastUser = [...chatMessages].reverse().find(m => m.role === 'user');
         if (lastUser) {
-            askAI(lastUser.content, askMode, askScope);
+            const imagesToRetry: AttachedImage[] | undefined = lastUser.images?.map((img, idx) => ({
+                id: 'retry_' + idx,
+                mime: (img.mime || 'image/jpeg') as any,
+                data: img.data || '',
+                thumbUrl: img.thumbUrl,
+                name: img.name || 'image'
+            }));
+            askAI(lastUser.content, askMode, askScope, undefined, imagesToRetry);
         }
-    }, [chatMessages, askMode, askScope]);
+    }, [chatMessages, askMode, askScope, attachedImages]);
 
     const handleRegenerate = useCallback((questionOverride?: string) => {
         if (isStreaming) return;
         const lastUserIdx = [...chatMessages].map(m => m.role).lastIndexOf('user');
         if (lastUserIdx === -1) return;
-        const qToRun = questionOverride || chatMessages[lastUserIdx].content;
+        const lastUser = chatMessages[lastUserIdx];
+        const qToRun = questionOverride || lastUser.content;
         const baseHistory = chatMessages.slice(0, lastUserIdx);
-        askAI(qToRun, askMode, askScope, baseHistory);
+        const imagesToRegen: AttachedImage[] | undefined = lastUser.images?.map((img, idx) => ({
+            id: 'regen_' + idx,
+            mime: (img.mime || 'image/jpeg') as any,
+            data: img.data || '',
+            thumbUrl: img.thumbUrl,
+            name: img.name || 'image'
+        }));
+        askAI(qToRun, askMode, askScope, baseHistory, imagesToRegen);
     }, [chatMessages, isStreaming, askMode, askScope]);
 
     const handleRegenerateTurn = useCallback((msgIndex: number) => {
         if (isStreaming) return;
         let userQ = '';
         let userIdx = -1;
+        let userImages: AttachedImage[] | undefined = undefined;
         for (let i = msgIndex - 1; i >= 0; i--) {
             if (chatMessages[i].role === 'user') {
                 userQ = chatMessages[i].content;
                 userIdx = i;
+                if (chatMessages[i].images) {
+                    userImages = chatMessages[i].images!.map((img, idx) => ({
+                        id: 'regen_' + idx,
+                        mime: (img.mime || 'image/jpeg') as any,
+                        data: img.data || '',
+                        thumbUrl: img.thumbUrl,
+                        name: img.name || 'image'
+                    }));
+                }
                 break;
             }
         }
         if (!userQ || userIdx === -1) return;
         const baseHistory = chatMessages.slice(0, userIdx);
-        askAI(userQ, askMode, askScope, baseHistory);
+        askAI(userQ, askMode, askScope, baseHistory, userImages);
     }, [chatMessages, isStreaming, askMode, askScope]);
 
     const reanalyze = useCallback(async () => {
@@ -5094,9 +5292,42 @@ ${lastAssistant.content}${evidenceList}
                                             {renderChatsList(true)}
                                         </div>
                                     )}
-                                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                                    <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
                                         {/* Chat Messages */}
-                                        <div className="flex-1 p-4 overflow-y-auto scrollbar-custom min-h-0">
+                                        <div
+                                            className="flex-1 p-4 overflow-y-auto scrollbar-custom min-h-0 relative"
+                                            onDragOver={e => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                setIsDraggingOverChat(true);
+                                            }}
+                                            onDragEnter={e => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                setIsDraggingOverChat(true);
+                                            }}
+                                            onDragLeave={e => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                if (e.currentTarget === e.target) {
+                                                    setIsDraggingOverChat(false);
+                                                }
+                                            }}
+                                            onDrop={e => {
+                                                e.preventDefault();
+                                                e.stopPropagation();
+                                                setIsDraggingOverChat(false);
+                                                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                                                    handleAttachFiles(e.dataTransfer.files);
+                                                }
+                                            }}
+                                        >
+                                            {isDraggingOverChat && (
+                                                <div className="absolute inset-0 bg-[#07090A]/90 border-2 border-dashed border-[#4FD1B5] rounded-xl z-30 flex flex-col items-center justify-center pointer-events-none gap-2 text-[#4FD1B5]">
+                                                    <Paperclip size={28} className="animate-bounce" />
+                                                    <span className="text-xs font-mono font-medium">Drop images here (up to 3)</span>
+                                                </div>
+                                            )}
                                             <div className={cn("space-y-3", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
                                                 {aiError && (
                                                     <div className="p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 space-y-2.5">
@@ -5144,8 +5375,32 @@ ${lastAssistant.content}${evidenceList}
                                                     chatMessages.map((msg, idx) => (
                                                         <div key={idx} className={cn("flex", msg.role === 'user' ? "justify-end" : "justify-start")}>
                                                             {msg.role === 'user' ? (
-                                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed">
-                                                                    {msg.content}
+                                                                <div className="max-w-[70%] px-3.5 py-2.5 rounded-xl bg-white/[0.07] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
+                                                                    {msg.images && msg.images.length > 0 && (
+                                                                        <div className="flex items-center gap-2 flex-wrap">
+                                                                            {msg.images.map((img, imgIdx) => {
+                                                                                const src = img.thumbUrl || (img.data ? `data:${img.mime};base64,${img.data}` : undefined);
+                                                                                if (!src) return null;
+                                                                                const fullSrc = img.data ? `data:${img.mime};base64,${img.data}` : (img.thumbUrl || src);
+                                                                                return (
+                                                                                    <button
+                                                                                        key={imgIdx}
+                                                                                        type="button"
+                                                                                        onClick={() => setLightboxImage(fullSrc)}
+                                                                                        className="group relative rounded-lg border border-white/15 overflow-hidden hover:border-[#4FD1B5]/60 transition-colors cursor-pointer bg-black/40"
+                                                                                        title="Click to zoom image"
+                                                                                    >
+                                                                                        <img
+                                                                                            src={src}
+                                                                                            alt={img.name || `Attachment ${imgIdx + 1}`}
+                                                                                            className="max-h-[120px] object-contain rounded-lg"
+                                                                                        />
+                                                                                    </button>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    )}
+                                                                    <div>{msg.content}</div>
                                                                 </div>
                                                             ) : (
                                                                 <div className="max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
@@ -5222,6 +5477,9 @@ ${lastAssistant.content}${evidenceList}
                                                                             {msg.usedContext && (
                                                                                 <div className="pt-2 text-[12px] text-[#8A918C] flex items-center gap-2 flex-wrap font-sans">
                                                                                     <span>Based on {msg.usedContext.files} {msg.usedContext.files === 1 ? 'file' : 'files'} and {msg.usedContext.commits} {msg.usedContext.commits === 1 ? 'commit' : 'commits'}</span>
+                                                                                    {typeof msg.usedContext.images === 'number' && msg.usedContext.images > 0 && (
+                                                                                        <span>• {msg.usedContext.images} {msg.usedContext.images === 1 ? 'image' : 'images'} analyzed by {msg.usedContext.model || 'vision model'}</span>
+                                                                                    )}
                                                                                     {msg.usedContext.cached && (
                                                                                         <span className="text-[10px] font-mono px-1.5 py-0.2 rounded border border-[#4FD1B5]/30 bg-[#4FD1B5]/10 text-[#4FD1B5]">
                                                                                             cached
@@ -5334,6 +5592,26 @@ ${lastAssistant.content}${evidenceList}
                                         <div className="px-3.5 py-2 border-t border-white/[0.06] bg-white/[0.01] shrink-0">
                                             <div className={cn("flex items-center gap-1.5 flex-wrap", isChatExpanded && "max-w-[920px] mx-auto w-full")}>
                                                 {(() => {
+                                                    if (attachedImages.length > 0) {
+                                                        const imageStarters = [
+                                                            "What error is shown here?",
+                                                            "Where in this file is this UI implemented?",
+                                                            "How do I fix what's shown here?"
+                                                        ];
+                                                        return imageStarters.map((starter, sIdx) => (
+                                                            <button
+                                                                key={sIdx}
+                                                                onClick={() => {
+                                                                    setAskQ('');
+                                                                    askAI(starter);
+                                                                }}
+                                                                className="text-[11px] font-mono px-2.5 py-1 rounded-full border border-[#4FD1B5]/30 bg-[#4FD1B5]/[0.05] text-[#4FD1B5] hover:bg-[#4FD1B5]/15 hover:border-[#4FD1B5]/50 transition-colors cursor-pointer text-left"
+                                                            >
+                                                                {starter}
+                                                            </button>
+                                                        ));
+                                                    }
+
                                                     const lastAssistantMsg = [...chatMessages].reverse().find(m => m.role === 'assistant' && !m.isThinking);
                                                     if (chatMessages.length > 0 && lastAssistantMsg?.followups && lastAssistantMsg.followups.length > 0) {
                                                         return lastAssistantMsg.followups.slice(0, 3).map((f, fIdx) => (
@@ -5398,11 +5676,89 @@ ${lastAssistant.content}${evidenceList}
                                         {/* Composer - pinned at bottom */}
                                         <div className="p-3 border-t border-white/10 bg-white/[0.02] shrink-0">
                                             <div className={cn(isChatExpanded && "max-w-[920px] mx-auto w-full")}>
+                                                {attachedImages.length > 0 && (
+                                                    <div className="mb-2 flex items-center gap-2 flex-wrap">
+                                                        {attachedImages.map((img, idx) => (
+                                                            <div
+                                                                key={img.id || idx}
+                                                                className="relative group w-14 h-14 rounded-lg border border-white/20 bg-black/40 overflow-hidden flex items-center justify-center shrink-0"
+                                                            >
+                                                                <img
+                                                                    src={img.thumbUrl}
+                                                                    alt={img.name || `Image ${idx + 1}`}
+                                                                    className="w-full h-full object-cover"
+                                                                />
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        setAttachedImages(prev => prev.filter((_, i) => i !== idx));
+                                                                        setImageWarning(null);
+                                                                    }}
+                                                                    className="absolute top-0.5 right-0.5 p-0.5 rounded-full bg-black/70 hover:bg-red-500/80 text-white transition-colors cursor-pointer"
+                                                                    title="Remove image"
+                                                                >
+                                                                    <X size={10} />
+                                                                </button>
+                                                            </div>
+                                                        ))}
+                                                        <span className="text-[10px] text-[#8A918C] font-mono">
+                                                            {attachedImages.length}/3 attached
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                {imageWarning && (
+                                                    <div className="mb-2 text-[11px] text-amber-300 font-mono flex items-center gap-1.5">
+                                                        <ShieldAlert size={12} className="shrink-0" />
+                                                        <span>{imageWarning}</span>
+                                                    </div>
+                                                )}
                                                 <div className="flex items-end gap-2 glass-surface p-1.5 rounded-lg border-white/10 focus-within:border-[#4FD1B5]/60 focus-within:ring-1 focus-within:ring-[#4FD1B5]/40 transition-colors">
+                                                    <input
+                                                        ref={fileInputRef}
+                                                        type="file"
+                                                        accept="image/png,image/jpeg,image/webp"
+                                                        multiple
+                                                        className="hidden"
+                                                        onChange={e => {
+                                                            if (e.target.files) {
+                                                                handleAttachFiles(e.target.files);
+                                                                e.target.value = '';
+                                                            }
+                                                        }}
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => fileInputRef.current?.click()}
+                                                        className={cn(
+                                                            "p-1.5 rounded text-[#8A918C] hover:text-[#E8EAE6] hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0 mb-0.5",
+                                                            attachedImages.length >= 3 && "opacity-40 cursor-not-allowed"
+                                                        )}
+                                                        disabled={attachedImages.length >= 3}
+                                                        title="Attach image"
+                                                    >
+                                                        <Paperclip size={16} />
+                                                    </button>
                                                     <textarea
                                                         ref={textareaRef}
                                                         rows={1}
                                                         value={askQ}
+                                                        onPaste={e => {
+                                                            const items = e.clipboardData?.items;
+                                                            if (items) {
+                                                                const imageFiles: File[] = [];
+                                                                for (let i = 0; i < items.length; i++) {
+                                                                    const item = items[i];
+                                                                    if (item.type.startsWith('image/')) {
+                                                                        const file = item.getAsFile();
+                                                                        if (file) imageFiles.push(file);
+                                                                    }
+                                                                }
+                                                                if (imageFiles.length > 0) {
+                                                                    e.preventDefault();
+                                                                    handleAttachFiles(imageFiles);
+                                                                }
+                                                            }
+                                                        }}
                                                         onChange={e => {
                                                             setAskQ(e.target.value);
                                                             e.target.style.height = 'auto';
@@ -5414,7 +5770,7 @@ ${lastAssistant.content}${evidenceList}
                                                                     return;
                                                                 }
                                                                 e.preventDefault();
-                                                                if (!isStreaming && askQ.trim()) {
+                                                                if (!isStreaming && (askQ.trim() || attachedImages.length > 0)) {
                                                                     askAI();
                                                                 }
                                                             } else if (e.key === 'Escape') {
@@ -5426,8 +5782,12 @@ ${lastAssistant.content}${evidenceList}
                                                                 }
                                                             }
                                                         }}
-                                                        placeholder={`Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`}
-                                                        className="flex-1 bg-transparent px-3 py-1 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans resize-none max-h-[120px] scrollbar-custom leading-relaxed"
+                                                        placeholder={
+                                                            attachedImages.length > 0
+                                                                ? "Ask about attached image(s) (press Enter for default analysis)..."
+                                                                : `Ask about ${selectedSymbol?.name || (selectedFile ? selectedFile.split('/').pop() : 'the repository')}...`
+                                                        }
+                                                        className="flex-1 bg-transparent px-2 py-1 text-xs text-[#E8EAE6] placeholder:text-[#8A918C]/60 outline-none font-sans resize-none max-h-[120px] scrollbar-custom leading-relaxed"
                                                     />
                                                     {isStreaming ? (
                                                         <button
@@ -5443,7 +5803,7 @@ ${lastAssistant.content}${evidenceList}
                                                         <Button
                                                             onClick={() => askAI()}
                                                             className="px-3 py-1.5 text-xs shrink-0 mb-0.5"
-                                                            disabled={!askQ.trim() || isStreaming}
+                                                            disabled={(!askQ.trim() && attachedImages.length === 0) || isStreaming}
                                                         >
                                                             Send
                                                         </Button>
@@ -5524,6 +5884,30 @@ ${lastAssistant.content}${evidenceList}
                                         </div>
                                     )}
                                 </div>
+                                {lightboxImage && (
+                                    <div
+                                        className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm cursor-pointer"
+                                        onClick={() => setLightboxImage(null)}
+                                    >
+                                        <div
+                                            className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center"
+                                            onClick={e => e.stopPropagation()}
+                                        >
+                                            <button
+                                                onClick={() => setLightboxImage(null)}
+                                                className="absolute -top-10 right-0 p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-[#E8EAE6] transition-colors cursor-pointer"
+                                                title="Close (Esc)"
+                                            >
+                                                <X size={18} />
+                                            </button>
+                                            <img
+                                                src={lightboxImage}
+                                                alt="Enlarged preview"
+                                                className="max-w-full max-h-[85vh] object-contain rounded-lg border border-white/20 shadow-2xl"
+                                            />
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )
                     )}

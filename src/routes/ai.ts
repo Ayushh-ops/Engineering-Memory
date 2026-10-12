@@ -55,6 +55,47 @@ function parseAndTrimHistory(history: unknown): Array<{ role: string; content: s
     }));
 }
 
+export function validateImages(images: unknown): { valid: true; parsed?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }> } | { valid: false; message: string } {
+    if (images === undefined || images === null) {
+        return { valid: true, parsed: undefined };
+    }
+    if (!Array.isArray(images)) {
+        return { valid: false, message: "images must be an array." };
+    }
+    if (images.length > 3) {
+        return { valid: false, message: "A maximum of 3 images can be attached." };
+    }
+    const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
+    const MAX_BASE64_LENGTH = 3 * 1024 * 1024; // 3 MB of base64 text
+
+    const parsed: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }> = [];
+    for (let i = 0; i < images.length; i++) {
+        const item = images[i];
+        if (!item || typeof item !== "object") {
+            return { valid: false, message: `Image ${i + 1} is invalid.` };
+        }
+        const { mime, data } = item as { mime?: unknown; data?: unknown };
+        if (typeof mime !== "string" || !ALLOWED_MIMES.has(mime)) {
+            return { valid: false, message: `Image ${i + 1} has unsupported mime type. Supported: image/jpeg, image/png, image/webp.` };
+        }
+        if (typeof data !== "string" || data.trim().length === 0) {
+            return { valid: false, message: `Image ${i + 1} is missing data.` };
+        }
+        let cleanData = data;
+        if (cleanData.startsWith("data:")) {
+            const commaIndex = cleanData.indexOf(",");
+            if (commaIndex !== -1) {
+                cleanData = cleanData.slice(commaIndex + 1);
+            }
+        }
+        if (cleanData.length > MAX_BASE64_LENGTH) {
+            return { valid: false, message: `Image ${i + 1} exceeds 3 MB limit.` };
+        }
+        parsed.push({ mime: mime as "image/jpeg" | "image/png" | "image/webp", data: cleanData });
+    }
+    return { valid: true, parsed };
+}
+
 export function createAiRouter(
     service: AiAnswerService,
     repositoryService: Pick<RepositoryAiOrchestrationService, "answer"> & { streamAnswer?: RepositoryAiOrchestrationService["streamAnswer"] } = new RepositoryAiOrchestrationService(
@@ -70,13 +111,22 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners, mode, scope } = req.body as Record<string, unknown>;
+        const { repository, target, question, graph, limits, history, risk, dependents, recentCommits, owners, mode, scope, images } = req.body as Record<string, unknown>;
+
+        const imageValidation = validateImages(images);
+        if (!imageValidation.valid) {
+            return res.status(400).json({ error: imageValidation.message, code: "bad_request" });
+        }
 
         if (typeof repository !== "string" || repository.trim().length === 0) {
             return res.status(400).json({ error: "Repository is required." });
         }
 
-        if (typeof question !== "string" || question.trim().length === 0) {
+        const resolvedQuestion = typeof question === "string" && question.trim().length > 0
+            ? question.trim()
+            : (imageValidation.parsed && imageValidation.parsed.length > 0 ? "Explain the attached image(s) in the context of this repository." : "");
+
+        if (!resolvedQuestion) {
             return res.status(400).json({ error: "Question is required." });
         }
 
@@ -102,7 +152,7 @@ export function createAiRouter(
             const result = await service.answer({
                 repository: repository.trim(),
                 target: target as RepositoryContextTarget,
-                question: question.trim(),
+                question: resolvedQuestion,
                 graph: graph as Parameters<typeof service.answer>[0]["graph"],
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
@@ -112,14 +162,15 @@ export function createAiRouter(
                 recentCommits: Array.isArray(recentCommits) ? (recentCommits as any[]) : undefined,
                 owners,
                 mode: typeof mode === "string" ? (mode as any) : "detailed",
-                scope: typeof scope === "string" ? (scope as any) : "file"
+                scope: typeof scope === "string" ? (scope as any) : "file",
+                images: imageValidation.parsed
             });
 
             if (result.retryAfterSeconds) {
                 res.setHeader("Retry-After", String(result.retryAfterSeconds));
             }
 
-            return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
+            return res.status(result.status === "ok" ? 200 : result.status === "insufficient_context" ? 200 : (result.error?.code === "bad_request" || result.error?.code === "vision_unavailable") ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,
@@ -159,11 +210,25 @@ export function createAiRouter(
             return res.status(400).json({ error: "Malformed request body." });
         }
 
-        const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners, mode, scope } = req.body as Record<string, unknown>;
+        const { url, sha, paths, target, question, limits, history, risk, dependents, recentCommits, owners, mode, scope, images } = req.body as Record<string, unknown>;
         const parsedRepository = parseGitHubRepositoryUrl(url);
 
         if (!parsedRepository) {
             return res.status(400).json({ error: "A valid GitHub repository URL is required." });
+        }
+
+        const imageValidation = validateImages(images);
+        if (!imageValidation.valid) {
+            const isSseEarly = req.headers.accept?.includes("text/event-stream");
+            if (isSseEarly) {
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.write(`event: error\ndata: ${JSON.stringify({ code: "bad_request", message: imageValidation.message })}\n\n`);
+                res.end();
+                return;
+            }
+            return res.status(400).json({ error: imageValidation.message, code: "bad_request" });
         }
 
         if (typeof sha !== "string" || sha.trim().length === 0) {
@@ -182,7 +247,11 @@ export function createAiRouter(
             return res.status(400).json({ error: "Every path must be unique." });
         }
 
-        if (typeof question !== "string" || question.trim().length === 0) {
+        const resolvedQuestion = typeof question === "string" && question.trim().length > 0
+            ? question.trim()
+            : (imageValidation.parsed && imageValidation.parsed.length > 0 ? "Explain the attached image(s) in the context of this repository." : "");
+
+        if (!resolvedQuestion) {
             return res.status(400).json({ error: "Question is required." });
         }
 
@@ -220,7 +289,7 @@ export function createAiRouter(
                             sha: sha.trim(),
                             paths: (paths as string[]).map((path) => path.trim()),
                             target: target as RepositoryContextTarget,
-                            question: question.trim(),
+                            question: resolvedQuestion,
                             limits: limits as Parameters<typeof service.answer>[0]["limits"],
                             allowInsufficientContext: true,
                             history: parsedHistory,
@@ -229,7 +298,8 @@ export function createAiRouter(
                             recentCommits: parsedRecentCommits,
                             owners,
                             mode: parsedMode,
-                            scope: parsedScope
+                            scope: parsedScope,
+                            images: imageValidation.parsed
                         } as any,
                         (token: string) => {
                             sendEvent("token", { token });
@@ -242,7 +312,7 @@ export function createAiRouter(
                         sha: sha.trim(),
                         paths: (paths as string[]).map((path) => path.trim()),
                         target: target as RepositoryContextTarget,
-                        question: question.trim(),
+                        question: resolvedQuestion,
                         limits: limits as Parameters<typeof service.answer>[0]["limits"],
                         allowInsufficientContext: true,
                         history: parsedHistory,
@@ -251,7 +321,8 @@ export function createAiRouter(
                         recentCommits: parsedRecentCommits,
                         owners,
                         mode: parsedMode,
-                        scope: parsedScope
+                        scope: parsedScope,
+                        images: imageValidation.parsed
                     } as any);
                 }
 
@@ -298,7 +369,7 @@ export function createAiRouter(
                 sha: sha.trim(),
                 paths: (paths as string[]).map((path) => path.trim()),
                 target: target as RepositoryContextTarget,
-                question: question.trim(),
+                question: resolvedQuestion,
                 limits: limits as Parameters<typeof service.answer>[0]["limits"],
                 allowInsufficientContext: true,
                 history: parsedHistory,
@@ -307,14 +378,15 @@ export function createAiRouter(
                 recentCommits: parsedRecentCommits,
                 owners,
                 mode: parsedMode,
-                scope: parsedScope
+                scope: parsedScope,
+                images: imageValidation.parsed
             } as any);
 
             if (result.retryAfterSeconds) {
                 res.setHeader("Retry-After", String(result.retryAfterSeconds));
             }
 
-            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : result.error?.code === "bad_request" ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
+            return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : (result.error?.code === "bad_request" || result.error?.code === "vision_unavailable") ? 400 : result.error?.code === "invalid_api_key" ? 401 : (result.error?.code === "rate_limit" || result.error?.code === "rate_limited") ? 429 : result.error?.code === "model_not_found" ? 404 : 502).json({
                 status: result.status,
                 answer: result.answer,
                 citations: result.citations,

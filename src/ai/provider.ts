@@ -19,16 +19,22 @@ export interface LlmEvidence {
     snippet?: string;
 }
 
+export interface LlmImage {
+    mime: "image/jpeg" | "image/png" | "image/webp";
+    data: string;
+}
+
 export interface LlmUsedContext {
     files: number;
     commits: number;
     provider: string;
     model: string;
     cached: boolean;
+    images?: number;
 }
 
 export interface LlmProviderError {
-    code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context";
+    code: "bad_request" | "missing_api_key" | "invalid_api_key" | "rate_limit" | "rate_limited" | "model_not_found" | "provider_unavailable" | "timeout" | "oversized_context" | "malformed_response" | "invalid_question" | "invalid_graph" | "insufficient_context" | "vision_unavailable";
     message: string;
 }
 
@@ -64,6 +70,7 @@ export interface LlmRequest {
     };
     mode?: LlmMode;
     scope?: LlmScope;
+    images?: LlmImage[];
 }
 
 export interface LlmProvider {

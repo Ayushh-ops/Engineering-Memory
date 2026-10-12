@@ -9,7 +9,7 @@ import { detectLang, getLanguageDirective, getSystemInstructions } from "./promp
 
 export interface OpenAIMessage {
     role: "system" | "user" | "assistant";
-    content: string;
+    content: string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }>;
 }
 
 export interface OpenAIChatCompletionResponse {
@@ -203,7 +203,24 @@ export class OpenAIProvider implements LlmProvider {
         return lower.includes("gpt-oss");
     }
 
-    private async getCandidates(config: OpenAIConfig): Promise<ProviderCandidate[]> {
+    private async getCandidates(config: OpenAIConfig, hasImages = false): Promise<ProviderCandidate[]> {
+        if (hasImages) {
+            if (!config.fallbackApiKey) {
+                return [];
+            }
+            const fallbackBase = config.fallbackBaseUrl || "https://generativelanguage.googleapis.com/v1beta/openai/";
+            let fallbackModel = config.fallbackModel;
+            if (!fallbackModel) {
+                fallbackModel = await discoverGeminiModel(fallbackBase, config.fallbackApiKey);
+            }
+            return [{
+                provider: "fallback",
+                apiKey: config.fallbackApiKey,
+                baseUrl: fallbackBase,
+                model: fallbackModel
+            }];
+        }
+
         const chain: ProviderCandidate[] = [];
         const primaryModel = config.model || "openai/gpt-oss-120b";
 
@@ -309,7 +326,8 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
-        const instructions = getSystemInstructions(request.mode, request.instructions);
+        const hasImages = Boolean(request.images && request.images.length > 0);
+        const instructions = getSystemInstructions(request.mode, request.instructions, hasImages);
 
         const messages: OpenAIMessage[] = [
             {
@@ -346,10 +364,28 @@ export class OpenAIProvider implements LlmProvider {
             ? userPayload
             : `${userPayload}\n\n${directive}`;
 
-        messages.push({
-            role: "user",
-            content: finalUserContent
-        });
+        if (hasImages && request.images) {
+            const userContentParts: Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> = [
+                { type: "text", text: finalUserContent }
+            ];
+            for (const img of request.images) {
+                userContentParts.push({
+                    type: "image_url",
+                    image_url: {
+                        url: `data:${img.mime};base64,${img.data}`
+                    }
+                });
+            }
+            messages.push({
+                role: "user",
+                content: userContentParts
+            });
+        } else {
+            messages.push({
+                role: "user",
+                content: finalUserContent
+            });
+        }
 
         return messages;
     }
@@ -371,8 +407,22 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
+        const hasImages = Boolean(request.images && request.images.length > 0);
+        if (hasImages && !config.fallbackApiKey) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "vision_unavailable",
+                    message: "Image analysis needs the fallback provider key"
+                }
+            };
+        }
+
         const messages = this.buildMessages(request);
-        const candidates = await this.getCandidates(config);
+        const candidates = await this.getCandidates(config, hasImages);
         const timeoutMs = config.timeoutMs || 20000;
 
         let hadRateLimit = false;
@@ -421,7 +471,8 @@ export class OpenAIProvider implements LlmProvider {
                             commits: commitsCount,
                             provider: candidate.provider,
                             model: candidate.model,
-                            cached: false
+                            cached: false,
+                            images: request.images ? request.images.length : 0
                         }
                     };
                 } else {
@@ -490,8 +541,22 @@ export class OpenAIProvider implements LlmProvider {
             };
         }
 
+        const hasImages = Boolean(request.images && request.images.length > 0);
+        if (hasImages && !config.fallbackApiKey) {
+            return {
+                status: "error",
+                answer: "",
+                citations: [],
+                confidence: "low",
+                error: {
+                    code: "vision_unavailable",
+                    message: "Image analysis needs the fallback provider key"
+                }
+            };
+        }
+
         const messages = this.buildMessages(request);
-        const candidates = await this.getCandidates(config);
+        const candidates = await this.getCandidates(config, hasImages);
         const timeoutMs = config.timeoutMs || 20000;
 
         let hadRateLimit = false;
@@ -589,7 +654,8 @@ export class OpenAIProvider implements LlmProvider {
                         commits: commitsCount,
                         provider: candidate.provider,
                         model: candidate.model,
-                        cached: false
+                        cached: false,
+                        images: request.images ? request.images.length : 0
                     }
                 };
             } catch {

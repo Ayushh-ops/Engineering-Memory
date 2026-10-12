@@ -14,7 +14,7 @@ import {
 } from "./config";
 import { OpenAIProvider, StreamDelimiterFilter } from "./openai-provider";
 import { createLlmProviderFromEnvironment } from "./provider-factory";
-import { createAiRouter } from "../routes/ai";
+import { createAiRouter, validateImages } from "../routes/ai";
 import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
 import type { AiAnswerResult } from "./answer-service";
 import {
@@ -1116,6 +1116,144 @@ async function main(): Promise<void> {
         shortInstructions?.some((inst) => inst.includes("maximum 4 bullets")),
         "Expected mode instruction for 'short' mode"
     );
+
+    // 6. Image attachment tests
+    // 6a. Validation: >3 images rejected, oversize rejected
+    const validFourImages = [
+        { mime: "image/png", data: "aGVsbG8=" },
+        { mime: "image/png", data: "aGVsbG8=" },
+        { mime: "image/png", data: "aGVsbG8=" },
+        { mime: "image/png", data: "aGVsbG8=" }
+    ];
+    const validationOverCount = validateImages(validFourImages);
+    assert.equal(validationOverCount.valid, false);
+    assert.ok(validationOverCount.message.includes("maximum of 3"));
+
+    const oversizeImage = [
+        { mime: "image/png", data: "a".repeat(3 * 1024 * 1024 + 10) }
+    ];
+    const validationOversize = validateImages(oversizeImage);
+    assert.equal(validationOversize.valid, false);
+    assert.ok(validationOversize.message.includes("exceeds 3 MB limit"));
+
+    // 6b. Vision unavailable without fallback key
+    const noFallbackConfig = {
+        apiKey: "primary-key",
+        baseUrl: "https://api.groq.com/openai/v1",
+        model: "llama-3.3-70b-versatile",
+        fallbackApiKey: "",
+        fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+        fallbackModel: "gemini-2.5-flash"
+    };
+    const noFallbackProvider = new OpenAIProvider(noFallbackConfig);
+    const visionUnavailableRes = await noFallbackProvider.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "Analyze this image",
+        facts: { files: [{ path: "src/auth.ts" }], commits: [] },
+        images: [{ mime: "image/png", data: "aGVsbG8=" }]
+    });
+    assert.equal(visionUnavailableRes.status, "error");
+    assert.equal(visionUnavailableRes.error?.code, "vision_unavailable");
+
+    // 6c. Vision routing: with images, only fallback provider is called and body has image_url parts
+    const originalFetchForVision = globalThis.fetch;
+    const visionFetchCalls: Array<{ url: string; body: any }> = [];
+    try {
+        globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+            const bodyStr = init?.body ? String(init.body) : "{}";
+            const parsedBody = JSON.parse(bodyStr);
+            visionFetchCalls.push({ url: String(input), body: parsedBody });
+            return new Response(JSON.stringify({
+                choices: [{
+                    message: {
+                        content: "Vision analysis successful."
+                    }
+                }],
+                model: "gemini-2.5-flash"
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }) as typeof fetch;
+
+        const visionConfig = {
+            apiKey: "primary-key",
+            baseUrl: "https://api.groq.com/openai/v1",
+            model: "llama-3.3-70b-versatile",
+            fallbackApiKey: "fallback-gemini-key",
+            fallbackBaseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+            fallbackModel: "gemini-2.5-flash"
+        };
+        const visionProvider = new OpenAIProvider(visionConfig);
+        const visionRes = await visionProvider.answer({
+            repository: "example/repository",
+            target: { type: "file", path: "src/auth.ts" },
+            question: "Look at this screenshot",
+            facts: { files: [{ path: "src/auth.ts" }], commits: [] },
+            images: [{ mime: "image/png", data: "aGVsbG8=" }]
+        });
+
+        assert.equal(visionRes.status, "ok");
+        assert.equal(visionRes.answer, "Vision analysis successful.");
+        assert.equal(visionRes.usedContext?.model, "gemini-2.5-flash");
+        assert.equal(visionRes.usedContext?.images, 1);
+        assert.equal(visionFetchCalls.length, 1);
+        assert.ok(visionFetchCalls[0].url.includes("generativelanguage.googleapis.com"));
+        const userMsg = visionFetchCalls[0].body.messages.find((m: any) => m.role === "user");
+        assert.ok(Array.isArray(userMsg.content), "User message content should be an array");
+        const imgPart = userMsg.content.find((p: any) => p.type === "image_url");
+        assert.ok(imgPart, "Expected image_url part in user content");
+        assert.equal(imgPart.image_url.url, "data:image/png;base64,aGVsbG8=");
+    } finally {
+        globalThis.fetch = originalFetchForVision;
+    }
+
+    // 6d. No caching for image requests
+    const imageCachingProvider = new FakeLlmProvider({
+        status: "ok",
+        answer: "Image response.",
+        citations: [],
+        confidence: "high"
+    });
+    const imageAnswerService = new AiAnswerService(imageCachingProvider);
+    const imgReq = {
+        repository: "example/repository",
+        target: { type: "file" as const, path: "src/auth.ts" },
+        question: "Explain this diagram",
+        graph,
+        allowInsufficientContext: true,
+        images: [{ mime: "image/png" as const, data: "aGVsbG8=" }]
+    };
+    const imgRes1 = await imageAnswerService.answer(imgReq);
+    assert.equal(imgRes1.status, "ok");
+    assert.equal(imgRes1.usedContext?.cached, false);
+    assert.equal(imageCachingProvider.calls.length, 1);
+
+    const imgRes2 = await imageAnswerService.answer(imgReq);
+    assert.equal(imgRes2.status, "ok");
+    assert.equal(imgRes2.usedContext?.cached, false);
+    assert.equal(imageCachingProvider.calls.length, 2);
+
+    // 6e. Base64 never appears in stored history / history sent to provider
+    const imgHistoryReq = {
+        repository: "example/repository",
+        target: { type: "file" as const, path: "src/auth.ts" },
+        question: "Follow-up question",
+        graph,
+        allowInsufficientContext: true,
+        history: [
+            { role: "user" as const, content: "Look at data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" },
+            { role: "assistant" as const, content: "Got the image" }
+        ]
+    };
+    await imageAnswerService.answer(imgHistoryReq);
+    const lastCall = imageCachingProvider.calls[imageCachingProvider.calls.length - 1];
+    const sanitizedHistory = lastCall.history;
+    assert.ok(sanitizedHistory, "Expected history in call");
+    for (const h of sanitizedHistory) {
+        assert.ok(!h.content.includes(";base64,"), "Base64 data should be sanitized from history");
+        if (h.role === "user") {
+            assert.ok(h.content.includes("[image attached]"), "Marker [image attached] should replace image data");
+        }
+    }
 
     console.log("AI fixtures passed");
 }
