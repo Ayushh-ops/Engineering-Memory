@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
+    "build:all": "npm run build && npm --prefix frontend ci && npm --prefix frontend run build",
     "start": "node dist/index.js",
     "test:graph": "npm run build && node dist/graph/repository-graph.test.js",
     "test:history": "npm run build && node dist/analyzers/typescript-history.test.js",
@@ -17,7 +18,7 @@
     "test:impact-context": "npm run build && node dist/ai/impact-context.test.js",
     "test:impact-api": "npm run build && node dist/routes/impact.test.js",
     "test:health": "npm run build && node dist/routes/health.test.js",
-    "test": "npm run build && node dist/ai/impact-context.test.js && node dist/ai/consistency-validator.test.js && node dist/ai/ai.test.js && node dist/analyzers/typescript-history.test.js && node dist/analyzers/registry.test.js && node dist/analyzers/python.test.js && node dist/analyzers/java.test.js && node dist/analyzers/go.test.js && node dist/analyzers/cpp.test.js && node dist/github/client.test.js && node dist/github/repository-file-client.test.js && node dist/graph/call-site-evidence.test.js && node dist/graph/repository-context.test.js && node dist/graph/repository-graph.test.js && node dist/graph/repository-query.test.js && node dist/routes/health.test.js && node dist/routes/impact.test.js && node dist/routes/repositories.test.js && node dist/services/change-impact-analysis-service.test.js && node dist/services/question-context-planner.test.js && node dist/services/repository-ai-orchestration-service.test.js && node dist/services/repository-analysis-service.test.js && node dist/services/repository-context-expansion-service.test.js && node dist/services/repository-source-evidence-service.test.js && node dist/routes/release.test.js"
+    "test": "npm run build && node dist/ai/impact-context.test.js && node dist/ai/consistency-validator.test.js && node dist/ai/ai.test.js && node dist/analyzers/typescript-history.test.js && node dist/analyzers/registry.test.js && node dist/analyzers/python.test.js && node dist/analyzers/java.test.js && node dist/analyzers/go.test.js && node dist/analyzers/cpp.test.js && node dist/github/client.test.js && node dist/github/repository-file-client.test.js && node dist/graph/call-site-evidence.test.js && node dist/graph/repository-context.test.js && node dist/graph/repository-graph.test.js && node dist/graph/repository-query.test.js && node dist/routes/health.test.js && node dist/routes/impact.test.js && node dist/routes/repositories.test.js && node dist/services/change-impact-analysis-service.test.js && node dist/services/question-context-planner.test.js && node dist/services/repository-ai-orchestration-service.test.js && node dist/services/repository-analysis-service.test.js && node dist/services/repository-context-expansion-service.test.js && node dist/services/repository-source-evidence-service.test.js && node dist/routes/release.test.js && node dist/routes/production.test.js"
   },
   "keywords": [],
   "author": "",

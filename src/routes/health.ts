@@ -11,6 +11,10 @@ router.get("/health", (req: Request, res: Response) => {
     });
 });
 
+router.get("/healthz", (_req: Request, res: Response) => {
+    res.status(200).json({ ok: true });
+});
+
 export interface HealthSummaryResult {
     circularImports: string[][];
     unusedFiles: string[];

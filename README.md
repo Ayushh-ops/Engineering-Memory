@@ -65,6 +65,27 @@ An integrated AI assistant answers questions grounded in code structure, commits
 3. Explore the visual graph, file tree, commit logs, risk levels, and blast radius.
 4. Use Ask AI to investigate dependencies, understand impact, and inspect file details.
 
+## Deploy
+
+Engineering Memory can be deployed as a single unified service where Express serves the compiled frontend SPA and backend API.
+
+### Render
+
+1. Create a new **Web Service** and connect your repository.
+2. Set the build and start commands:
+   - **Build Command**: `npm install && npm run build:all`
+   - **Start Command**: `npm start`
+3. Add environment variables in the host dashboard (names only):
+   - `NODE_ENV=production`
+   - `GITHUB_TOKEN` (optional)
+   - `LLM_API_KEY` (optional)
+   - `LLM_BASE_URL` (optional)
+   - `LLM_MODEL` (optional)
+   - `LLM_FALLBACK_API_KEY` (optional)
+   - `LLM_FALLBACK_MODEL` (optional)
+
+All keys and credentials must be set only in the host dashboard. Note that free host instances sleep after periods of inactivity and take a moment to wake on the first request.
+
 ## Troubleshooting
 
 | Issue | Cause | Solution |

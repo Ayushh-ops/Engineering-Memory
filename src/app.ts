@@ -1,3 +1,5 @@
+import path from "node:path";
+import fs from "node:fs";
 import express, { Application, Request, Response, NextFunction } from "express";
 import { AiAnswerService } from "./ai/answer-service";
 import { createLlmProviderFromEnvironment } from "./ai/provider-factory";
@@ -6,9 +8,35 @@ import analysisRouter from "./routes/analysis";
 import healthRouter from "./routes/health";
 import { createImpactRouter } from "./routes/impact";
 import repositoriesRouter from "./routes/repositories";
+import { createRateLimiter } from "./middleware/rate-limiter";
 
 const app: Application = express();
+app.set("trust proxy", 1);
+
 const aiService = new AiAnswerService(createLlmProviderFromEnvironment());
+
+// Health check endpoint (GET /healthz)
+app.get("/healthz", (_req: Request, res: Response) => {
+    res.status(200).json({ ok: true });
+});
+
+// In-memory rate limiting abuse protection:
+// 20 requests/minute on /api/ai/*, 10/minute on analyze routes
+const aiRateLimiter = createRateLimiter({ maxRequests: 20, windowMs: 60_000 });
+const analyzeRateLimiter = createRateLimiter({ maxRequests: 10, windowMs: 60_000 });
+
+app.use("/api/ai", aiRateLimiter);
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const pathname = req.originalUrl ? req.originalUrl.split("?")[0] : req.path;
+    if (
+        pathname === "/api/analyze" ||
+        pathname.startsWith("/api/analyze/") ||
+        pathname.startsWith("/api/repositories/analyze")
+    ) {
+        return analyzeRateLimiter(req, res, next);
+    }
+    next();
+});
 
 // Mount specific body parsers before default parser
 const graphPaths = [
@@ -28,6 +56,32 @@ app.use("/api", healthRouter);
 app.use("/api", repositoriesRouter);
 app.use("/api", createImpactRouter());
 app.use("/api", createAiRouter(aiService));
+
+// Return JSON 404 for unhandled /api routes
+app.use("/api", (req: Request, res: Response) => {
+    res.status(404).json({
+        status: "error",
+        code: "not_found",
+        message: `Endpoint ${req.method} ${req.originalUrl || req.url} not found`
+    });
+});
+
+// Production static serving & SPA fallback
+if (process.env.NODE_ENV === "production") {
+    const frontendDist = path.resolve(__dirname, "../frontend/dist");
+    app.use(express.static(frontendDist));
+    app.use((req: Request, res: Response, next: NextFunction) => {
+        if (req.method !== "GET" || req.path.startsWith("/api")) {
+            return next();
+        }
+        const indexHtml = path.join(frontendDist, "index.html");
+        if (fs.existsSync(indexHtml)) {
+            res.sendFile(indexHtml);
+        } else {
+            next();
+        }
+    });
+}
 
 // Global error handler - ensures all errors are returned as JSON
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
@@ -56,4 +110,3 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
 });
 
 export default app;
-
