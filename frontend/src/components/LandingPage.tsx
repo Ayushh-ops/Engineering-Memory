@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { ShieldAlert } from 'lucide-react';
-import { api } from '../api';
+import { useNavigate } from 'react-router-dom';
 import { useAppStore } from '../store';
-import { selectRepoStats } from '../graph-helpers';
 import { parseGitHubRepoInput } from '../repo-url';
+import { clearSessionSnapshot } from '../session-snapshot';
 
 const LOADING_STEPS = [
     'Cloning repository',
@@ -31,23 +31,23 @@ function formatRecentTime(ts?: number): string {
 }
 
 export function LandingPage() {
+    const navigate = useNavigate();
     const [url, setUrl] = useState('');
     const [error, setError] = useState('');
-    const [loading, setLoading] = useState(false);
-    const [loadingStep, setLoadingStep] = useState(0);
-    const [loadingPercent, setLoadingPercent] = useState<number | null>(null);
-    const [analyzingTarget, setAnalyzingTarget] = useState('');
-    const [analysisError, setAnalysisError] = useState<{
-        title: string;
-        message: string;
-        code?: string;
-    } | null>(null);
-    const [isTimedOut, setIsTimedOut] = useState(false);
-    const [lastTargetUrl, setLastTargetUrl] = useState('');
-    const abortControllerRef = useRef<AbortController | null>(null);
-    const timeoutIdRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [recent, setRecent] = useState<RecentItem[]>([]);
-    const { setRepoUrl, setMeta, setCommits } = useAppStore();
+    const {
+        isAnalyzing: loading,
+        analyzeStep: loadingStep,
+        analyzePercent: loadingPercent,
+        analyzingTarget,
+        analysisError,
+        isTimedOut,
+        lastTargetUrl,
+        runAnalyze,
+        cancelAnalyze,
+        setAnalysisError,
+        setRepoUrl
+    } = useAppStore();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
     useEffect(() => {
@@ -429,165 +429,12 @@ export function LandingPage() {
     };
 
     const handleCancel = () => {
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-            abortControllerRef.current = null;
-        }
-        if (timeoutIdRef.current) {
-            clearTimeout(timeoutIdRef.current);
-            timeoutIdRef.current = null;
-        }
-        setLoading(false);
-        setIsTimedOut(false);
-        setAnalysisError(null);
+        cancelAnalyze();
     };
 
     const handleAnalyze = async (repoUrlToAnalyze: string) => {
         if (!repoUrlToAnalyze) return;
-        setLastTargetUrl(repoUrlToAnalyze);
-        setAnalysisError(null);
-        setIsTimedOut(false);
-
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-        }
-        if (timeoutIdRef.current) {
-            clearTimeout(timeoutIdRef.current);
-        }
-
-        const controller = new AbortController();
-        abortControllerRef.current = controller;
-
-        timeoutIdRef.current = setTimeout(() => {
-            setIsTimedOut(true);
-        }, 90000);
-
-        setAnalyzingTarget(repoUrlToAnalyze.replace('https://github.com/', ''));
-        setLoading(true);
-        setLoadingStep(0);
-        setLoadingPercent(null);
-
-        let receivedProgress = false;
-        const stepInterval = setInterval(() => {
-            if (!receivedProgress) {
-                setLoadingStep((prev) => (prev < 3 ? prev + 1 : prev));
-            }
-        }, 600);
-
-        const onProgress = (stage: string, percent: number) => {
-            receivedProgress = true;
-            setLoadingPercent(percent);
-            const stepIdx = LOADING_STEPS.indexOf(stage);
-            if (stepIdx !== -1) {
-                setLoadingStep(stepIdx);
-            }
-        };
-
-        try {
-            const state = useAppStore.getState();
-            const cache = state.repoCache[repoUrlToAnalyze] || {};
-
-            let meta = cache.meta;
-            if (!meta) {
-                meta = await api.repositories.getMeta(repoUrlToAnalyze, controller.signal);
-                state.repoCache[repoUrlToAnalyze] = { ...state.repoCache[repoUrlToAnalyze], meta };
-            }
-
-            let commits = cache.commits;
-            if (!commits) {
-                const commitData = await api.repositories.getCommits(repoUrlToAnalyze, null, undefined, controller.signal);
-                commits = commitData.commits;
-                state.repoCache[repoUrlToAnalyze] = { ...state.repoCache[repoUrlToAnalyze], commits };
-            }
-
-            let headSha = null;
-            let treeFilesResult: string[] = [];
-            if (commits && commits.length > 0) {
-                headSha = commits[0].sha;
-                let cachedTree = cache.trees?.[headSha];
-                if (!cachedTree) {
-                    const treeRes = await api.repositories.getTree(repoUrlToAnalyze, headSha, controller.signal);
-                    cachedTree = treeRes.files;
-                    state.repoCache[repoUrlToAnalyze] = {
-                        ...(state.repoCache[repoUrlToAnalyze] || {}),
-                        trees: { ...(state.repoCache[repoUrlToAnalyze]?.trees || {}), [headSha]: cachedTree }
-                    };
-                }
-                treeFilesResult = cachedTree;
-
-                // Pre-analyze root / top code files using real SSE progress
-                const firstCodeFile = treeFilesResult.find((f: string) => {
-                    const lower = f.toLowerCase();
-                    return ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.cpp'].some((ext) => lower.endsWith(ext));
-                });
-                if (firstCodeFile) {
-                    const { getPathsToAnalyze } = await import('../analyze-helpers');
-                    const paths = getPathsToAnalyze(treeFilesResult, firstCodeFile);
-                    const cacheKey = paths.slice().sort().join('|');
-                    let cachedGraph = state.repoCache[repoUrlToAnalyze]?.graphs?.[cacheKey];
-                    if (!cachedGraph) {
-                        const data = await api.repositories.analyzeStream(repoUrlToAnalyze, headSha, paths, onProgress, controller.signal);
-                        cachedGraph = data.graph;
-                        state.repoCache[repoUrlToAnalyze] = {
-                            ...(state.repoCache[repoUrlToAnalyze] || {}),
-                            graphs: { ...(state.repoCache[repoUrlToAnalyze]?.graphs || {}), [cacheKey]: cachedGraph }
-                        };
-                    }
-                    if (cachedGraph) {
-                        useAppStore.getState().setGraph(cachedGraph);
-                        const stats = selectRepoStats({ graph: cachedGraph, treeFiles: treeFilesResult, commits });
-                        useAppStore.getState().cacheShaAnalysis(repoUrlToAnalyze, headSha, cachedGraph, stats);
-                    }
-                }
-            }
-
-            // Sync synchronously to state
-            saveRecent(repoUrlToAnalyze);
-            setMeta(meta!);
-            setCommits(commits);
-            if (headSha) useAppStore.getState().setSelectedSha(headSha);
-            if (treeFilesResult.length > 0) useAppStore.getState().setTreeFiles(treeFilesResult);
-
-            clearInterval(stepInterval);
-            if (timeoutIdRef.current) {
-                clearTimeout(timeoutIdRef.current);
-                timeoutIdRef.current = null;
-            }
-            setLoadingStep(3);
-            setLoadingPercent(100);
-
-            setTimeout(() => {
-                setRepoUrl(repoUrlToAnalyze);
-            }, 300);
-        } catch (e: any) {
-            clearInterval(stepInterval);
-            if (timeoutIdRef.current) {
-                clearTimeout(timeoutIdRef.current);
-                timeoutIdRef.current = null;
-            }
-            setLoading(false);
-            if (controller.signal.aborted || e?.name === 'AbortError' || e?.message === 'Analysis was cancelled') {
-                return;
-            }
-            console.error('Failed to analyze repository:', e);
-            const code = e?.code || (e?.status === 404 ? 'repo_not_found' : e?.status === 401 ? 'github_auth_failed' : e?.status === 403 ? 'github_rate_limited' : undefined);
-            const title = getErrorTitle(code);
-            let message = e?.message || 'Failed to analyze repository.';
-            if (code === 'repo_not_found') {
-                message = 'Repository not found. Check the URL, or it may be private.';
-            } else if (code === 'github_auth_failed') {
-                message = 'The GitHub token is invalid. Check GITHUB_TOKEN in .env.';
-            } else if (code === 'github_unreachable') {
-                message = 'Cannot reach GitHub. Check your internet connection.';
-            } else if (code === 'repo_empty') {
-                message = 'No supported source files found in this repository.';
-            }
-            setAnalysisError({
-                code,
-                title,
-                message
-            });
-        }
+        runAnalyze(repoUrlToAnalyze);
     };
 
     const handleCtaClick = () => {
@@ -715,8 +562,11 @@ export function LandingPage() {
                                     <button
                                         type="button"
                                         onClick={() => {
+                                            clearSessionSnapshot();
                                             setAnalysisError(null);
                                             setError('');
+                                            setRepoUrl('');
+                                            navigate('/');
                                         }}
                                         className="text-xs text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-pointer underline"
                                     >

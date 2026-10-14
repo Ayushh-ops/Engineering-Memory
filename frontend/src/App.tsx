@@ -14,6 +14,14 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 export default function App() {
     const { repoUrl, activeTab } = useAppStore();
 
+    useEffect(() => {
+        const handleRejection = (e: PromiseRejectionEvent) => {
+            console.error('Unhandled promise rejection:', e.reason);
+        };
+        window.addEventListener('unhandledrejection', handleRejection);
+        return () => window.removeEventListener('unhandledrejection', handleRejection);
+    }, []);
+
     return (
         <>
             <RouteSync />

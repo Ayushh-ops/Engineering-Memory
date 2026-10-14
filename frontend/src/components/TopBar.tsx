@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useAppStore } from '../store';
-import { api } from '../api';
 import { GitBranch, X, ChevronLeft, ChevronRight, Menu, Search, Home } from 'lucide-react';
 import { cn } from '../ui';
 import { useNavigate } from 'react-router-dom';
 import { useResponsive } from '../useMediaQuery';
+import { clearSessionSnapshot } from '../session-snapshot';
 
 export function TopBar() {
     const {
@@ -18,23 +18,20 @@ export function TopBar() {
         setImpactResult,
         setGraph,
         setTreeFiles,
-        history,
-        historyIndex,
-        goBack,
-        goForward,
+        canBack,
+        canForward,
+        isAnalyzing: loading,
+        runAnalyze,
         setCommandPaletteOpen,
         mobileNavOpen,
         setMobileNavOpen
     } = useAppStore();
     const { isPhone, isDesktop } = useResponsive();
     const [inputVal, setInputVal] = useState(repoUrl);
-    const [loading, setLoading] = useState(false);
     const navigate = useNavigate();
 
-    const canBack = historyIndex > 0;
-    const canForward = historyIndex < history.length - 1;
-
     const handleHomeClick = () => {
+        clearSessionSnapshot();
         setRepoUrl('');
         setSelectedSha(null);
         setSelectedFile(null);
@@ -50,56 +47,7 @@ export function TopBar() {
 
     const handleAnalyze = async () => {
         if (!inputVal) return;
-        setLoading(true);
-        try {
-            console.log("Analyzing repo:", inputVal);
-            const state = useAppStore.getState();
-            const cache = state.repoCache[inputVal] || {};
-
-            let meta = cache.meta;
-            if (!meta) {
-                meta = await api.repositories.getMeta(inputVal);
-                state.repoCache[inputVal] = { ...state.repoCache[inputVal], meta };
-            }
-
-            try {
-                const stored = localStorage.getItem('engineering_memory_history');
-                const recent = stored ? JSON.parse(stored) : [];
-                const updated = [inputVal, ...recent.filter((r: string) => r !== inputVal)].slice(0, 8);
-                localStorage.setItem('engineering_memory_history', JSON.stringify(updated));
-            } catch (e) { }
-
-            let commits = cache.commits;
-            if (!commits) {
-                const commitData = await api.repositories.getCommits(inputVal);
-                commits = commitData.commits;
-                state.repoCache[inputVal] = { ...state.repoCache[inputVal], commits };
-            }
-
-            let headSha = null;
-            let treeFilesResult: string[] = [];
-            if (commits && commits.length > 0) {
-                headSha = commits[0].sha;
-                let cachedTree = cache.trees?.[headSha];
-                if (!cachedTree) {
-                    const treeRes = await api.repositories.getTree(inputVal, headSha);
-                    cachedTree = treeRes.files;
-                    state.repoCache[inputVal] = { ...state.repoCache[inputVal], trees: { ...(state.repoCache[inputVal]?.trees || {}), [headSha]: cachedTree } };
-                }
-                treeFilesResult = cachedTree;
-            }
-
-            setMeta(meta!);
-            setCommits(commits);
-            if (headSha) useAppStore.getState().setSelectedSha(headSha);
-            if (treeFilesResult.length > 0) useAppStore.getState().setTreeFiles(treeFilesResult);
-
-            setRepoUrl(inputVal);
-        } catch (e: any) {
-            console.error("Failed to fetch repo", e);
-        } finally {
-            setLoading(false);
-        }
+        runAnalyze(inputVal);
     };
 
     return (
@@ -119,28 +67,30 @@ export function TopBar() {
 
                 <div className="flex items-center gap-1 sm:gap-1.5">
                     <button
-                        onClick={goBack}
+                        onClick={() => window.history.back()}
                         disabled={!canBack}
                         className={cn(
                             "w-8 h-8 rounded-lg flex items-center justify-center transition-colors border shrink-0",
                             canBack
                                 ? "bg-[#15302A] border-[#2F6B5E] text-[#4FD1B5] hover:bg-[#1D4038] hover:border-[#4FD1B5] cursor-pointer"
-                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 cursor-not-allowed"
+                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 opacity-45 cursor-not-allowed hover:bg-[#171D1E]"
                         )}
                         title="Back"
+                        aria-label="Back"
                     >
                         <ChevronLeft size={16} />
                     </button>
                     <button
-                        onClick={goForward}
+                        onClick={() => window.history.forward()}
                         disabled={!canForward}
                         className={cn(
                             "w-8 h-8 rounded-lg flex items-center justify-center transition-colors border shrink-0",
                             canForward
                                 ? "bg-[#15302A] border-[#2F6B5E] text-[#4FD1B5] hover:bg-[#1D4038] hover:border-[#4FD1B5] cursor-pointer"
-                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 cursor-not-allowed"
+                                : "bg-[#171D1E] border-white/[0.04] text-[#8A918C]/40 opacity-45 cursor-not-allowed hover:bg-[#171D1E]"
                         )}
                         title="Forward"
+                        aria-label="Forward"
                     >
                         <ChevronRight size={16} />
                     </button>

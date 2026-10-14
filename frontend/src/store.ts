@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { RepositoryGraph, RepositoryMetadata, CommitMetadata, ImpactTarget, AskMode, AskScope, AskEvidenceItem, AskUsedContext } from './api';
 import { api } from './api';
 import { getPathsToAnalyze, isFileInGraph, isCodeFile } from './analyze-helpers';
-import type { RepoStats } from './graph-helpers';
+import { selectRepoStats, type RepoStats } from './graph-helpers';
 
 export interface AttachedImage {
     id: string;
@@ -209,7 +209,25 @@ export interface AppState {
     }>;
     cacheShaAnalysis: (url: string, sha: string, graph: RepositoryGraph, stats: RepoStats) => void;
 
+    // Centralized analyze flow
+    isAnalyzing: boolean;
+    analyzingTarget: string;
+    analyzeStep: number;
+    analyzePercent: number | null;
+    analysisError: { title: string; message: string; code?: string } | null;
+    isTimedOut: boolean;
+    lastTargetUrl: string;
+    abortController: AbortController | null;
+    runAnalyze: (url: string, targetSha?: string | null, targetFile?: string | null, targetTab?: string | null) => Promise<boolean>;
+    cancelAnalyze: () => void;
+    setAnalysisError: (err: { title: string; message: string; code?: string } | null) => void;
+
     // Custom History Navigation
+    historyIdx: number;
+    historyMaxIdx: number;
+    canBack: boolean;
+    canForward: boolean;
+    setHistoryIndices: (idx: number, maxIdx: number) => void;
     history: { url: string, sha: string | null, file: string | null, tab: string }[];
     historyIndex: number;
     pushHistory: (snap: { url: string, sha: string | null, file: string | null, tab: string }) => void;
@@ -380,6 +398,223 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
     }),
 
+    // Centralized analyze flow
+    isAnalyzing: false,
+    analyzingTarget: '',
+    analyzeStep: 0,
+    analyzePercent: null,
+    analysisError: null,
+    isTimedOut: false,
+    lastTargetUrl: '',
+    abortController: null,
+
+    runAnalyze: async (urlToAnalyze: string, targetSha?: string | null, targetFile?: string | null, targetTab?: string | null) => {
+        if (!urlToAnalyze) return false;
+
+        const existingCtrl = get().abortController;
+        if (existingCtrl) {
+            existingCtrl.abort();
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+            set({ isTimedOut: true });
+        }, 90000);
+
+        set({
+            isAnalyzing: true,
+            analyzingTarget: urlToAnalyze.replace('https://github.com/', ''),
+            analyzeStep: 0,
+            analyzePercent: null,
+            analysisError: null,
+            isTimedOut: false,
+            lastTargetUrl: urlToAnalyze,
+            abortController: controller
+        });
+
+        let receivedProgress = false;
+        const stepInterval = setInterval(() => {
+            if (!receivedProgress) {
+                set((s) => ({ analyzeStep: s.analyzeStep < 3 ? s.analyzeStep + 1 : s.analyzeStep }));
+            }
+        }, 600);
+
+        const onProgress = (stage: string, percent: number) => {
+            receivedProgress = true;
+            const LOADING_STEPS = [
+                'Cloning repository',
+                'Parsing symbols',
+                'Linking calls and imports',
+                'Building the graph'
+            ];
+            const stepIdx = LOADING_STEPS.indexOf(stage);
+            set({
+                analyzePercent: percent,
+                analyzeStep: stepIdx !== -1 ? stepIdx : get().analyzeStep
+            });
+        };
+
+        try {
+            const state = get();
+            const cache = state.repoCache[urlToAnalyze] || {};
+
+            let meta = cache.meta;
+            if (!meta) {
+                meta = await api.repositories.getMeta(urlToAnalyze, controller.signal);
+                state.repoCache[urlToAnalyze] = { ...state.repoCache[urlToAnalyze], meta };
+            }
+
+            let commits = cache.commits;
+            if (!commits) {
+                const commitData = await api.repositories.getCommits(urlToAnalyze, targetSha || null, undefined, controller.signal);
+                commits = commitData.commits;
+                state.repoCache[urlToAnalyze] = { ...state.repoCache[urlToAnalyze], commits };
+            }
+
+            let headSha = targetSha || null;
+            let treeFilesResult: string[] = [];
+            if (commits && commits.length > 0) {
+                headSha = targetSha || commits[0].sha;
+                let cachedTree = cache.trees?.[headSha];
+                if (!cachedTree) {
+                    const treeRes = await api.repositories.getTree(urlToAnalyze, headSha, controller.signal);
+                    cachedTree = treeRes.files;
+                    state.repoCache[urlToAnalyze] = {
+                        ...(state.repoCache[urlToAnalyze] || {}),
+                        trees: { ...(state.repoCache[urlToAnalyze]?.trees || {}), [headSha]: cachedTree }
+                    };
+                }
+                treeFilesResult = cachedTree;
+
+                let fileToAnalyze = targetFile;
+                if (!fileToAnalyze) {
+                    fileToAnalyze = treeFilesResult.find((f: string) => {
+                        const lower = f.toLowerCase();
+                        return ['.ts', '.tsx', '.js', '.jsx', '.py', '.java', '.go', '.cpp'].some((ext) => lower.endsWith(ext));
+                    }) || null;
+                }
+
+                if (fileToAnalyze) {
+                    const { getPathsToAnalyze } = await import('./analyze-helpers');
+                    const paths = getPathsToAnalyze(treeFilesResult, fileToAnalyze);
+                    const cacheKey = paths.slice().sort().join('|');
+                    let cachedGraph = state.repoCache[urlToAnalyze]?.graphs?.[cacheKey];
+                    if (!cachedGraph) {
+                        const data = await api.repositories.analyzeStream(urlToAnalyze, headSha, paths, onProgress, controller.signal);
+                        cachedGraph = data.graph;
+                        state.repoCache[urlToAnalyze] = {
+                            ...(state.repoCache[urlToAnalyze] || {}),
+                            graphs: { ...(state.repoCache[urlToAnalyze]?.graphs || {}), [cacheKey]: cachedGraph }
+                        };
+                    }
+                    if (cachedGraph) {
+                        set({ graph: cachedGraph });
+                        const stats = selectRepoStats({ graph: cachedGraph, treeFiles: treeFilesResult, commits });
+                        get().cacheShaAnalysis(urlToAnalyze, headSha, cachedGraph, stats);
+                    }
+                }
+            }
+
+            try {
+                const stored = localStorage.getItem('engineering_memory_history');
+                const recent = stored ? JSON.parse(stored) : [];
+                const updated = [
+                    { url: urlToAnalyze, timestamp: Date.now() },
+                    ...recent.filter((r: any) => (typeof r === 'string' ? r : r.url) !== urlToAnalyze)
+                ].slice(0, 8);
+                localStorage.setItem('engineering_memory_history', JSON.stringify(updated));
+            } catch (e) {}
+
+            clearInterval(stepInterval);
+            clearTimeout(timeoutId);
+
+            set({
+                meta: meta || null,
+                commits: commits || [],
+                selectedSha: headSha,
+                treeFiles: treeFilesResult,
+                selectedFile: targetFile || null,
+                activeTab: (targetTab as any) || 'Impact',
+                repoUrl: urlToAnalyze,
+                isAnalyzing: false,
+                analyzeStep: 3,
+                analyzePercent: 100,
+                abortController: null,
+                analysisError: null
+            });
+
+            return true;
+        } catch (e: any) {
+            clearInterval(stepInterval);
+            clearTimeout(timeoutId);
+
+            if (controller.signal.aborted || e?.name === 'AbortError' || e?.message === 'Analysis was cancelled') {
+                set({ isAnalyzing: false, abortController: null });
+                return false;
+            }
+
+            console.error('Failed to analyze repository:', e);
+
+            let errTitle = 'Repository not found';
+            let errMsg = 'Repository not found. Check the URL, or it may be private.';
+            let errCode = e?.code || 'repo_not_found';
+
+            if (errCode === 'github_rate_limited' || e?.status === 429) {
+                errTitle = 'GitHub rate limit reached';
+                errMsg = e?.message || 'GitHub rate limit reached. Try again in a few minutes. Adding a GITHUB_TOKEN to .env raises the limit.';
+            } else if (errCode === 'github_auth_failed' || e?.status === 401) {
+                errTitle = 'Invalid GitHub token';
+                errMsg = 'The GitHub token is invalid. Check GITHUB_TOKEN in .env.';
+            } else if (errCode === 'github_unreachable' || e?.message?.includes('fetch failed') || e?.name === 'TypeError') {
+                errTitle = 'Cannot reach GitHub';
+                errMsg = 'Cannot reach GitHub. Check your internet connection.';
+            } else if (errCode === 'repo_empty') {
+                errTitle = 'Empty repository';
+                errMsg = 'No supported source files found in this repository.';
+            } else if (e?.message) {
+                errMsg = e.message;
+            }
+
+            set({
+                isAnalyzing: false,
+                abortController: null,
+                analysisError: {
+                    title: errTitle,
+                    message: errMsg,
+                    code: errCode
+                }
+            });
+            return false;
+        }
+    },
+
+    cancelAnalyze: () => {
+        const ctrl = get().abortController;
+        if (ctrl) {
+            ctrl.abort();
+        }
+        set({
+            isAnalyzing: false,
+            isTimedOut: false,
+            analysisError: null,
+            abortController: null
+        });
+    },
+
+    setAnalysisError: (err) => set({ analysisError: err }),
+
+    // Custom History Navigation
+    historyIdx: 0,
+    historyMaxIdx: 0,
+    canBack: false,
+    canForward: false,
+    setHistoryIndices: (idx: number, maxIdx: number) => set({
+        historyIdx: idx,
+        historyMaxIdx: maxIdx,
+        canBack: idx > 0,
+        canForward: idx < maxIdx
+    }),
+
     history: [],
     historyIndex: -1,
 
@@ -430,14 +665,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
 
     canGoBack: () => {
-        return get().historyIndex > 0;
+        return get().historyIdx > 0;
     },
 
     canGoForward: () => {
-        return get().historyIndex < get().history.length - 1;
+        return get().historyIdx < get().historyMaxIdx;
     },
 
-    clearHistory: () => set({ history: [], historyIndex: -1 }),
+    clearHistory: () => set({ history: [], historyIndex: -1, historyIdx: 0, historyMaxIdx: 0, canBack: false, canForward: false }),
 
     // Ask AI state & methods
     askAiByRepo: {},
