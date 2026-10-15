@@ -6,9 +6,10 @@ import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
 import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction, getSystemInstructions } from "./prompt-builder";
-import { AiAnswerService, getMetaResponse, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison, extractBackendChosenEvidence, extractRepoScopeEvidence } from "./answer-service";
-import { classifyQuestion, classifyScope, isMetaQuestion } from "./question-class";
+import { AiAnswerService, cleanGreetingAnswer, getMetaResponse, getJokeResponse, getOfftopicResponse, getDevResponse, getGreetingOrSmallTalkResponse, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison, extractBackendChosenEvidence, extractRepoScopeEvidence } from "./answer-service";
+import { classifyQuestion, classifyScope, isMetaQuestion, routeQuestion } from "./question-class";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
+import { GitHubRepositoryFileClient } from "../github/repository-file-client";
 import {
     validateOpenAIConfig,
     createOpenAIConfigFromEnvironment,
@@ -23,7 +24,7 @@ import {
 } from "./openai-provider";
 import { createLlmProviderFromEnvironment } from "./provider-factory";
 import { createAiRouter, validateImages } from "../routes/ai";
-import type { RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
+import { RepositoryAiOrchestrationService, type RepositoryAiOrchestrationRequest } from "../services/repository-ai-orchestration-service";
 import type { AiAnswerResult } from "./answer-service";
 import {
     ChangeImpactAnalysisService,
@@ -642,6 +643,7 @@ async function main(): Promise<void> {
     };
     assert.deepEqual(repositoryBody, {
         status: "ok",
+        mode: "repo",
         answer: "Repository answer",
         citations: [{ type: "file", path: "src/auth.ts" }],
         confidence: "high",
@@ -1098,7 +1100,7 @@ async function main(): Promise<void> {
         const fallbackRes = await fallbackProvider.answer({
             repository: "example/repository",
             target: { type: "file", path: "src/auth.ts" },
-            question: "What does auth do?",
+            question: "Explain the architecture of auth in detail",
             facts: { files: [{ path: "src/auth.ts" }], commits: [] }
         });
 
@@ -1122,7 +1124,7 @@ async function main(): Promise<void> {
     const req1 = {
         repository: "example/repository",
         target: { type: "file" as const, path: "src/auth.ts" },
-        question: "How does caching work?",
+        question: "How does auth implement caching?",
         graph,
         allowInsufficientContext: true
     };
@@ -1153,7 +1155,7 @@ async function main(): Promise<void> {
     await shortService.answer({
         repository: "example/repository",
         target: { type: "file" as const, path: "src/auth.ts" },
-        question: "Explain in short",
+        question: "Explain this file in short",
         graph,
         mode: "short",
         allowInsufficientContext: true
@@ -1317,7 +1319,7 @@ async function main(): Promise<void> {
     const imgHistoryReq = {
         repository: "example/repository",
         target: { type: "file" as const, path: "src/auth.ts" },
-        question: "Follow-up question",
+        question: "Explain this file further",
         graph,
         allowInsufficientContext: true,
         history: [
@@ -1562,8 +1564,7 @@ async function main(): Promise<void> {
         graph
     });
     assert.equal(greetingRes.status, "ok");
-    assert.equal(greetingRes.usedContext?.length, "brief");
-    assert.equal(greetingRes.usedContext?.format, "prose");
+    assert.equal(greetingRes.usedContext, false);
     assert.equal(greetingRes.evidence?.length, 0);
 
     // Meta questions early return
@@ -2016,6 +2017,327 @@ async function main(): Promise<void> {
         assert.equal(imgResult.status, "ok");
         assert.deepEqual(imgResult.evidence, []);
         assert.deepEqual(imgResult.citations, []);
+    }
+
+    // ------------------------------------------------------------------------
+    // Task 6: Deterministic routing and scope limit tests
+    // ------------------------------------------------------------------------
+    // 1. Classifier table for each mode (English and Hindi/Hinglish)
+    const classifierCases: Array<{
+        question: string;
+        selectedFile?: string;
+        repoFiles?: string[];
+        expectedMode: "repo" | "chat" | "dev" | "offtopic";
+        lang: string;
+    }> = [
+        // REPO mode
+        { question: "what does this file do?", selectedFile: "src/auth.ts", expectedMode: "repo", lang: "en" },
+        { question: "is file ko samjhao", selectedFile: "src/auth.ts", expectedMode: "repo", lang: "hinglish" },
+        { question: "who depends on this file?", selectedFile: "src/auth.ts", expectedMode: "repo", lang: "en" },
+        { question: "is par kaun depend karta hai?", selectedFile: "src/auth.ts", expectedMode: "repo", lang: "hinglish" },
+        { question: "what is the blast radius of changing auth.ts?", repoFiles: ["src/auth.ts"], expectedMode: "repo", lang: "en" },
+        { question: "risk score kya hai", expectedMode: "repo", lang: "hinglish" },
+        { question: "plan a change for auth.ts", repoFiles: ["src/auth.ts"], expectedMode: "repo", lang: "en" },
+
+        // CHAT mode
+        { question: "hello", expectedMode: "chat", lang: "en" },
+        { question: "namaste", expectedMode: "chat", lang: "hinglish" },
+        { question: "thanks a lot", expectedMode: "chat", lang: "en" },
+        { question: "bahut shukriya", expectedMode: "chat", lang: "hinglish" },
+        { question: "who are you?", expectedMode: "chat", lang: "en" },
+        { question: "tum kaun ho?", expectedMode: "chat", lang: "hinglish" },
+        { question: "kya kr skte ho tum?", expectedMode: "chat", lang: "hinglish" },
+        { question: "tell me a joke", expectedMode: "chat", lang: "en" },
+        { question: "ek joke sunao", expectedMode: "chat", lang: "hinglish" },
+        { question: "kuch mazaak karo", expectedMode: "chat", lang: "hinglish" },
+
+        // DEV mode
+        { question: "what is a dependency graph?", expectedMode: "dev", lang: "en" },
+        { question: "dependency graph kya hota hai?", expectedMode: "dev", lang: "hinglish" },
+        { question: "python me list vs tuple", expectedMode: "dev", lang: "hinglish" },
+        { question: "difference between list and tuple in python", expectedMode: "dev", lang: "en" },
+        { question: "git rebase kya hota hai", expectedMode: "dev", lang: "hinglish" },
+        { question: "how does git rebase work?", expectedMode: "dev", lang: "en" },
+        { question: "explain recursion", expectedMode: "dev", lang: "en" },
+        { question: "recursion kaise kaam karta hai", expectedMode: "dev", lang: "hinglish" },
+
+        // OFFTOPIC mode
+        { question: "give me a recipe for biryani", expectedMode: "offtopic", lang: "en" },
+        { question: "biryani ki recipe batao", expectedMode: "offtopic", lang: "hinglish" },
+        { question: "who won the cricket match?", expectedMode: "offtopic", lang: "en" },
+        { question: "aaj ka cricket score kya hai", expectedMode: "offtopic", lang: "hinglish" },
+        { question: "who won the presidential election?", expectedMode: "offtopic", lang: "en" },
+        { question: "write an essay on village life", expectedMode: "offtopic", lang: "en" },
+        { question: "gaon ki zindagi par nibandh", expectedMode: "offtopic", lang: "hinglish" },
+        { question: "what is the plot of inception movie?", expectedMode: "offtopic", lang: "en" }
+    ];
+
+    for (const testCase of classifierCases) {
+        const res = routeQuestion({
+            question: testCase.question,
+            selectedFile: testCase.selectedFile,
+            repoFiles: testCase.repoFiles
+        });
+        assert.equal(
+            res.mode,
+            testCase.expectedMode,
+            `Expected "${testCase.question}" (${testCase.lang}) to route to ${testCase.expectedMode}, got ${res.mode} (reason: ${res.reason})`
+        );
+    }
+
+    // 2. Chat joke produces joke + steering line
+    {
+        const hinglishJoke = getJokeResponse("joke sunao");
+        assert.ok(hinglishJoke.answer.includes("Programmer"));
+        assert.ok(hinglishJoke.answer.includes("Ab chalo, kis file ko dekhna hai?"));
+
+        const englishJoke = getJokeResponse("tell me a joke");
+        assert.ok(englishJoke.answer.includes("bugs"));
+        assert.ok(englishJoke.answer.includes("Now, which file should we look at?"));
+    }
+
+    // 3. Thanks produces no steering line
+    {
+        const thanksAns = getGreetingOrSmallTalkResponse("thanks");
+        assert.ok(thanksAns);
+        assert.ok(!thanksAns.includes("file"));
+        assert.ok(!thanksAns.includes("dekhna"));
+        assert.ok(!thanksAns.includes("look at"));
+
+        const shukriyaAns = getGreetingOrSmallTalkResponse("shukriya");
+        assert.ok(shukriyaAns);
+        assert.ok(!shukriyaAns.includes("file"));
+        assert.ok(!shukriyaAns.includes("dekhna"));
+    }
+
+    // 4. Offtopic produces polite refusal + 2 chips
+    {
+        const offtopicEn = getOfftopicResponse("recipe for biryani");
+        assert.ok(offtopicEn.answer.includes("repository assistant"));
+        assert.ok(!offtopicEn.answer.includes("biryani"));
+        assert.equal(offtopicEn.followUps.length, 2);
+
+        const offtopicHi = getOfftopicResponse("cricket score kya hai");
+        assert.ok(offtopicHi.answer.includes("repository assistant"));
+        assert.equal(offtopicHi.followUps.length, 2);
+    }
+
+    // 5. Dev produces technical answer without repo facts
+    {
+        const devDepGraph = getDevResponse("what is a dependency graph");
+        assert.ok(devDepGraph.answer.toLowerCase().includes("directed graph"));
+        assert.ok(!devDepGraph.answer.includes("src/"));
+        assert.ok(!devDepGraph.answer.includes("risk score"));
+        assert.ok(devDepGraph.followUps.length >= 1 && devDepGraph.followUps.length <= 3);
+
+        const devListTuple = getDevResponse("python me list vs tuple");
+        assert.ok(devListTuple.answer.includes("mutable"));
+        assert.ok(devListTuple.answer.includes("immutable"));
+        assert.ok(!devListTuple.answer.includes("src/"));
+    }
+
+    // 6. Sticky continuation stays repo
+    {
+        const stickyRes = routeQuestion({
+            question: "aur phir iska example do",
+            selectedFile: "src/auth.ts",
+            history: [
+                { role: "user", content: "explain this file" },
+                { role: "assistant", content: "Here is the explanation...", mode: "repo" }
+            ]
+        });
+        assert.equal(stickyRes.mode, "repo");
+        assert.equal(stickyRes.reason, "repo_sticky");
+
+        const stickyEnglish = routeQuestion({
+            question: "and why?",
+            selectedFile: "src/auth.ts",
+            history: [
+                { role: "user", content: "explain this file" },
+                { role: "assistant", content: "Here is the explanation...", mode: "repo" }
+            ]
+        });
+        assert.equal(stickyEnglish.mode, "repo");
+        assert.equal(stickyEnglish.reason, "repo_sticky");
+    }
+
+    // 7. Thanks resets sticky
+    {
+        const resetRes = routeQuestion({
+            question: "thanks",
+            selectedFile: "src/auth.ts",
+            history: [
+                { role: "user", content: "explain this file" },
+                { role: "assistant", content: "Here is the explanation...", mode: "repo" }
+            ]
+        });
+        assert.equal(resetRes.mode, "chat");
+        assert.equal(resetRes.reason, "chat_thanks");
+
+        const resetShukriya = routeQuestion({
+            question: "shukriya",
+            selectedFile: "src/auth.ts",
+            history: [
+                { role: "user", content: "explain this file" },
+                { role: "assistant", content: "Here is the explanation...", mode: "repo" }
+            ]
+        });
+        assert.equal(resetShukriya.mode, "chat");
+        assert.equal(resetShukriya.reason, "chat_thanks");
+    }
+
+    // === Task 7 Tests ===
+    // 1. Cache hit skips fetcher
+    {
+        const client = new GitHubRepositoryFileClient();
+        let networkCalls = 0;
+        const originalFetch = globalThis.fetch;
+        try {
+            globalThis.fetch = (async () => {
+                networkCalls++;
+                return new Response(JSON.stringify({
+                    type: "file",
+                    content: Buffer.from("export const a = 1;").toString("base64"),
+                    encoding: "base64"
+                }), { status: 200, headers: { "Content-Type": "application/json" } });
+            }) as typeof fetch;
+
+            const f1 = await client.loadFile("owner", "repo", "src/test.ts", "sha1");
+            assert.equal(f1.content, "export const a = 1;");
+            assert.equal(networkCalls, 1);
+
+            const f2 = await client.loadFile("owner", "repo", "src/test.ts", "sha1");
+            assert.equal(f2.content, "export const a = 1;");
+            assert.equal(networkCalls, 1, "Cache hit must skip network fetcher");
+        } finally {
+            globalThis.fetch = originalFetch;
+        }
+    }
+
+    // 2. Parallel fetch timeout still answers
+    {
+        const timeoutClient = {
+            loadFile: async () => { throw new Error("Timeout"); },
+            loadFiles: async () => { throw new Error("Timeout"); }
+        };
+        const mockAiService = {
+            answer: async (req: any) => ({
+                status: "ok" as const,
+                answer: `Score is ${req.risk?.score}`,
+                citations: [],
+                confidence: "medium" as const
+            })
+        };
+        const orchServiceTimeout = new RepositoryAiOrchestrationService(
+            timeoutClient as any,
+            { analyzeFiles: () => ({ files: [], resolvedRelationships: [], graph: { nodes: [], edges: [] } }) } as any,
+            mockAiService as any
+        );
+
+        const ans = await orchServiceTimeout.answer({
+            owner: "test",
+            repository: "repo",
+            sha: "abc",
+            paths: ["src/a.ts"],
+            target: { type: "file", path: "src/a.ts" },
+            question: "explain",
+            risk: { score: 45, level: "medium" },
+            dependents: ["src/b.ts"]
+        });
+        assert.equal(ans.status, "ok");
+        assert.ok(ans.answer.includes("Score is 45"));
+    }
+
+    // 3. Model choice by question class
+    {
+        const provider = new OpenAIProvider({
+            apiKey: "dummy-key",
+            model: "openai/gpt-oss-120b",
+            baseUrl: "https://api.groq.com/openai/v1"
+        });
+
+        const briefCandidates = await (provider as any).getCandidates(
+            { apiKey: "dummy-key", model: "openai/gpt-oss-120b" },
+            false,
+            { length: "brief", questionClass: "greeting", isGreetingOrThanks: true }
+        );
+        assert.equal(briefCandidates[0].model, "openai/gpt-oss-20b");
+
+        const standardCandidates = await (provider as any).getCandidates(
+            { apiKey: "dummy-key", model: "openai/gpt-oss-120b" },
+            false,
+            { length: "standard", questionClass: "file" }
+        );
+        assert.equal(standardCandidates[0].model, "openai/gpt-oss-20b");
+
+        const deepCandidates = await (provider as any).getCandidates(
+            { apiKey: "dummy-key", model: "openai/gpt-oss-120b" },
+            false,
+            { length: "deep", questionClass: "file" }
+        );
+        assert.equal(deepCandidates[0].model, "openai/gpt-oss-120b");
+    }
+
+    // 4. Greeting has no chips/evidence and stripped sentence
+    {
+        const dirtyAnswer = "Hello! How can I help you explore this codebase today?\n\nBased on the outline and first 150 lines.";
+        const cleaned = cleanGreetingAnswer(dirtyAnswer);
+        assert.equal(cleaned, "Hello! How can I help you explore this codebase today?");
+        assert.ok(!cleaned.includes("Based on the outline"));
+        assert.ok(!cleaned.includes("Based on the first"));
+
+        const fakeProvider = new FakeLlmProvider({
+            status: "ok",
+            answer: "Hello! How can I help you?\n\nBased on the first 150 lines.",
+            citations: [{ type: "file", path: "src/auth.ts" }],
+            confidence: "high",
+            evidence: [{ path: "src/auth.ts", line: 1 }],
+            followUps: ["What does this do?"]
+        });
+        const svc = new AiAnswerService(fakeProvider);
+        const res = await svc.answer({
+            repository: "test/repo",
+            question: "hello",
+            target: { type: "file", path: "src/auth.ts" },
+            graph: { nodes: [{ id: "src/auth.ts", type: "file", path: "src/auth.ts" }], edges: [] } as any,
+            fileContent: "export const x = 1;"
+        });
+        assert.equal(res.evidence?.length, 0, "Greetings must have no evidence chips");
+        assert.equal(res.followUps?.length, 0, "Greetings must have no followUp chips");
+        assert.ok(!res.answer.includes("Based on the first"));
+        assert.ok(!res.answer.includes("Based on the outline"));
+    }
+
+    // 5. Timings present in usedContext
+    {
+        const fakeProvider = new FakeLlmProvider({
+            status: "ok",
+            answer: "Here is what this file does.",
+            citations: [{ type: "file", path: "src/auth.ts" }],
+            confidence: "high",
+            evidence: [{ path: "src/auth.ts", line: 1 }],
+            followUps: ["Tell me more"]
+        });
+        const svc = new AiAnswerService(fakeProvider);
+        const res = await svc.answer({
+            repository: "test/repo",
+            question: "explain this file",
+            target: { type: "file", path: "src/auth.ts" },
+            graph: { nodes: [{ id: "src/auth.ts", type: "file", path: "src/auth.ts" }], edges: [] } as any,
+            fileContent: "export const x = 1;",
+            timings: {
+                fileFetch: 12,
+                contextBuild: 8
+            }
+        });
+        assert.ok(res.usedContext, "usedContext must be present");
+        assert.ok(res.usedContext.timings, "usedContext.timings must be present");
+        assert.equal(res.usedContext.timings.fileFetch, 12);
+        assert.equal(res.usedContext.timings.contextBuild, 8);
+        assert.ok(typeof res.usedContext.timings.total === "number");
+        assert.ok(typeof res.usedContext.timings.firstToken === "number");
+        assert.ok(typeof res.usedContext.timings.model === "string");
+        assert.ok(typeof res.usedContext.timings.hops === "number");
     }
 
     console.log("AI fixtures passed");

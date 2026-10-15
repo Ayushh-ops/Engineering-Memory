@@ -35,13 +35,75 @@ interface GitHubFileContent {
     encoding: string;
 }
 
+export class FileContentCache {
+    private cache = new Map<string, { content: string; expiresAt: number }>();
+    private readonly maxSize: number;
+    private readonly ttlMs: number;
+
+    constructor(maxSize = 300, ttlMs = 30 * 60 * 1000) {
+        this.maxSize = maxSize;
+        this.ttlMs = ttlMs;
+    }
+
+    public get(key: string): string | null {
+        const entry = this.cache.get(key);
+        if (!entry) return null;
+        if (Date.now() > entry.expiresAt) {
+            this.cache.delete(key);
+            return null;
+        }
+        this.cache.delete(key);
+        this.cache.set(key, entry);
+        return entry.content;
+    }
+
+    public set(key: string, content: string): void {
+        if (this.cache.size >= this.maxSize) {
+            const oldestKey = this.cache.keys().next().value;
+            if (oldestKey) this.cache.delete(oldestKey);
+        }
+        this.cache.set(key, {
+            content,
+            expiresAt: Date.now() + this.ttlMs
+        });
+    }
+
+    public clear(): void {
+        this.cache.clear();
+    }
+
+    public size(): number {
+        return this.cache.size;
+    }
+}
+
+export const fileContentCache = new FileContentCache(300, 30 * 60 * 1000);
+
 export class GitHubRepositoryFileClient {
+    constructor(private readonly cache: FileContentCache = fileContentCache) {}
+
+    public getCache(): FileContentCache {
+        return this.cache;
+    }
+
+    cacheDependent(owner: string, repository: string, path: string, sha: string, content: string): void {
+        const cacheKey = `${owner}/${repository}:${sha}:${path}`;
+        const first40 = content.split("\n").slice(0, 40).join("\n");
+        this.cache.set(cacheKey, first40);
+    }
+
     async loadFile(
         owner: string,
         repository: string,
         path: string,
         sha: string
     ): Promise<GitHubRepositoryFile> {
+        const cacheKey = `${owner}/${repository}:${sha}:${path}`;
+        const cached = this.cache.get(cacheKey);
+        if (cached !== null) {
+            return { path, content: cached };
+        }
+
         const encodedPath = path.split("/").map(encodeURIComponent).join("/");
         const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`;
 
@@ -99,9 +161,11 @@ export class GitHubRepositoryFileClient {
             );
         }
 
+        const content = Buffer.from(file.content, "base64").toString("utf8");
+        this.cache.set(cacheKey, content);
         return {
             path,
-            content: Buffer.from(file.content, "base64").toString("utf8")
+            content
         };
     }
 

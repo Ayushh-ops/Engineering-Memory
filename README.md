@@ -84,7 +84,7 @@ Engineering Memory can be deployed as a single unified service where Express ser
    - `LLM_FALLBACK_API_KEY` (optional)
    - `LLM_FALLBACK_MODEL` (optional)
 
-All keys and credentials must be set only in the host dashboard. Note that free host instances sleep after periods of inactivity and take a moment to wake on the first request.
+All keys and credentials must be set only in the host dashboard. Note that free host instances spin down after 15 minutes of inactivity and take up to a minute to wake on the first request. You can keep the service warm by setting up a free monitoring tool like [UptimeRobot](https://uptimerobot.com) to ping `GET /healthz` every 5–10 minutes.
 
 ## Troubleshooting
 

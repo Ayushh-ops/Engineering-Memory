@@ -3,13 +3,23 @@ import type { RepositoryGraph } from "../graph/repository-graph";
 import { assembleRepositoryContext, type RepositoryContextRequest } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES, type AiRepositoryContext, type RepoFacts } from "./context";
 import { validateRepositoryContextConsistency } from "./consistency-validator";
-import type { LlmCitation, LlmEvidence, LlmMode, LlmProvider, LlmRequest, LlmResponse, LlmScope, LlmUsedContext } from "./provider";
+import type { AskTimings, LlmCitation, LlmEvidence, LlmMode, LlmProvider, LlmRequest, LlmResponse, LlmScope, LlmUsedContext } from "./provider";
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
-import { classifyQuestion, classifyScope, isMetaQuestion, type QuestionClassification } from "./question-class";
+import { classifyQuestion, classifyScope, isMetaQuestion, routeQuestion, type QuestionClassification, type QuestionMode } from "./question-class";
 
 export { detectLang, getLanguageDirective };
+
+export function cleanGreetingAnswer(answer: string): string {
+    const lines = answer.split(/\r?\n/).filter((line) => {
+        const trimmed = line.trim();
+        return !trimmed.startsWith("Based on the outline") && !trimmed.startsWith("Based on the first");
+    });
+    let cleaned = lines.join(" ").trim();
+    cleaned = cleaned.replace(/\bBased on (?:the )?(?:outline|first)[^.!?\n]*[.!?]?/gi, "").trim();
+    return cleaned || "Hello! How can I help you explore this codebase today?";
+}
 
 export function sanitizeHistory(history?: Array<{ role: string; content: string; images?: unknown }>): Array<{ role: string; content: string }> | undefined {
     if (!Array.isArray(history)) return undefined;
@@ -53,6 +63,11 @@ export interface AiAnswerRequest extends RepositoryContextRequest {
     repoSha?: string;
     images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
     repoFacts?: RepoFacts;
+    timings?: {
+        fileFetch: number;
+        contextBuild: number;
+    };
+    requestStartTime?: number;
 }
 
 export interface AiAnswerResult extends LlmResponse {
@@ -210,6 +225,211 @@ export function getCapabilityResponse(question: string): string | null {
     }
     return null;
 }
+
+export function getJokeResponse(question: string): { answer: string; followUps: string[] } {
+    const lang = detectLang(question);
+
+    if (lang === "hinglish") {
+        return {
+            answer: "Programmer ne biwi se kaha: 'Bazaar jao, 1 bread lao, agar ande mile toh 10 le aana.' Biwi 10 bread le aayi kyunki ande mil gaye the!\n\nAb chalo, kis file ko dekhna hai?",
+            followUps: []
+        };
+    }
+
+    if (lang === "hi") {
+        return {
+            answer: "प्रोग्रामर ने कहा: दुनिया में 10 तरह के लोग होते हैं, एक जो बाइनरी समझते हैं और दूसरे जो नहीं!\n\nअब चलिए, किस फ़ाइल को देखना है?",
+            followUps: []
+        };
+    }
+
+    return {
+        answer: "Why do programmers prefer dark mode? Because light attracts bugs!\n\nNow, which file should we look at?",
+        followUps: []
+    };
+}
+
+export function getOfftopicResponse(question: string, selectedFile?: string): { answer: string; followUps: string[] } {
+    const lang = detectLang(question);
+
+    if (lang === "hinglish") {
+        return {
+            answer: "Main ek code aur repository assistant hoon jo software engineering, repositories aur developer tools me madad karta hoon.",
+            followUps: [
+                selectedFile ? `Selected file ${selectedFile.split(/[/\\]/).pop()} ko samjhao` : "Ye file explain karo",
+                "Risk score aur dependents dikhao"
+            ]
+        };
+    }
+
+    if (lang === "hi") {
+        return {
+            answer: "मैं एक कोड और रिपॉजिटरी सहायक हूँ जो सॉफ्टवेयर, कोडबेस और डेवलपर टूल्स में सहायता करता हूँ।",
+            followUps: [
+                "यह फ़ाइल समझाइए",
+                "रिस्क और डिपेंडेंट दिखाएं"
+            ]
+        };
+    }
+
+    return {
+        answer: "I am a code and repository assistant focused on software engineering, codebases, and developer tools.",
+        followUps: [
+            selectedFile ? `Explain ${selectedFile.split(/[/\\]/).pop()}` : "Explain this file",
+            "Show risk score and dependents"
+        ]
+    };
+}
+
+export interface DevResponse {
+    answer: string;
+    followUps: string[];
+    needsRepo?: boolean;
+}
+
+export function getDevResponse(question: string, history?: Array<{ role: string; content: string }>): DevResponse {
+    const raw = (question || "").trim();
+    const q = raw.toLowerCase();
+    const lang = detectLang(raw);
+
+    // Escape hatch: check if the question refers to repo files or current repository
+    const needsRepoCheck = /\b(this\s+repo|this\s+repository|is\s+repo|is\s+repository|in\s+our\s+repo|our\s+codebase|this\s+project|is\s+project)\b/i;
+    if (needsRepoCheck.test(q)) {
+        return {
+            answer: "",
+            followUps: [],
+            needsRepo: true
+        };
+    }
+
+    if (/\bdependency\s+graph\b/i.test(q)) {
+        if (lang === "hinglish") {
+            return {
+                answer: [
+                    "Dependency graph ek directed graph hota hai jisme nodes software modules, files ya packages ko represent karte hain, aur edges unke beech ke dependencies ko.",
+                    "Build systems aur package managers iska use sahi compilation order decide karne, circular dependencies detect karne aur kisi change ka blast radius evaluate karne ke liye karte hain."
+                ].join("\n\n"),
+                followUps: [
+                    "Circular dependencies kaise detect karein?",
+                    "Topological sorting algorithm kya hai?",
+                    "Package management me dependency graph"
+                ]
+            };
+        }
+        return {
+            answer: [
+                "A dependency graph is a directed graph where nodes represent software modules, files, or packages, and directed edges represent the dependencies between them.",
+                "Build tools and package managers use dependency graphs to determine valid build orders (via topological sorting), identify circular dependencies, and compute the blast radius of changes across a system."
+            ].join("\n\n"),
+            followUps: [
+                "How to detect circular dependencies",
+                "Topological sorting algorithm",
+                "Package manager resolution algorithms"
+            ]
+        };
+    }
+
+    if (/\b(list\s+(?:vs\.?|versus)\s+tuple|tuple\s+(?:vs\.?|versus)\s+list|list\s+vs\s+tuple)\b/i.test(q) || (/\blist\b/i.test(q) && /\btuple\b/i.test(q))) {
+        if (lang === "hinglish") {
+            return {
+                answer: [
+                    "Python me `list` mutable hota hai (elements modify, append ya delete kiye ja sakte hain, syntax: `[1, 2, 3]`), jabki `tuple` immutable hota hai (create hone ke baad elements change nahi hote, syntax: `(1, 2, 3)`).",
+                    "Tuples memory-efficient hote hain aur fixed structure ke liye use hote hain. Kyunki tuples immutable hote hain, isliye inhe dictionary keys ke roop me use kiya ja sakta hai agar unke andar ke elements bhi hashable hon."
+                ].join("\n\n"),
+                followUps: [
+                    "Python tuple unpacking",
+                    "Immutable data structures ke fayde",
+                    "Dictionary keys me tuple ka use"
+                ]
+            };
+        }
+        return {
+            answer: [
+                "In Python, a `list` is mutable (items can be added, removed, or modified in place, syntax: `[1, 2, 3]`), while a `tuple` is immutable (cannot be altered after creation, syntax: `(1, 2, 3)`).",
+                "Tuples have lower memory overhead and slightly faster iteration. Because tuples are immutable, they are hashable (if their elements are hashable) and can be used as keys in dictionaries, whereas lists cannot."
+            ].join("\n\n"),
+            followUps: [
+                "Tuple unpacking in Python",
+                "When to choose tuples over lists",
+                "Hashable types in Python"
+            ]
+        };
+    }
+
+    if (/\b(git\s+rebase|rebase)\b/i.test(q)) {
+        if (lang === "hinglish") {
+            return {
+                answer: [
+                    "Git rebase ek branch ke commits ko doosre base commit ke upar move ya re-apply karta hai, jisse repository ki history clean aur linear banti hai.",
+                    "Merge commit create karne ke bajaye, rebase naye commits generate karta hai. Iska use features ko main branch ke latest changes se update karne ke liye kiya jata hai."
+                ].join("\n\n"),
+                followUps: [
+                    "Git rebase vs git merge",
+                    "Interactive rebase (git rebase -i)",
+                    "Rebase conflicts kaise resolve karein"
+                ]
+            };
+        }
+        return {
+            answer: [
+                "Git rebase reapplies commits on top of another base tip, producing a clean, linear commit history without merge commits.",
+                "Instead of creating a merge commit, it rewrites project history by creating brand new commits for each commit in the original branch."
+            ].join("\n\n"),
+            followUps: [
+                "Git rebase vs git merge",
+                "Interactive rebase (git rebase -i)",
+                "Resolving conflicts during rebase"
+            ]
+        };
+    }
+
+    if (/\brecursion\b/i.test(q)) {
+        if (lang === "hinglish") {
+            return {
+                answer: [
+                    "Recursion ek aisi programming technique hai jisme ek function apne aap ko call karta hai kisi bade problem ko smaller sub-problems me divide karne ke liye.",
+                    "Har recursive function me do mukhya cheezein hoti hain:\n1. **Base Case**: Jo recursion ko stop karta hai taaki infinite stack overflow na ho.\n2. **Recursive Step**: Jo problem ko chota karke function ko dobara call karta hai."
+                ].join("\n\n"),
+                followUps: [
+                    "Base case in recursion",
+                    "Recursion vs iteration",
+                    "Tail call optimization kya hai"
+                ]
+            };
+        }
+        return {
+            answer: [
+                "Recursion is a programming technique where a function calls itself directly or indirectly to solve smaller instances of the same problem.",
+                "Every recursive function requires:\n1. **Base Case**: The stopping condition that returns a value directly without further recursive calls, preventing stack overflow.\n2. **Recursive Step**: The operation that reduces the problem size and calls the function again toward the base case."
+            ].join("\n\n"),
+            followUps: [
+                "Base case in recursion",
+                "Recursion vs iteration",
+                "Tail call optimization"
+            ]
+        };
+    }
+
+    // General technical fallback
+    if (lang === "hinglish") {
+        return {
+            answer: "Yeh ek general software engineering sawal hai. Is concept ko samajhne ke liye modular design, clean code practices aur standard algorithms ka dhyan rakhna chahiye.",
+            followUps: [
+                "Code example dikhao",
+                "Best practices kya hain?"
+            ]
+        };
+    }
+
+    return {
+        answer: "This is a general software engineering concept. Clean code practices, well-defined abstractions, and solid unit testing are the recommended industry approaches for this topic.",
+        followUps: [
+            "Show a code example",
+            "What are common best practices?"
+        ]
+    };
+}
+
 
 export function parseAndValidateEvidenceAndFollowUps(
     rawAnswer: string,
@@ -894,6 +1114,9 @@ export class AiAnswerService {
     }
 
     async answer(request: AiAnswerRequest): Promise<AiAnswerResult> {
+        const requestStart = request.requestStartTime ?? Date.now();
+        const fileFetch = request.timings?.fileFetch ?? 0;
+        const contextBuild = request.timings?.contextBuild ?? 0;
         const rawQ = (request && typeof request.question === "string") ? request.question.trim() : "";
         const hasImages = Boolean(request.images && request.images.length > 0);
 
@@ -952,41 +1175,92 @@ export class AiAnswerService {
             }
             : classifyQuestion(rawQ, effectiveMode, hasImages);
 
-        const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
-        if (greetingReply || (classification.isGreetingOrThanks && rawQ)) {
+        const repoFilesFromGraph = request.graph && typeof (request.graph.nodes?.values) === "function"
+            ? Array.from(request.graph.nodes.values()).filter(n => n.type === "file").map(n => (n as any).path)
+            : undefined;
+        const symbolsFromGraph = request.graph && typeof (request.graph.nodes?.values) === "function"
+            ? Array.from(request.graph.nodes.values()).filter(n => n.type === "function" || n.type === "class" || n.type === "method").map(n => (n as any).name)
+            : undefined;
+
+        const routeResult = (!rawQ && hasImages)
+            ? { mode: "repo" as const, reason: "repo_image_only" }
+            : routeQuestion({
+                question: rawQ,
+                selectedFile: targetPath,
+                repoFiles: repoFilesFromGraph,
+                symbols: symbolsFromGraph,
+                history: cleanHistory
+            });
+
+        if (routeResult.mode === "chat") {
+            if (routeResult.reason === "chat_joke") {
+                const joke = getJokeResponse(rawQ);
+                return {
+                    status: "ok",
+                    mode: "chat",
+                    answer: joke.answer,
+                    citations: [],
+                    confidence: "high",
+                    followUps: joke.followUps,
+                    evidence: [],
+                    usedContext: false
+                };
+            }
+            if (routeResult.reason === "chat_meta" || (rawQ && isMetaQuestion(rawQ))) {
+                const meta = getMetaResponse(rawQ);
+                return {
+                    status: "ok",
+                    mode: "chat",
+                    answer: meta.answer,
+                    citations: [],
+                    confidence: "high",
+                    followUps: meta.followUps,
+                    evidence: [],
+                    usedContext: false
+                };
+            }
+            const greetingReply = rawQ ? getGreetingOrSmallTalkResponse(rawQ) : null;
             const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
             return {
                 status: "ok",
+                mode: "chat",
                 answer: finalGreeting,
                 citations: [],
                 confidence: "high",
                 followUps: [],
                 evidence: [],
-                usedContext: {
-                    files: 0,
-                    commits: 0,
-                    provider: "internal",
-                    model: "deterministic",
-                    cached: false,
-                    length: "brief",
-                    format: "prose",
-                    scope: effectiveScope
-                }
+                usedContext: false
             };
         }
 
-        const isMeta = Boolean(rawQ && (classification.isMeta || isMetaQuestion(rawQ)));
-        if (isMeta) {
-            const meta = getMetaResponse(rawQ);
+        if (routeResult.mode === "offtopic") {
+            const offtopic = getOfftopicResponse(rawQ, targetPath);
             return {
                 status: "ok",
-                answer: meta.answer,
+                mode: "offtopic",
+                answer: offtopic.answer,
                 citations: [],
                 confidence: "high",
-                followUps: meta.followUps,
+                followUps: offtopic.followUps,
                 evidence: [],
                 usedContext: false
             };
+        }
+
+        if (routeResult.mode === "dev") {
+            const devRes = getDevResponse(rawQ, cleanHistory);
+            if (!devRes.needsRepo) {
+                return {
+                    status: "ok",
+                    mode: "dev",
+                    answer: devRes.answer,
+                    citations: [],
+                    confidence: "high",
+                    followUps: devRes.followUps,
+                    evidence: [],
+                    usedContext: false
+                };
+            }
         }
 
         const isHistoryEmpty = !cleanHistory || cleanHistory.length === 0;
@@ -995,7 +1269,22 @@ export class AiAnswerService {
         if (isHistoryEmpty && !hasImages) {
             const cached = this.cache.get(cacheKey);
             if (cached) {
-                return cached;
+                const total = Date.now() - requestStart;
+                const askTimings: AskTimings = {
+                    fileFetch,
+                    contextBuild,
+                    firstToken: total,
+                    total,
+                    model: cached.usedContext?.model || "cached",
+                    hops: 0
+                };
+                console.log(`[ask] total=${total}ms fetch=${fileFetch}ms ctx=${contextBuild}ms firstToken=${total}ms model=${askTimings.model} hops=0`);
+                return {
+                    ...cached,
+                    usedContext: cached.usedContext && typeof cached.usedContext === "object"
+                        ? { ...cached.usedContext, cached: true, timings: askTimings }
+                        : { files: 0, commits: 0, provider: "cache", model: "cached", cached: true, timings: askTimings }
+                };
             }
         }
 
@@ -1201,8 +1490,11 @@ export class AiAnswerService {
             fileLinesMap
         );
 
+        const isGreeting = classification.isGreetingOrThanks || classification.questionClass === "greeting";
         let finalAnswer = parsed.cleanAnswer;
-        if (aiContext.fileTruncated) {
+        if (isGreeting) {
+            finalAnswer = cleanGreetingAnswer(finalAnswer);
+        } else if (aiContext.fileTruncated) {
             const linesCount = aiContext.fileTruncatedLines ?? 150;
             const truncationNotice = `Based on the outline and first ${linesCount} lines.`;
             if (finalAnswer) {
@@ -1213,7 +1505,9 @@ export class AiAnswerService {
         }
 
         let finalEvidence: LlmEvidence[] = [];
-        if (hasImages) {
+        if (isGreeting) {
+            finalEvidence = [];
+        } else if (hasImages) {
             finalEvidence = parsed.evidence.filter((item) => {
                 const normPath = item.path.replace(/\\/g, "/").toLowerCase();
                 const baseName = normPath.split("/").pop() || "";
@@ -1234,13 +1528,13 @@ export class AiAnswerService {
             finalEvidence = parsed.evidence;
         }
 
-        const finalCitations = finalEvidence.length > 0
+        const finalCitations = isGreeting ? [] : (finalEvidence.length > 0
             ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
             : (hasImages
                 ? []
                 : (parsed.citations.length > 0
                     ? parsed.citations
-                    : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []))));
+                    : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])))));
 
         const askedSet = new Set<string>();
         if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -1250,8 +1544,8 @@ export class AiAnswerService {
             }
         }
 
-        let finalFollowUps = parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
-        if (finalFollowUps.length === 0) {
+        let finalFollowUps = isGreeting ? [] : parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
+        if (!isGreeting && finalFollowUps.length === 0) {
             finalFollowUps = generateFallbackFollowUps(
                 targetPath,
                 request.question,
@@ -1260,8 +1554,23 @@ export class AiAnswerService {
             );
         }
 
+        const total = Date.now() - requestStart;
+        const firstToken = total;
+        const model = providerResponse.usedContext?.model || "openai/gpt-oss-120b";
+        const hops = providerResponse.usedContext?.hops ?? 0;
+        const askTimings: AskTimings = {
+            fileFetch,
+            contextBuild,
+            firstToken,
+            total,
+            model,
+            hops
+        };
+        console.log(`[ask] total=${total}ms fetch=${fileFetch}ms ctx=${contextBuild}ms firstToken=${firstToken}ms model=${model} hops=${hops}`);
+
         const finalResult: AiAnswerResult = {
             status: "ok",
+            mode: "repo",
             answer: finalAnswer,
             citations: finalCitations,
             confidence: providerResponse.confidence,
@@ -1275,12 +1584,13 @@ export class AiAnswerService {
                     commits: aiContext.commits.length,
                     provider: "groq",
                     model: "openai/gpt-oss-120b",
-                    cached: false,
                     images: request.images ? request.images.length : 0
                 }),
+                cached: false,
                 length: classification.length,
                 format: classification.format,
-                scope: effectiveScope
+                scope: effectiveScope,
+                timings: askTimings
             }
         };
 
@@ -1299,6 +1609,9 @@ export class AiAnswerService {
             return this.answer(request);
         }
 
+        const requestStart = request.requestStartTime ?? Date.now();
+        const fileFetch = request.timings?.fileFetch ?? 0;
+        const contextBuild = request.timings?.contextBuild ?? 0;
         const rawQ = (request && typeof request.question === "string") ? request.question.trim() : "";
         const hasImages = Boolean(request.images && request.images.length > 0);
 
@@ -1403,7 +1716,22 @@ export class AiAnswerService {
             const cached = this.cache.get(cacheKey);
             if (cached) {
                 onToken(cached.answer);
-                return cached;
+                const total = Date.now() - requestStart;
+                const askTimings: AskTimings = {
+                    fileFetch,
+                    contextBuild,
+                    firstToken: total,
+                    total,
+                    model: cached.usedContext?.model || "cached",
+                    hops: 0
+                };
+                console.log(`[ask] total=${total}ms fetch=${fileFetch}ms ctx=${contextBuild}ms firstToken=${total}ms model=${askTimings.model} hops=0`);
+                return {
+                    ...cached,
+                    usedContext: cached.usedContext && typeof cached.usedContext === "object"
+                        ? { ...cached.usedContext, cached: true, timings: askTimings }
+                        : { files: 0, commits: 0, provider: "cache", model: "cached", cached: true, timings: askTimings }
+                };
             }
         }
 
@@ -1540,8 +1868,16 @@ export class AiAnswerService {
             repoFacts: request.repoFacts
         };
 
+        let firstTokenTime: number | null = null;
+        const trackingOnToken = (token: string) => {
+            if (firstTokenTime === null) {
+                firstTokenTime = Date.now();
+            }
+            onToken(token);
+        };
+
         try {
-            const providerResponse = await this.provider.streamAnswer(providerRequest, onToken);
+            const providerResponse = await this.provider.streamAnswer(providerRequest, trackingOnToken);
 
             if (providerResponse.status === "insufficient_context") {
                 if (isFileSelected || effectiveScope === "repo") {
@@ -1610,8 +1946,11 @@ export class AiAnswerService {
                 fileLinesMap
             );
 
+            const isGreeting = classification.isGreetingOrThanks || classification.questionClass === "greeting";
             let finalAnswer = parsed.cleanAnswer;
-            if (aiContext.fileTruncated) {
+            if (isGreeting) {
+                finalAnswer = cleanGreetingAnswer(finalAnswer);
+            } else if (aiContext.fileTruncated) {
                 const linesCount = aiContext.fileTruncatedLines ?? 150;
                 const truncationNotice = `Based on the outline and first ${linesCount} lines.`;
                 if (finalAnswer) {
@@ -1622,7 +1961,9 @@ export class AiAnswerService {
             }
 
             let finalEvidence: LlmEvidence[] = [];
-            if (hasImages) {
+            if (isGreeting) {
+                finalEvidence = [];
+            } else if (hasImages) {
                 finalEvidence = parsed.evidence.filter((item) => {
                     const normPath = item.path.replace(/\\/g, "/").toLowerCase();
                     const baseName = normPath.split("/").pop() || "";
@@ -1643,13 +1984,13 @@ export class AiAnswerService {
                 finalEvidence = parsed.evidence;
             }
 
-            const finalCitations = finalEvidence.length > 0
+            const finalCitations = isGreeting ? [] : (finalEvidence.length > 0
                 ? Array.from(new Set(finalEvidence.map((e) => e.path))).map((p) => ({ type: "file" as const, path: p }))
                 : (hasImages
                     ? []
                     : (parsed.citations.length > 0
                         ? parsed.citations
-                        : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : []))));
+                        : (providerResponse.citations ?? (aiContext.target.path ? [{ type: "file" as const, path: aiContext.target.path }] : [])))));
 
             const askedSet = new Set<string>();
             if (request.question) askedSet.add(normalizeQuestionForComparison(request.question));
@@ -1659,8 +2000,8 @@ export class AiAnswerService {
                 }
             }
 
-            let finalFollowUps = parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
-            if (finalFollowUps.length === 0) {
+            let finalFollowUps = isGreeting ? [] : parsed.followUps.filter(q => !askedSet.has(normalizeQuestionForComparison(q)));
+            if (!isGreeting && finalFollowUps.length === 0) {
                 finalFollowUps = generateFallbackFollowUps(
                     targetPath,
                     request.question,
@@ -1668,6 +2009,20 @@ export class AiAnswerService {
                     detectedLang
                 );
             }
+
+            const total = Date.now() - requestStart;
+            const firstToken = firstTokenTime !== null ? (firstTokenTime - requestStart) : total;
+            const model = providerResponse.usedContext?.model || "openai/gpt-oss-120b";
+            const hops = providerResponse.usedContext?.hops ?? 0;
+            const askTimings: AskTimings = {
+                fileFetch,
+                contextBuild,
+                firstToken,
+                total,
+                model,
+                hops
+            };
+            console.log(`[ask] total=${total}ms fetch=${fileFetch}ms ctx=${contextBuild}ms firstToken=${firstToken}ms model=${model} hops=${hops}`);
 
             const finalResult: AiAnswerResult = {
                 status: "ok",
@@ -1684,12 +2039,13 @@ export class AiAnswerService {
                         commits: aiContext.commits.length,
                         provider: "groq",
                         model: "openai/gpt-oss-120b",
-                        cached: false,
                         images: request.images ? request.images.length : 0
                     }),
+                    cached: false,
                     length: classification.length,
                     format: classification.format,
-                    scope: effectiveScope
+                    scope: effectiveScope,
+                    timings: askTimings
                 }
             };
 

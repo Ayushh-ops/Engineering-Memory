@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
-import { AiAnswerService, getGreetingOrSmallTalkResponse, getMetaResponse } from "../ai/answer-service";
-import { classifyQuestion, isMetaQuestion } from "../ai/question-class";
+import { AiAnswerService, getGreetingOrSmallTalkResponse, getMetaResponse, getJokeResponse, getOfftopicResponse, getDevResponse } from "../ai/answer-service";
+import { classifyQuestion, isMetaQuestion, routeQuestion } from "../ai/question-class";
 import { createLlmProviderFromEnvironment } from "../ai/provider-factory";
 import { type RepositoryContextTarget } from "../graph/repository-context";
 import { GitHubRepositoryFileClient, GitHubRepositoryFileError } from "../github/repository-file-client";
@@ -206,6 +206,7 @@ export function createAiRouter(
 
             return res.status(200).json({
                 status: result.status,
+                mode: (result as any).mode || "repo",
                 answer: result.answer,
                 citations: result.citations,
                 confidence: result.confidence,
@@ -224,6 +225,7 @@ export function createAiRouter(
     });
 
     router.post("/ai/ask-repository", async (req: Request, res: Response) => {
+        const requestStartTime = Date.now();
         if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
             return sendError(res, "/ai/ask-repository", 400, "bad_request", "Malformed request body.");
         }
@@ -299,93 +301,86 @@ export function createAiRouter(
         const parsedScope = (typeof scope === "string" && ["file", "dependents", "repo", "auto"].includes(scope)) ? (scope as any) : "auto";
         const isSse = req.headers.accept?.includes("text/event-stream");
 
-        const greetingReply = rawQuestion ? getGreetingOrSmallTalkResponse(rawQuestion) : null;
-        const classification = classifyQuestion(rawQuestion, parsedMode, hasImages);
+        const targetFilePath = target && (target as any).type === "file" ? (target as any).path : undefined;
+        let routeResult = routeQuestion({
+            question: rawQuestion,
+            selectedFile: targetFilePath,
+            repoFiles: Array.isArray(paths) ? (paths as string[]) : undefined,
+            history: parsedHistory
+        });
+        console.log(`[AI Router] mode=${routeResult.mode} reason=${routeResult.reason}`);
 
-        if (greetingReply || (classification.isGreetingOrThanks && rawQuestion)) {
-            const finalGreeting = greetingReply || "You're welcome! Let me know if you need anything else.";
-            if (isSse) {
-                res.setHeader("Content-Type", "text/event-stream");
-                res.setHeader("Cache-Control", "no-cache");
-                res.setHeader("Connection", "keep-alive");
-                res.write(`event: token\ndata: ${JSON.stringify({ token: finalGreeting })}\n\n`);
-                res.write(`event: done\ndata: ${JSON.stringify({
-                    status: "ok",
-                    answer: finalGreeting,
-                    citations: [],
-                    confidence: "high",
-                    missingData: [],
-                    error: null,
-                    followUps: [],
-                    evidence: [],
-                    usedContext: {
-                        files: 0,
-                        commits: 0,
-                        provider: "internal",
-                        model: "deterministic",
-                        cached: false,
-                        length: "brief",
-                        format: "prose",
-                        scope: parsedScope
-                    }
-                })}\n\n`);
-                res.end();
-                return;
-            }
-            return res.status(200).json({
-                status: "ok",
-                answer: finalGreeting,
-                citations: [],
-                confidence: "high",
-                missingData: [],
-                error: null,
-                followUps: [],
-                evidence: [],
-                usedContext: {
-                    files: 0,
-                    commits: 0,
-                    provider: "internal",
-                    model: "deterministic",
-                    cached: false,
-                    length: "brief",
-                    format: "prose",
-                    scope: parsedScope
+        if (routeResult.mode !== "repo") {
+            let finalAnswer = "";
+            let finalFollowUps: string[] = [];
+            let needsRepoEscaped = false;
+
+            if (routeResult.mode === "chat") {
+                if (routeResult.reason === "chat_joke") {
+                    const joke = getJokeResponse(rawQuestion);
+                    finalAnswer = joke.answer;
+                    finalFollowUps = joke.followUps;
+                } else if (routeResult.reason === "chat_meta" || (rawQuestion && isMetaQuestion(rawQuestion))) {
+                    const meta = getMetaResponse(rawQuestion);
+                    finalAnswer = meta.answer;
+                    finalFollowUps = meta.followUps;
+                } else {
+                    const greetingReply = rawQuestion ? getGreetingOrSmallTalkResponse(rawQuestion) : null;
+                    finalAnswer = greetingReply || "You're welcome! Let me know if you need anything else.";
+                    finalFollowUps = [];
                 }
-            });
-        }
+            } else if (routeResult.mode === "offtopic") {
+                const offtopic = getOfftopicResponse(rawQuestion, targetFilePath);
+                finalAnswer = offtopic.answer;
+                finalFollowUps = offtopic.followUps;
+            } else if (routeResult.mode === "dev") {
+                const devRes = getDevResponse(rawQuestion, parsedHistory);
+                if (devRes.needsRepo) {
+                    needsRepoEscaped = true;
+                    routeResult = { mode: "repo", reason: "escape_hatch_needs_repo" };
+                    console.log(`[AI Router] mode=${routeResult.mode} reason=${routeResult.reason}`);
+                } else {
+                    finalAnswer = devRes.answer;
+                    finalFollowUps = devRes.followUps;
+                }
+            }
 
-        if (rawQuestion && (classification.isMeta || isMetaQuestion(rawQuestion))) {
-            const meta = getMetaResponse(rawQuestion);
-            if (isSse) {
-                res.setHeader("Content-Type", "text/event-stream");
-                res.setHeader("Cache-Control", "no-cache");
-                res.setHeader("Connection", "keep-alive");
-                res.write(`event: token\ndata: ${JSON.stringify({ token: meta.answer })}\n\n`);
-                res.write(`event: done\ndata: ${JSON.stringify({
+            if (!needsRepoEscaped) {
+                const total = Date.now() - requestStartTime;
+                console.log(`[ask] total=${total}ms fetch=0ms ctx=0ms firstToken=${total}ms model=canned hops=0`);
+                if (isSse) {
+                    res.setHeader("Content-Type", "text/event-stream");
+                    res.setHeader("Cache-Control", "no-cache");
+                    res.setHeader("Connection", "keep-alive");
+                    res.write(`event: token\ndata: ${JSON.stringify({ token: finalAnswer })}\n\n`);
+                    res.write(`event: done\ndata: ${JSON.stringify({
+                        status: "ok",
+                        mode: routeResult.mode,
+                        answer: finalAnswer,
+                        citations: [],
+                        confidence: "high",
+                        missingData: [],
+                        error: null,
+                        followUps: finalFollowUps,
+                        evidence: [],
+                        usedContext: false
+                    })}\n\n`);
+                    res.end();
+                    return;
+                }
+                return res.status(200).json({
                     status: "ok",
-                    answer: meta.answer,
+                    mode: routeResult.mode,
+                    answer: finalAnswer,
                     citations: [],
                     confidence: "high",
                     missingData: [],
                     error: null,
-                    followUps: meta.followUps,
+                    followUps: finalFollowUps,
                     evidence: [],
                     usedContext: false
-                })}\n\n`);
-                res.end();
-                return;
+                });
             }
-            return res.status(200).json({
-                status: "ok",
-                answer: meta.answer,
-                citations: [],
-                confidence: "high",
-                missingData: [],
-                error: null,
-                followUps: meta.followUps,
-                evidence: [],
-                usedContext: false
-            });
         }
 
         if (isSse) {
@@ -419,7 +414,8 @@ export function createAiRouter(
                             mode: parsedMode,
                             scope: parsedScope,
                             images: imageValidation.parsed,
-                            repoFacts: repoFacts as any
+                            repoFacts: repoFacts as any,
+                            requestStartTime
                         } as any,
                         (token: string) => {
                             accumulatedTokens += token;
@@ -444,7 +440,8 @@ export function createAiRouter(
                         mode: parsedMode,
                         scope: parsedScope,
                         images: imageValidation.parsed,
-                        repoFacts: repoFacts as any
+                        repoFacts: repoFacts as any,
+                        requestStartTime
                     } as any);
                 }
 
@@ -459,6 +456,7 @@ export function createAiRouter(
                 } else {
                     sendEvent("done", {
                         status: streamResult.status,
+                        mode: (streamResult as any).mode || "repo",
                         answer: streamResult.answer,
                         citations: streamResult.citations,
                         confidence: streamResult.confidence,
@@ -477,6 +475,7 @@ export function createAiRouter(
                 if (accumulatedTokens.trim().length > 0 && !res.writableEnded) {
                     sendEvent("done", {
                         status: "ok",
+                        mode: "repo",
                         answer: accumulatedTokens.trim(),
                         citations: [],
                         confidence: "medium",
@@ -496,6 +495,7 @@ export function createAiRouter(
                     });
                     sendEvent("done", {
                         status: "ok",
+                        mode: "repo",
                         answer: fallbackAns,
                         citations: [],
                         confidence: "medium",
@@ -541,7 +541,8 @@ export function createAiRouter(
                 mode: parsedMode,
                 scope: parsedScope,
                 images: imageValidation.parsed,
-                repoFacts: repoFacts as any
+                repoFacts: repoFacts as any,
+                requestStartTime
             } as any);
 
             if (result.retryAfterSeconds) {
@@ -572,6 +573,7 @@ export function createAiRouter(
 
             return res.status(result.status === "ok" || result.status === "insufficient_context" ? 200 : 502).json({
                 status: result.status,
+                mode: (result as any).mode || "repo",
                 answer: result.answer,
                 citations: result.citations,
                 confidence: result.confidence,
@@ -593,6 +595,7 @@ export function createAiRouter(
                 });
                 return res.status(200).json({
                     status: "ok",
+                    mode: "repo",
                     answer: fallbackAns,
                     citations: [],
                     confidence: "medium",

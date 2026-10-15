@@ -183,6 +183,49 @@ async function main(): Promise<void> {
         assert.ok((metaEnglishFetchRes.body.answer as string).toLowerCase().includes("dependencies"));
 
         // --------------------------------------------------------------------
+        // Test 3c: Chat joke, Dev, and Offtopic answered with fetcher mocked to throw
+        // --------------------------------------------------------------------
+        const jokeFetchRes = await postJson(port, "/api/ai/ask-repository", {
+            url: "https://github.com/facebook/react",
+            sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            paths: ["src/index.ts"],
+            target: { type: "file", path: "src/index.ts" },
+            question: "joke sunao"
+        });
+        assert.equal(jokeFetchRes.status, 200);
+        assert.equal(jokeFetchRes.body.status, "ok");
+        assert.equal(jokeFetchRes.body.mode, "chat");
+        assert.deepEqual(jokeFetchRes.body.evidence, []);
+        assert.ok((jokeFetchRes.body.answer as string).includes("Ab chalo, kis file ko dekhna hai?"));
+
+        const devFetchRes = await postJson(port, "/api/ai/ask-repository", {
+            url: "https://github.com/facebook/react",
+            sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            paths: ["src/index.ts"],
+            target: { type: "file", path: "src/index.ts" },
+            question: "what is a dependency graph"
+        });
+        assert.equal(devFetchRes.status, 200);
+        assert.equal(devFetchRes.body.status, "ok");
+        assert.equal(devFetchRes.body.mode, "dev");
+        assert.deepEqual(devFetchRes.body.evidence, []);
+        assert.ok((devFetchRes.body.answer as string).toLowerCase().includes("directed graph"));
+
+        const offtopicFetchRes = await postJson(port, "/api/ai/ask-repository", {
+            url: "https://github.com/facebook/react",
+            sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            paths: ["src/index.ts"],
+            target: { type: "file", path: "src/index.ts" },
+            question: "give me a recipe for biryani"
+        });
+        assert.equal(offtopicFetchRes.status, 200);
+        assert.equal(offtopicFetchRes.body.status, "ok");
+        assert.equal(offtopicFetchRes.body.mode, "offtopic");
+        assert.deepEqual(offtopicFetchRes.body.evidence, []);
+        assert.ok((offtopicFetchRes.body.answer as string).includes("repository assistant"));
+        assert.equal((offtopicFetchRes.body.followUps as string[]).length, 2);
+
+        // --------------------------------------------------------------------
         // Test 4: Analyze error path returns JSON quickly
         // --------------------------------------------------------------------
         globalThis.fetch = async () => {

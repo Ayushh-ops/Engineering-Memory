@@ -179,6 +179,15 @@ export interface AskRepoFacts {
     owners?: Array<{ name: string; share: number }>;
 }
 
+export interface AskTimings {
+    fileFetch: number;
+    contextBuild: number;
+    firstToken: number;
+    total: number;
+    model: string;
+    hops: number;
+}
+
 export interface AskUsedContext {
     files: number;
     commits: number;
@@ -189,6 +198,8 @@ export interface AskUsedContext {
     length?: string;
     format?: string;
     scope?: string;
+    timings?: AskTimings;
+    hops?: number;
 }
 
 export interface AskPayload {
@@ -203,6 +214,7 @@ export interface AskPayload {
     usedContext?: AskUsedContext;
     retryAfterSeconds?: number;
     truncated?: boolean;
+    mode?: 'repo' | 'chat' | 'dev' | 'offtopic';
 }
 
 export type AiAnswerResult = AskPayload;
@@ -376,14 +388,17 @@ export const api = {
                 scope?: AskScope;
                 images?: AskImage[];
                 repoFacts?: AskRepoFacts;
+                onFirstByte?: () => void;
             },
             mode: AskMode = 'auto',
             scope: AskScope = 'auto',
-            images?: AskImage[]
+            images?: AskImage[],
+            onFirstByte?: () => void
         ): Promise<AskPayload> {
             const effectiveMode = extraContext?.mode || mode;
             const effectiveScope = extraContext?.scope || scope;
             const effectiveImages = images || extraContext?.images;
+            const notifyFirstByte = onFirstByte || extraContext?.onFirstByte;
             try {
                 const response = await fetch('/api/ai/ask-repository', {
                     method: 'POST',
@@ -419,6 +434,10 @@ export const api = {
                     (err as any).code = error.code;
                     (err as any).retryAfterSeconds = error.retryAfterSeconds;
                     throw err;
+                }
+
+                if (notifyFirstByte) {
+                    notifyFirstByte();
                 }
 
                 if (!response.body) {

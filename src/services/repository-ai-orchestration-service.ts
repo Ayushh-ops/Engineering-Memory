@@ -28,6 +28,7 @@ export interface RepositoryAiOrchestrationRequest {
     scope?: any;
     images?: Array<{ mime: "image/jpeg" | "image/png" | "image/webp"; data: string }>;
     repoFacts?: any;
+    requestStartTime?: number;
 }
 
 export function buildFallbackFactsAnswer(
@@ -89,13 +90,82 @@ export class RepositoryAiOrchestrationService {
     ) {}
 
     private async prepareAiRequest(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerRequest> {
-        const files = await this.fileClient.loadFiles(
-            request.owner,
-            request.repository,
-            request.paths,
-            request.sha
-        );
+        const fetchStart = request.requestStartTime ?? Date.now();
+        const targetFilePath = request.target.type === "file"
+            ? request.target.path
+            : request.target.type === "symbol"
+                ? request.target.symbol.path
+                : undefined;
 
+        const dependentPaths = Array.isArray(request.dependents)
+            ? request.dependents.filter((p) => p !== targetFilePath)
+            : [];
+
+        const pathsToFetch = Array.from(new Set([
+            ...request.paths,
+            ...(targetFilePath ? [targetFilePath] : []),
+            ...dependentPaths.slice(0, 10)
+        ]));
+
+        const fetchWithTimeout = <T>(promise: Promise<T>, ms = 6000): Promise<T> => {
+            return new Promise<T>((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error("Timeout")), ms);
+                promise.then(
+                    (val) => { clearTimeout(timer); resolve(val); },
+                    (err) => { clearTimeout(timer); reject(err); }
+                );
+            });
+        };
+
+        let files: GitHubRepositoryFile[] = [];
+        if (typeof (this.fileClient as any).loadFile === "function") {
+            try {
+                const fetchedList = await Promise.all(
+                    pathsToFetch.map(async (p) => {
+                        try {
+                            const f = await fetchWithTimeout<GitHubRepositoryFile>(
+                                (this.fileClient as any).loadFile(request.owner, request.repository, p, request.sha),
+                                6000
+                            );
+                            if (f && typeof f.content === "string") {
+                                if (p !== targetFilePath && typeof (this.fileClient as any).cacheDependent === "function") {
+                                    (this.fileClient as any).cacheDependent(request.owner, request.repository, p, request.sha, f.content);
+                                }
+                                return f;
+                            }
+                            return null;
+                        } catch (err: any) {
+                            if (err?.code === "rate_limit" || err?.code === "auth_failed") {
+                                throw err;
+                            }
+                            return null;
+                        }
+                    })
+                );
+                files = fetchedList.filter((f): f is GitHubRepositoryFile => f !== null && typeof f.content === "string");
+            } catch (err: any) {
+                if (err?.code === "rate_limit" || err?.code === "auth_failed") {
+                    throw err;
+                }
+                files = [];
+            }
+        } else {
+            try {
+                files = await fetchWithTimeout(
+                    this.fileClient.loadFiles(request.owner, request.repository, pathsToFetch, request.sha),
+                    6000
+                );
+            } catch (err: any) {
+                if (err?.message === "Timeout") {
+                    files = [];
+                } else {
+                    throw err;
+                }
+            }
+        }
+        const fileFetchTime = Date.now() - fetchStart;
+
+        const ctxStart = Date.now();
         const analysis = this.analysisService.analyzeFiles(
             { owner: request.owner, repository: request.repository },
             request.sha,
@@ -103,8 +173,8 @@ export class RepositoryAiOrchestrationService {
         );
         let finalAnalysis = analysis;
         let analyzedFiles = files;
-        const knownPaths = new Set(request.paths);
-        const attemptedPaths = new Set(request.paths);
+        const knownPaths = new Set(files.map(f => f.path));
+        const attemptedPaths = new Set(pathsToFetch);
         let additionalFileCount = 0;
         const maxAdditionalFiles = this.expansionService.maxAdditionalFiles;
         let relatedPaths: string[] = [];
@@ -159,11 +229,7 @@ export class RepositoryAiOrchestrationService {
 
             if (!expanded) break;
         }
-        const targetFilePath = request.target.type === "file"
-            ? request.target.path
-            : request.target.type === "symbol"
-                ? request.target.symbol.path
-                : null;
+
         const targetFile = targetFilePath ? analyzedFiles.find((f) => f.path === targetFilePath) : undefined;
 
         if (request.target.type === "file" && (!targetFile || typeof targetFile.content !== "string")) {
@@ -180,6 +246,8 @@ export class RepositoryAiOrchestrationService {
             ? undefined
             : this.sourceEvidenceService.select(request.target, finalAnalysis.graph, analyzedFiles);
         const fileContent = targetFile?.content ?? undefined;
+        const contextBuildTime = Date.now() - ctxStart;
+
         const aiRequest: AiAnswerRequest = {
             repository: `${request.owner}/${request.repository}`,
             target: request.target,
@@ -199,7 +267,12 @@ export class RepositoryAiOrchestrationService {
             mode: request.mode,
             scope: request.scope,
             images: request.images,
-            repoFacts: request.repoFacts
+            repoFacts: request.repoFacts,
+            timings: {
+                fileFetch: fileFetchTime,
+                contextBuild: contextBuildTime
+            },
+            requestStartTime: fetchStart
         };
 
         return aiRequest;
@@ -215,8 +288,46 @@ export class RepositoryAiOrchestrationService {
                 allowInsufficientContext: true
             });
         }
-        const aiRequest = await this.prepareAiRequest(request);
-        return this.aiService.answer(aiRequest);
+        try {
+            const aiRequest = await this.prepareAiRequest(request);
+            return await this.aiService.answer(aiRequest);
+        } catch (error) {
+            if (request.target.type === "file" && (request.risk || request.dependents || request.owners || request.recentCommits)) {
+                const total = Date.now() - (request.requestStartTime ?? Date.now());
+                const factsTimings = {
+                    fileFetch: 0,
+                    contextBuild: 0,
+                    firstToken: total,
+                    total,
+                    model: "facts",
+                    hops: 0
+                };
+                console.log(`[ask] total=${total}ms fetch=0ms ctx=0ms firstToken=${total}ms model=facts hops=0`);
+                const fallbackAnswer = buildFallbackFactsAnswer(request.target.path, {
+                    risk: request.risk,
+                    dependents: request.dependents,
+                    owners: request.owners,
+                    recentCommits: request.recentCommits
+                });
+                return {
+                    status: "ok",
+                    mode: "repo",
+                    answer: fallbackAnswer,
+                    citations: [],
+                    confidence: "medium",
+                    missingData: ["file_content_unavailable"],
+                    usedContext: {
+                        files: 0,
+                        commits: Array.isArray(request.recentCommits) ? request.recentCommits.length : 0,
+                        provider: "facts",
+                        model: "facts",
+                        cached: false,
+                        timings: factsTimings
+                    }
+                };
+            }
+            throw error;
+        }
     }
 
     async streamAnswer(
@@ -236,10 +347,49 @@ export class RepositoryAiOrchestrationService {
             }
             return this.aiService.answer(aiReq);
         }
-        const aiRequest = await this.prepareAiRequest(request);
-        if (typeof this.aiService.streamAnswer === "function") {
-            return this.aiService.streamAnswer(aiRequest, onToken);
+        try {
+            const aiRequest = await this.prepareAiRequest(request);
+            if (typeof this.aiService.streamAnswer === "function") {
+                return await this.aiService.streamAnswer(aiRequest, onToken);
+            }
+            return await this.aiService.answer(aiRequest);
+        } catch (error) {
+            if (request.target.type === "file" && (request.risk || request.dependents || request.owners || request.recentCommits)) {
+                const total = Date.now() - (request.requestStartTime ?? Date.now());
+                const factsTimings = {
+                    fileFetch: 0,
+                    contextBuild: 0,
+                    firstToken: total,
+                    total,
+                    model: "facts",
+                    hops: 0
+                };
+                console.log(`[ask] total=${total}ms fetch=0ms ctx=0ms firstToken=${total}ms model=facts hops=0`);
+                const fallbackAnswer = buildFallbackFactsAnswer(request.target.path, {
+                    risk: request.risk,
+                    dependents: request.dependents,
+                    owners: request.owners,
+                    recentCommits: request.recentCommits
+                });
+                onToken(fallbackAnswer);
+                return {
+                    status: "ok",
+                    mode: "repo",
+                    answer: fallbackAnswer,
+                    citations: [],
+                    confidence: "medium",
+                    missingData: ["file_content_unavailable"],
+                    usedContext: {
+                        files: 0,
+                        commits: Array.isArray(request.recentCommits) ? request.recentCommits.length : 0,
+                        provider: "facts",
+                        model: "facts",
+                        cached: false,
+                        timings: factsTimings
+                    }
+                };
+            }
+            throw error;
         }
-        return this.aiService.answer(aiRequest);
     }
 }

@@ -877,6 +877,45 @@ function renderInlineMarkdown(text: string): React.ReactNode[] {
     return parts;
 }
 
+function AskAiThinkingIndicator({ phase }: { phase: 'reading' | 'thinking' }) {
+    const [elapsed, setElapsed] = useState(0);
+
+    useEffect(() => {
+        if (phase !== 'thinking') {
+            setElapsed(0);
+            return;
+        }
+        const start = Date.now();
+        const interval = setInterval(() => {
+            setElapsed(Math.floor((Date.now() - start) / 1000));
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [phase]);
+
+    let label = 'Reading the file...';
+    if (phase === 'thinking') {
+        label = elapsed >= 4 ? `Thinking... ${elapsed}s` : 'Thinking...';
+    }
+
+    return (
+        <div className="space-y-1.5 py-1">
+            <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono">
+                <span>{label}</span>
+                <span className="flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
+                </span>
+            </div>
+            {phase === 'thinking' && elapsed >= 25 && (
+                <div className="text-[11px] text-[#8A918C]/80 font-mono">
+                    The server may be waking up, this can take up to a minute on the free plan
+                </div>
+            )}
+        </div>
+    );
+}
+
 function MarkdownRenderer({ content }: { content: string }) {
     if (!content) return null;
 
@@ -3016,6 +3055,7 @@ export function MainPanel({ className }: { className?: string }) {
     const [editingMessageIdx, setEditingMessageIdx] = useState<number | null>(null);
     const [editingHasMissingImages, setEditingHasMissingImages] = useState(false);
     const [imageWarning, setImageWarning] = useState<string | null>(null);
+    const [askWaitingPhase, setAskWaitingPhase] = useState<'reading' | 'thinking'>('reading');
     const [isDraggingOverChat, setIsDraggingOverChat] = useState(false);
     const [lightboxImage, setLightboxImage] = useState<string | null>(null);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -3251,6 +3291,12 @@ export function MainPanel({ className }: { className?: string }) {
 
     // 4. Keep aiEvidence in sync with the active assistant message
     useEffect(() => {
+        if (activeAssistantMsg?.mode && activeAssistantMsg.mode !== 'repo') {
+            setAiEvidence([]);
+            setAiCitations([]);
+            setAiEvidenceTitle?.(null);
+            return;
+        }
         if (activeAssistantMsg && activeAssistantMsg.evidence && activeAssistantMsg.evidence.length > 0 && !isActiveBriefCountSuppressed) {
             setAiEvidence(activeAssistantMsg.evidence);
             setAiCitations(activeAssistantMsg.evidence.map(e => e.path + (e.line !== undefined ? `:${e.line}` : '')));
@@ -3792,6 +3838,7 @@ ${lastAssistant.content}${evidenceList}
         setAttachedImages([]);
         setImageWarning(null);
         setAiError(null);
+        setAskWaitingPhase('reading');
 
         const currentMode = requestedMode || askMode;
         const currentScope = requestedScope || 'auto';
@@ -3986,7 +4033,8 @@ ${lastAssistant.content}${evidenceList}
             mode: currentMode,
             scope: currentScope,
             images: imagesPayload.length > 0 ? imagesPayload : undefined,
-            repoFacts
+            repoFacts,
+            onFirstByte: () => setAskWaitingPhase('thinking')
         };
 
         try {
@@ -4004,7 +4052,8 @@ ${lastAssistant.content}${evidenceList}
                 extraContext,
                 currentMode,
                 currentScope,
-                imagesPayload.length > 0 ? imagesPayload : undefined
+                imagesPayload.length > 0 ? imagesPayload : undefined,
+                () => setAskWaitingPhase('thinking')
             );
 
             if (res.status === 'error' && res.error) {
@@ -6247,14 +6296,7 @@ ${lastAssistant.content}${evidenceList}
                                                             ) : (
                                                                 <div className="max-w-[94%] sm:max-w-[85%] px-3.5 py-3 rounded-xl bg-white/[0.02] border border-white/10 text-xs text-[#E8EAE6] leading-relaxed space-y-2">
                                                                     {msg.isThinking ? (
-                                                                        <div className="flex items-center gap-2.5 text-[#8A918C] text-xs font-mono py-1">
-                                                                            <span>Thinking</span>
-                                                                            <span className="flex items-center gap-1">
-                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '0ms' }} />
-                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '200ms' }} />
-                                                                                <span className="w-1.5 h-1.5 rounded-full bg-[#4FD1B5] typing-dot" style={{ animationDelay: '400ms' }} />
-                                                                            </span>
-                                                                        </div>
+                                                                        <AskAiThinkingIndicator phase={askWaitingPhase} />
                                                                     ) : (
                                                                         <>
                                                                             <MarkdownRenderer content={msg.content} />
@@ -6283,7 +6325,7 @@ ${lastAssistant.content}${evidenceList}
                                                                             )}
 
                                                                             {/* Evidence chips: mono, path:line, base name bold, folder muted */}
-                                                                            {msg.evidence && msg.evidence.length > 0 && !isBriefCountAnswerWithoutLineCitation(msg, getPrecedingUserQuestion(idx)) && (
+                                                                            {(!msg.mode || msg.mode === 'repo') && msg.evidence && msg.evidence.length > 0 && !isBriefCountAnswerWithoutLineCitation(msg, getPrecedingUserQuestion(idx)) && (
                                                                                 <div className="pt-2 border-t border-white/[0.06] flex items-center gap-1.5 flex-wrap">
                                                                                     <button
                                                                                         type="button"
@@ -6449,10 +6491,10 @@ ${lastAssistant.content}${evidenceList}
                                                                                         );
                                                                                     })()}
 
-                                                                                    {msg.usedContext && msg.usedContext.provider !== 'greeting' && (
+                                                                                    {(!msg.mode || msg.mode === 'repo') && msg.usedContext && msg.usedContext.provider !== 'greeting' && (
                                                                                         <span
                                                                                             className="p-1 text-[#8A918C] hover:text-[#E8EAE6] transition-colors cursor-help inline-flex items-center"
-                                                                                            title={`Context: ${msg.usedContext.scope === 'repo' ? 'repository summary' : (selectedFile || 'file')}, ${msg.usedContext.commits} ${msg.usedContext.commits === 1 ? 'commit' : 'commits'}, ${[msg.usedContext.provider, msg.usedContext.model].filter(Boolean).join(' ') || 'AI'}`}
+                                                                                            title={`Context: ${msg.usedContext.scope === 'repo' ? 'repository summary' : (selectedFile || 'file')}, ${msg.usedContext.commits} ${msg.usedContext.commits === 1 ? 'commit' : 'commits'}, ${[msg.usedContext.provider, msg.usedContext.model].filter(Boolean).join(' ') || 'AI'}${msg.usedContext.timings ? `, total: ${msg.usedContext.timings.total}ms, first token: ${msg.usedContext.timings.firstToken}ms` : ''}`}
                                                                                         >
                                                                                             <Info size={12} />
                                                                                         </span>
@@ -6637,7 +6679,7 @@ ${lastAssistant.content}${evidenceList}
                                     </div>
 
                                     {/* Right panel inside expanded chat: collapsible 320px column showing the Evidence list for active answer */}
-                                    {isChatExpanded && expandedEvidenceOpen && isDesktop && (
+                                    {isChatExpanded && expandedEvidenceOpen && isDesktop && (!activeAssistantMsg?.mode || activeAssistantMsg.mode === 'repo') && (
                                         <div className="w-[320px] shrink-0 border-l border-white/10 flex flex-col bg-[#07090A] overflow-hidden">
                                             <div className="p-3 border-b border-white/10 flex items-center justify-between shrink-0">
                                                 <div className="flex items-center gap-1.5 font-mono text-xs font-semibold text-[#E8EAE6]">

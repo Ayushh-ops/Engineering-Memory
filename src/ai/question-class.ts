@@ -228,3 +228,177 @@ export function classifyScope(question: string, hasRepoFacts = true): "file" | "
     // 3. Otherwise file scope
     return "file";
 }
+
+export type QuestionMode = "repo" | "chat" | "dev" | "offtopic";
+
+export interface RouteQuestionInput {
+    question: string;
+    selectedFile?: string;
+    repoFiles?: string[];
+    symbols?: string[];
+    history?: Array<{ role: string; content: string; mode?: QuestionMode }>;
+}
+
+export interface RouteQuestionResult {
+    mode: QuestionMode;
+    reason: string;
+}
+
+export function routeQuestion(input: RouteQuestionInput): RouteQuestionResult {
+    const raw = (input.question || "").trim();
+    const q = raw.toLowerCase();
+    const cleanQ = q.replace(/[!.,?]+$/, "").trim();
+
+    // Check if greeting or thanks (resets sticky history)
+    const greetingThanksRegex = /^(hi+|hello+|hey+|howdy|greetings|good\s+(morning|afternoon|evening|day)|thanks?(\s+(a\s+lot|so\s+much|very\s+much))?|thank\s+you(\s+(so\s+much|very\s+much))?|many\s+thanks|(?:bahut\s+)?shukriyaa?|ok|okay|thx|ty|(?:bahut\s+)?dhanyawa?d|(?:bahut\s+)?dhanyava?d|namaste|namaskar|kya\s+haal|kaise\s+ho|kya\s+chal\s+raha\s+hai)$/i;
+    const isGreetingOrThanks = greetingThanksRegex.test(cleanQ);
+
+    // 1. REPO MODE
+    // Condition 1a: Names an analyzed file path or basename (with or without extension)
+    if (input.repoFiles && input.repoFiles.length > 0) {
+        for (const filePath of input.repoFiles) {
+            const fullPath = filePath.toLowerCase();
+            const baseName = filePath.split(/[/\\]/).pop()?.toLowerCase();
+            const baseNameNoExt = baseName ? baseName.replace(/\.[a-zA-Z0-9]+$/, "") : undefined;
+            if (fullPath && q.includes(fullPath)) {
+                return { mode: "repo", reason: "repo_named_file" };
+            }
+            if (baseName && baseName.length > 2) {
+                const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                const regex = new RegExp(`\\b${escaped}\\b`, "i");
+                if (regex.test(q)) {
+                    return { mode: "repo", reason: "repo_named_file" };
+                }
+            }
+            if (baseNameNoExt && baseNameNoExt.length > 2) {
+                const escaped = baseNameNoExt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                const regex = new RegExp(`\\b${escaped}\\b`, "i");
+                if (regex.test(q)) {
+                    return { mode: "repo", reason: "repo_named_file" };
+                }
+            }
+        }
+    }
+    if (input.selectedFile) {
+        const fullPath = input.selectedFile.toLowerCase();
+        const baseName = input.selectedFile.split(/[/\\]/).pop()?.toLowerCase();
+        const baseNameNoExt = baseName ? baseName.replace(/\.[a-zA-Z0-9]+$/, "") : undefined;
+        if (fullPath && q.includes(fullPath)) {
+            return { mode: "repo", reason: "repo_named_file" };
+        }
+        if (baseName && baseName.length > 2) {
+            const escaped = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const regex = new RegExp(`\\b${escaped}\\b`, "i");
+            if (regex.test(q)) {
+                return { mode: "repo", reason: "repo_named_file" };
+            }
+        }
+        if (baseNameNoExt && baseNameNoExt.length > 2) {
+            const escaped = baseNameNoExt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const regex = new RegExp(`\\b${escaped}\\b`, "i");
+            if (regex.test(q)) {
+                return { mode: "repo", reason: "repo_named_file" };
+            }
+        }
+    }
+
+    if (input.symbols && input.symbols.length > 0) {
+        for (const sym of input.symbols) {
+            if (sym && sym.length > 2) {
+                const escaped = sym.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                const regex = new RegExp(`\\b${escaped}\\b`, "i");
+                if (regex.test(q)) {
+                    return { mode: "repo", reason: "repo_symbol" };
+                }
+            }
+        }
+    }
+
+    // Condition 1b: Backticked symbol that exists in the repo
+    const backtickMatches = q.match(/`([^`]+)`/g);
+    if (backtickMatches && backtickMatches.length > 0) {
+        const backtickedSymbols = backtickMatches.map(s => s.slice(1, -1).trim().toLowerCase());
+        if (input.symbols && input.symbols.length > 0) {
+            const symbolSet = new Set(input.symbols.map(s => s.toLowerCase()));
+            if (backtickedSymbols.some(s => symbolSet.has(s))) {
+                return { mode: "repo", reason: "repo_symbol" };
+            }
+        } else {
+            return { mode: "repo", reason: "repo_symbol" };
+        }
+    }
+
+    // Condition 1c: Deictic reference while a file is selected
+    if (input.selectedFile) {
+        const deicticTargetRegex = /\b(this|ye|yeh|is|iss|isko|iska|isme|isse|us)\s+(file|code|function|class|module|script|component)\b/i;
+        const deicticVerbRegex1 = /\b(this|ye|yeh|is|iss|isko|iska|isme|isse|us)\b.*\b(kya\s+(?:krta|karta|krte|karte)|what\s+does|explain|samjhao|samjha|why|kyu|kyun)\b/i;
+        const deicticVerbRegex2 = /\b(kya\s+(?:krta|karta|krte|karte)|what\s+does|explain|samjhao|samjha|why|kyu|kyun)\b.*\b(this|ye|yeh|is|iss|isko|iska|isme|isse|us)\b/i;
+        const directExplainThis = /\b(explain\s+this|what\s+does\s+this\s+do|why\s+this|is\s+par\s+kya|isko\s+batao|is\s+file\s+ko\s+samjhao|ye\s+kya\s+(?:krta|karta))\b/i;
+
+        const codeGeneralOnCurrentFile = /\b(why\s+is\s+this\s+slow|how\s+do\s+i\s+run\s+tests|run\s+(?:the\s+)?tests?|test\s+kaise\s+run\s+karein|slow\s+kyu\s+hai)\b/i;
+
+        if (deicticTargetRegex.test(q) || deicticVerbRegex1.test(q) || deicticVerbRegex2.test(q) || directExplainThis.test(q) || codeGeneralOnCurrentFile.test(q)) {
+            return { mode: "repo", reason: "repo_deictic" };
+        }
+    }
+
+    // Condition 1d: Repo-analysis vocabulary (excluding "dependency graph", which belongs to dev)
+    const isDependencyGraph = /\bdependency\s+graph\b/i.test(q);
+    const isWhatIsRepo = /\bwhat\s+is\s+a\s+(?:git\s+)?repository\b/i.test(q);
+    if (!isDependencyGraph && !isWhatIsRepo) {
+        const repoVocabRegex = /\b(repo|repository|codebase|poore\s+project|whole\s+project|depend|depends|dependent|dependents|imported\s+by|callers?|blast\s+radius|impact|risk\s+score|hotspots?|bus\s+factor|plan\s+a\s+change|commit\s+history|owners?|circular\s+imports?|unused\s+files?|tests?\s+to\s+run|run\s+(?:the\s+)?tests?|files?\s+use\s+this)\b/i;
+        if (repoVocabRegex.test(q)) {
+            return { mode: "repo", reason: "repo_vocab" };
+        }
+    }
+
+    // Condition 1e: Sticky continuation (<= 8 words with aur, phir, iska, uska, and, also, why, kyu, how, example) after repo answer
+    if (!isGreetingOrThanks && Array.isArray(input.history) && input.history.length > 0) {
+        const lastAssistant = [...input.history].reverse().find(m => m.role === "assistant");
+        const lastMode = (lastAssistant as any)?.mode;
+        const wasRepo = lastMode === "repo" || (lastMode === undefined && Boolean(input.selectedFile));
+        if (wasRepo) {
+            const wordCount = raw.split(/\s+/).filter(Boolean).length;
+            if (wordCount <= 8) {
+                const continuationRegex = /\b(aur|phir|iska|uska|and|also|why|kyu|kyun|how|example)\b/i;
+                if (continuationRegex.test(q)) {
+                    return { mode: "repo", reason: "repo_sticky" };
+                }
+            }
+        }
+    }
+
+    // 2. CHAT MODE
+    if (isGreetingOrThanks) {
+        return { mode: "chat", reason: /thanks?|shukriya|dhanya/i.test(cleanQ) ? "chat_thanks" : "chat_greeting" };
+    }
+    if (isMetaQuestion(raw)) {
+        return { mode: "chat", reason: "chat_meta" };
+    }
+    const jokeRegex = /\b(joke|jokes|chutkula|chutkule|mazaak|mazak|joke\s+sunao|tell\s+(?:me\s+)?a\s+joke|make\s+me\s+laugh|funny|kuch\s+funny|kuch\s+mazaak)\b/i;
+    if (jokeRegex.test(q)) {
+        return { mode: "chat", reason: "chat_joke" };
+    }
+    const banterRegex = /\b(how\s+are\s+you|how\s+are\s+u|kaise\s+ho|kya\s+haal|good\s+morning|good\s+night|bye|goodbye|alvida|tata)\b/i;
+    if (banterRegex.test(q)) {
+        return { mode: "chat", reason: "chat_banter" };
+    }
+
+    // 3. DEV MODE
+    const devTechRegex = /\b(python|javascript|typescript|js|ts|java|c\+\+|cpp|c#|golang|go|rust|ruby|php|swift|kotlin|html|css|sql|bash|shell|git|rebase|merge|branch|commit|cherry-pick|pull\s+request|stash|checkout|npm|pnpm|yarn|pip|cargo|docker|kubernetes|k8s|linux|recursion|algorithm|binary\s+search|sorting|tree|graph|linked\s+list|stack|queue|hash\s*table|hash\s*map|tuple|tuples|list|lists|array|arrays|map|set|promise|async|await|closure|pointer|memory\s+leak|concurrency|multithreading|interface|polymorphism|inheritance|oop|design\s+pattern|dependency\s+graph|regex|regular\s+expression|rest|graphql|api|syntax|compiler|linter|error|bug|debugging)\b/i;
+
+    if (devTechRegex.test(q) || isDependencyGraph || isWhatIsRepo) {
+        return { mode: "dev", reason: "dev_question" };
+    }
+
+    // 4. OFFTOPIC MODE
+    const offtopicRegex = /\b(recipe|recipes|biryani|cake|pizza|burger|pasta|curry|roti|dal|paneer|cooking|cook|ingredients|bake|baking|boil|chai|tea|coffee|movie|movies|film|films|cinema|actor|actress|bollywood|hollywood|song|songs|sing|singer|album|lyrics|plot\s+of|netflix|tv\s+show|series|politic|politics|political|election|elections|vote|voting|bjp|congress|democrat|republican|prime\s+minister|president|parliament|minister|cricket|football|soccer|tennis|badminton|ipl|world\s+cup|match\s+score|score\s+of|messi|ronaldo|virat\s+kohli|rohit\s+sharma|olympics|weather|temperature|monsoon|rain|forecast|horoscope|zodiac|astrology|essay\s+on|essay\s+about|village\s+life|gao|gaon|farming|agriculture|kheti|dating|relationship)\b/i;
+
+    if (offtopicRegex.test(q)) {
+        return { mode: "offtopic", reason: "offtopic_detected" };
+    }
+
+    // 5. Fallback: when unsure between dev and offtopic, prefer dev.
+    return { mode: "dev", reason: "dev_fallback" };
+}
+

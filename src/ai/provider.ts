@@ -26,6 +26,15 @@ export interface LlmImage {
     data: string;
 }
 
+export interface AskTimings {
+    fileFetch: number;
+    contextBuild: number;
+    firstToken: number;
+    total: number;
+    model: string;
+    hops: number;
+}
+
 export interface LlmUsedContext {
     files: number;
     commits: number;
@@ -36,6 +45,8 @@ export interface LlmUsedContext {
     length?: string;
     format?: string;
     scope?: string;
+    timings?: AskTimings;
+    hops?: number;
 }
 
 export interface LlmProviderError {
@@ -55,6 +66,7 @@ export interface LlmResponse {
     usedContext?: any;
     retryAfterSeconds?: number;
     truncated?: boolean;
+    mode?: "repo" | "chat" | "dev" | "offtopic";
 }
 
 export interface LlmRequest {

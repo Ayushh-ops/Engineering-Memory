@@ -6,7 +6,7 @@ import {
     type OpenAIConfig
 } from "./config";
 import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
-import { classifyQuestion } from "./question-class";
+import { classifyQuestion, type QuestionClassification } from "./question-class";
 
 export interface OpenAIMessage {
     role: "system" | "user" | "assistant";
@@ -344,7 +344,11 @@ export class OpenAIProvider implements LlmProvider {
         return lower.includes("gpt-oss");
     }
 
-    private async getCandidates(config: OpenAIConfig, hasImages = false): Promise<ProviderCandidate[]> {
+    private async getCandidates(
+        config: OpenAIConfig,
+        hasImages = false,
+        classification?: QuestionClassification
+    ): Promise<ProviderCandidate[]> {
         if (hasImages) {
             if (!config.fallbackApiKey) {
                 return [];
@@ -359,8 +363,16 @@ export class OpenAIProvider implements LlmProvider {
             }));
         }
 
+        const isGreetingOrBrief = classification?.isGreetingOrThanks ||
+            classification?.questionClass === "greeting" ||
+            classification?.length === "brief";
+        const isStandard = classification?.length === "standard";
+
+        const primaryModel = (isGreetingOrBrief || isStandard)
+            ? "openai/gpt-oss-20b"
+            : (config.model || "openai/gpt-oss-120b");
+
         const chain: ProviderCandidate[] = [];
-        const primaryModel = config.model || "openai/gpt-oss-120b";
 
         chain.push({
             provider: "groq",
@@ -369,13 +381,15 @@ export class OpenAIProvider implements LlmProvider {
             model: primaryModel
         });
 
-        const secondaryModel = "openai/gpt-oss-20b";
-        if (secondaryModel !== primaryModel) {
+        const fallbackModel = primaryModel === "openai/gpt-oss-20b"
+            ? (config.model || "openai/gpt-oss-120b")
+            : "openai/gpt-oss-20b";
+        if (fallbackModel !== primaryModel) {
             chain.push({
                 provider: "groq",
                 apiKey: config.apiKey,
                 baseUrl: config.baseUrl || "https://api.groq.com/openai/v1",
-                model: secondaryModel
+                model: fallbackModel
             });
         }
 
@@ -414,15 +428,26 @@ export class OpenAIProvider implements LlmProvider {
             Boolean(request.images && request.images.length > 0),
             candidate.model
         );
+        const isGreetingOrBrief = classification.isGreetingOrThanks ||
+            classification.questionClass === "greeting" ||
+            classification.length === "brief";
+        const isReview = request.mode === "review";
+
         let tokenLimit = request.responseOptions?.maxTokens ?? classification.maxTokens;
         const hasImages = Boolean(request.images && request.images.length > 0);
-        if (hasImages) {
+        if (isGreetingOrBrief) {
+            tokenLimit = 400;
+        } else if (hasImages) {
             tokenLimit = Math.max(tokenLimit, 1600);
         } else if (classification.length === "standard" || !request.responseOptions?.maxTokens) {
             if (classification.length === "standard") {
                 tokenLimit = Math.max(tokenLimit, 1200);
             }
         }
+
+        const reasoningEffort = (classification.length === "deep" && isReview)
+            ? "medium"
+            : "low";
 
         const bodyPayload: Record<string, unknown> = {
             model: candidate.model,
@@ -435,7 +460,7 @@ export class OpenAIProvider implements LlmProvider {
 
         if (isReasoning) {
             bodyPayload.max_completion_tokens = tokenLimit;
-            bodyPayload.reasoning_effort = classification.reasoningEffort;
+            bodyPayload.reasoning_effort = reasoningEffort;
         } else {
             bodyPayload.max_tokens = tokenLimit;
             bodyPayload.temperature = request.responseOptions?.temperature ?? 0.2;
@@ -604,7 +629,12 @@ export class OpenAIProvider implements LlmProvider {
 
     private async executeAnswer(request: LlmRequest, config: OpenAIConfig, hasImages: boolean): Promise<LlmResponse> {
         const messages = this.buildMessages(request);
-        const candidates = await this.getCandidates(config, hasImages);
+        const classification = request.classification || classifyQuestion(
+            request.question,
+            request.mode,
+            hasImages
+        );
+        const candidates = await this.getCandidates(config, hasImages, classification);
         const timeoutMs = config.timeoutMs || 20000;
 
         if (hasImages && candidates.length > 0 && candidates.every(c => OpenAIProvider.getCooldown(c.provider, c.model) > 0)) {
@@ -626,7 +656,8 @@ export class OpenAIProvider implements LlmProvider {
         const remainingCooldowns: number[] = [];
         let lastImageError: { status: number; model: string; code?: string; snippet?: string } | null = null;
 
-        for (const candidate of candidates) {
+        for (let hop = 0; hop < candidates.length; hop++) {
+            const candidate = candidates[hop];
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
             if (cooldown > 0) {
                 hadRateLimit = true;
@@ -679,6 +710,7 @@ export class OpenAIProvider implements LlmProvider {
                             commits: commitsCount,
                             provider: candidate.provider,
                             model: candidate.model,
+                            hops: hop,
                             cached: false,
                             images: request.images ? request.images.length : 0
                         }
@@ -890,7 +922,12 @@ export class OpenAIProvider implements LlmProvider {
         hasImages: boolean
     ): Promise<LlmResponse> {
         const messages = this.buildMessages(request);
-        const candidates = await this.getCandidates(config, hasImages);
+        const classification = request.classification || classifyQuestion(
+            request.question,
+            request.mode,
+            hasImages
+        );
+        const candidates = await this.getCandidates(config, hasImages, classification);
         const timeoutMs = config.timeoutMs || 20000;
 
         if (hasImages && candidates.length > 0 && candidates.every(c => OpenAIProvider.getCooldown(c.provider, c.model) > 0)) {
@@ -912,7 +949,8 @@ export class OpenAIProvider implements LlmProvider {
         const remainingCooldowns: number[] = [];
         let lastImageError: { status: number; model: string; code?: string; snippet?: string } | null = null;
 
-        for (const candidate of candidates) {
+        for (let hop = 0; hop < candidates.length; hop++) {
+            const candidate = candidates[hop];
             const cooldown = OpenAIProvider.getCooldown(candidate.provider, candidate.model);
             if (cooldown > 0) {
                 hadRateLimit = true;
@@ -1082,6 +1120,7 @@ export class OpenAIProvider implements LlmProvider {
                         commits: commitsCount,
                         provider: candidate.provider,
                         model: candidate.model,
+                        hops: hop,
                         cached: false,
                         images: request.images ? request.images.length : 0
                     }

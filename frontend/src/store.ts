@@ -28,6 +28,7 @@ export interface AskChatMessage {
     stopped?: boolean;
     isThinking?: boolean;
     truncated?: boolean;
+    mode?: 'repo' | 'chat' | 'dev' | 'offtopic';
 }
 
 export interface AskChat {
@@ -1194,7 +1195,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                     error: result.error,
                     retryAfterSeconds: result.retryAfterSeconds,
                     truncated: result.truncated === true,
-                    isThinking: false
+                    isThinking: false,
+                    mode: (result as any).mode || msgs[targetIdx].mode
                 };
             }
             newMsgs = msgs;
@@ -1212,7 +1214,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                     status: result.status,
                     error: result.error,
                     retryAfterSeconds: result.retryAfterSeconds,
-                    truncated: result.truncated === true
+                    truncated: result.truncated === true,
+                    mode: (result as any).mode
                 }
             ];
         }

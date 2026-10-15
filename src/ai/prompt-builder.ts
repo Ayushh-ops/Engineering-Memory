@@ -11,8 +11,10 @@ export function detectLang(text: string): "hi" | "hinglish" | "en" {
     if (/[\u0900-\u097F]/.test(trimmed)) {
         return "hi";
     }
-    const HINDI_WORDS_REGEX = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi)\b/i;
-    if (HINDI_WORDS_REGEX.test(trimmed)) {
+    // Filter out common English constructs like 'tell me', 'give me', 'help me', 'show me', 'walk me'
+    const cleanForHinglish = trimmed.replace(/\b(tell|give|show|help|call|send|walk|let|explain\s+to)\s+me\b/gi, "");
+    const HINDI_WORDS_REGEX = /\b(kya|kaise|kaisa|kyu|kyun|kaun|kab|kahan|hai|hain|ho|hoga|kare|karo|kar|krta|krna|karta|karna|ye|yeh|yaha|wo|woh|ka|ki|ke|ko|me|mein|se|par|pe|nahi|nhi|aur|ya|batao|samjhao|dikhao|sunao|suno|chalo|bhai|tha|thi|iska|iski|iske|unka|unki|unke|kuch|kuchh|kaunsa|kaunsi|kaha|apna|apni|apne|bhi)\b/i;
+    if (HINDI_WORDS_REGEX.test(cleanForHinglish)) {
         return "hinglish";
     }
     return "en";
@@ -71,16 +73,22 @@ export function getSystemInstructions(
     classification?: QuestionClassification,
     scope?: string
 ): string[] {
-    const resolvedClassification = classification || classifyQuestion("", mode, hasImages);
+    const resolvedClassification = classification || classifyQuestion("", mode);
     const lengthFormatBlock = getLengthAndFormatInstructions(resolvedClassification);
+    const prefixInstructions: string[] = [];
+    if (resolvedClassification.length !== "deep") {
+        prefixInstructions.push("Think briefly, then answer.");
+    }
 
     const instructions = [
+        ...prefixInstructions,
         "You are a repository Q&A assistant.",
         "Answer only from the supplied repository facts.",
         "Do not invent repository facts.",
         "Do not claim information that is absent from the supplied context.",
         "Answer as much as the context allows and list missing facts under missingData.",
         ...lengthFormatBlock,
+        ...(resolvedClassification.length !== "deep" ? ["Do not restate the context sources in the answer."] : []),
         "Do not use markdown tables.",
         "The answer text must cite files and lines (format path:line) ONLY for lines shown in context, and NEVER cite lines that are not in the context.",
         'At the end of your answer, output evidence as a delimited block: <<<EVIDENCE>>>[{"path":"filepath","line":12}]<<<END_EVIDENCE>>> with only files and lines that support your answer.',
