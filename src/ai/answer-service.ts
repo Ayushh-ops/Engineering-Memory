@@ -7,7 +7,7 @@ import type { LlmCitation, LlmEvidence, LlmMode, LlmProvider, LlmRequest, LlmRes
 import type { RepositorySourceEvidence } from "../services/repository-source-evidence-service";
 import type { ChangeImpactAnalysisResult } from "../services/change-impact-analysis-service";
 import { detectLang, getLanguageDirective, getSystemInstructions } from "./prompt-builder";
-import { classifyQuestion, classifyScope, type QuestionClassification } from "./question-class";
+import { classifyQuestion, classifyScope, isMetaQuestion, type QuestionClassification } from "./question-class";
 
 export { detectLang, getLanguageDirective };
 
@@ -146,54 +146,68 @@ export function getGreetingOrSmallTalkResponse(question: string): string | null 
     return null;
 }
 
+export interface MetaResponse {
+    answer: string;
+    followUps: string[];
+}
+
+export function getMetaResponse(question: string): MetaResponse {
+    const lang = detectLang(question);
+
+    if (lang === "hinglish") {
+        return {
+            answer: [
+                "Main code ke dependencies aur imports explain karne me madad karta hoon.",
+                "Kisi change se kya toot sakta hai (impact aur risk) uska breakdown deta hoon.",
+                "File kisne banayi ya change ki hai uski commit history dikhata hoon.",
+                "Multiple files me changes plan karne aur selected file par line evidence ke sath sawal solve karta hoon.",
+                "Aap screenshots, diagrams ya error images bhi attach kar sakte hain."
+            ].join("\n"),
+            followUps: [
+                "Ye file explain karo",
+                "Is par kaun depend karta hai?",
+                "Agar ise change karu toh kya tootega?"
+            ]
+        };
+    }
+
+    if (lang === "hi") {
+        return {
+            answer: [
+                "मैं कोड की डिपेंडेंसीज और इम्पोर्ट्स को समझाने में मदद करता हूँ।",
+                "किसी बदलाव से क्या टूट सकता है (इम्पैक्ट और रिस्क) उसका विवरण देता हूँ।",
+                "फाइल किसने बदली या बनाई है उसकी कमिट हिस्ट्री दिखाता हूँ।",
+                "कई फाइल्स में बदलाव प्लान करने और लाइन एविडेंस के साथ सवालों के जवाब देता हूँ।",
+                "आप स्क्रीनशॉट, डायग्राम या एरर की इमेज भी अटैच कर सकते हैं।"
+            ].join("\n"),
+            followUps: [
+                "यह फाइल समझाइए",
+                "इस पर कौन निर्भर करता है?",
+                "बदलने पर क्या टूट सकता है?"
+            ]
+        };
+    }
+
+    return {
+        answer: [
+            "I explain code dependencies and imports across the repository.",
+            "I show what a change can break through impact and risk analysis.",
+            "I inspect who owns or changed a file over time through commit history.",
+            "I help plan changes across multiple files and answer questions about the selected file with line evidence.",
+            "You can also attach screenshots, diagrams, or error images for visual context."
+        ].join("\n"),
+        followUps: [
+            "Explain this file",
+            "Who depends on it?",
+            "What breaks if I change it?"
+        ]
+    };
+}
+
 export function getCapabilityResponse(question: string): string | null {
-    const q = question.trim().toLowerCase().replace(/[!.,?]+$/, "").trim();
-
-    const isHinglishCap =
-        /\b(tum|aap)?\s*(kya\s+kya|kya)\s*(kar\s+sakte\s+ho|kar\s+sakti\s+ho|kar\s+sakte\s+hain|kr\s+sakte\s+ho|kar\s+skte\s+ho|krskte\s+ho)\b/i.test(q) ||
-        /\b(tum|aap)\s+(kya\s+karega|kya\s+karte\s+ho|kya\s+kar\s+rahe\s+ho)\b/i.test(q) ||
-        /\b(tumhari|aapki)\s+(capabilities|taqat|features)\s+(kya|kya\s+kya)\s+(hai|hain)\b/i.test(q);
-
-    if (isHinglishCap) {
-        return [
-            "Main is repository ko explore karne me aapki madad kar sakta hoon:",
-            "• Files aur architecture explain karna",
-            "• Kaun kisko call karta hai (imports aur dependents) batana",
-            "• File ka risk score kyu high hai uska breakdown dena",
-            "• Commit history aur recent changes dekhna",
-            "• Code aur symbols dhoondhna"
-        ].join("\n");
+    if (isMetaQuestion(question)) {
+        return getMetaResponse(question).answer;
     }
-
-    const isDevanagariCap =
-        /(\u0924\u0941\u092e|\u0906\u092a)?\s*(\u0915\u094d\u094f\u092f\u093e\s+\u0915\u094d\u094f\u092f\u093e|\u0915\u094d\u094f\u092f\u093e)\s*(\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u094b|\u0915\u0930\s+\u0938\u0915\u0924\u0947\s+\u0939\u0948\u0902|\u0915\u0930\s+\u0938\u0915\u0924\u0940\s+\u0939\u094b)/i.test(q);
-
-    if (isDevanagariCap) {
-        return [
-            "मैं इस रिपॉजिटरी को समझने में आपकी मदद कर सकता हूँ:",
-            "• फाइल्स और आर्किटेक्चर को समझाना",
-            "• कौन किसको कॉल करता है (इम्पोर्ट्स और डिपेंडेंट्स) बताना",
-            "• रिस्क स्कोर क्यों हाई है इसका विवरण देना",
-            "• कमिट हिस्ट्री और हाल के बदलाव देखना",
-            "• कोड और सिंबल्स ढूँढना"
-        ].join("\n");
-    }
-
-    const isEnglishCap =
-        /^(what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|what\s+can\s+this\s+assistant\s+do|how\s+can\s+you\s+help(\s+me)?|what\s+are\s+you\s+able\s+to\s+do)\b/i.test(q) ||
-        /\bwhat\s+(can\s+you\s+do|are\s+your\s+capabilities)\b/i.test(q);
-
-    if (isEnglishCap) {
-        return [
-            "Here is what I can help you with in this repository:",
-            "• Explain files and system architecture",
-            "• Show who calls what (incoming dependents and outgoing imports)",
-            "• Explain why risk scores are high and what could break",
-            "• Inspect commit history and author changes",
-            "• Find code and symbol definitions"
-        ].join("\n");
-    }
-
     return null;
 }
 
@@ -932,7 +946,9 @@ export class AiAnswerService {
                 format: "prose" as const,
                 maxTokens: 1600,
                 reasoningEffort: "low" as const,
-                isGreetingOrThanks: false
+                isGreetingOrThanks: false,
+                isMeta: false,
+                questionClass: "file" as const
             }
             : classifyQuestion(rawQ, effectiveMode, hasImages);
 
@@ -959,25 +975,17 @@ export class AiAnswerService {
             };
         }
 
-        const capabilityReply = rawQ ? getCapabilityResponse(rawQ) : null;
-        if (capabilityReply) {
+        const isMeta = Boolean(rawQ && (classification.isMeta || isMetaQuestion(rawQ)));
+        if (isMeta) {
+            const meta = getMetaResponse(rawQ);
             return {
                 status: "ok",
-                answer: capabilityReply,
+                answer: meta.answer,
                 citations: [],
                 confidence: "high",
-                followUps: [],
+                followUps: meta.followUps,
                 evidence: [],
-                usedContext: {
-                    files: 0,
-                    commits: 0,
-                    provider: "internal",
-                    model: "deterministic",
-                    cached: false,
-                    length: "standard",
-                    format: "list",
-                    scope: effectiveScope
-                }
+                usedContext: false
             };
         }
 
@@ -1343,7 +1351,9 @@ export class AiAnswerService {
                 format: "prose" as const,
                 maxTokens: 1600,
                 reasoningEffort: "low" as const,
-                isGreetingOrThanks: false
+                isGreetingOrThanks: false,
+                isMeta: false,
+                questionClass: "file" as const
             }
             : classifyQuestion(rawQ, effectiveMode, hasImages);
 
@@ -1371,26 +1381,18 @@ export class AiAnswerService {
             };
         }
 
-        const capabilityReply = rawQ ? getCapabilityResponse(rawQ) : null;
-        if (capabilityReply) {
-            onToken(capabilityReply);
+        const isMeta = Boolean(rawQ && (classification.isMeta || isMetaQuestion(rawQ)));
+        if (isMeta) {
+            const meta = getMetaResponse(rawQ);
+            onToken(meta.answer);
             return {
                 status: "ok",
-                answer: capabilityReply,
+                answer: meta.answer,
                 citations: [],
                 confidence: "high",
-                followUps: [],
+                followUps: meta.followUps,
                 evidence: [],
-                usedContext: {
-                    files: 0,
-                    commits: 0,
-                    provider: "internal",
-                    model: "deterministic",
-                    cached: false,
-                    length: "standard",
-                    format: "list",
-                    scope: effectiveScope
-                }
+                usedContext: false
             };
         }
 

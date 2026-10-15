@@ -7,6 +7,7 @@ import { GitHubRepositoryFileError } from "../github/repository-file-client";
 import { RepositorySourceEvidenceService } from "./repository-source-evidence-service";
 import { QuestionContextPlanner } from "./question-context-planner";
 import { ChangeImpactAnalysisService } from "./change-impact-analysis-service";
+import { isMetaQuestion } from "../ai/question-class";
 
 export interface RepositoryAiOrchestrationRequest {
     owner: string;
@@ -205,6 +206,15 @@ export class RepositoryAiOrchestrationService {
     }
 
     async answer(request: RepositoryAiOrchestrationRequest): Promise<AiAnswerResult> {
+        if (request.question && isMetaQuestion(request.question)) {
+            return this.aiService.answer({
+                repository: `${request.owner}/${request.repository}`,
+                target: request.target,
+                question: request.question,
+                graph: { nodes: [], edges: [] },
+                allowInsufficientContext: true
+            });
+        }
         const aiRequest = await this.prepareAiRequest(request);
         return this.aiService.answer(aiRequest);
     }
@@ -213,6 +223,19 @@ export class RepositoryAiOrchestrationService {
         request: RepositoryAiOrchestrationRequest,
         onToken: (token: string) => void
     ): Promise<AiAnswerResult> {
+        if (request.question && isMetaQuestion(request.question)) {
+            const aiReq: AiAnswerRequest = {
+                repository: `${request.owner}/${request.repository}`,
+                target: request.target,
+                question: request.question,
+                graph: { nodes: [], edges: [] },
+                allowInsufficientContext: true
+            };
+            if (typeof this.aiService.streamAnswer === "function") {
+                return this.aiService.streamAnswer(aiReq, onToken);
+            }
+            return this.aiService.answer(aiReq);
+        }
         const aiRequest = await this.prepareAiRequest(request);
         if (typeof this.aiService.streamAnswer === "function") {
             return this.aiService.streamAnswer(aiRequest, onToken);

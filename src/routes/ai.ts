@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
-import { AiAnswerService, getGreetingOrSmallTalkResponse } from "../ai/answer-service";
-import { classifyQuestion } from "../ai/question-class";
+import { AiAnswerService, getGreetingOrSmallTalkResponse, getMetaResponse } from "../ai/answer-service";
+import { classifyQuestion, isMetaQuestion } from "../ai/question-class";
 import { createLlmProviderFromEnvironment } from "../ai/provider-factory";
 import { type RepositoryContextTarget } from "../graph/repository-context";
 import { GitHubRepositoryFileClient, GitHubRepositoryFileError } from "../github/repository-file-client";
@@ -351,6 +351,40 @@ export function createAiRouter(
                     format: "prose",
                     scope: parsedScope
                 }
+            });
+        }
+
+        if (rawQuestion && (classification.isMeta || isMetaQuestion(rawQuestion))) {
+            const meta = getMetaResponse(rawQuestion);
+            if (isSse) {
+                res.setHeader("Content-Type", "text/event-stream");
+                res.setHeader("Cache-Control", "no-cache");
+                res.setHeader("Connection", "keep-alive");
+                res.write(`event: token\ndata: ${JSON.stringify({ token: meta.answer })}\n\n`);
+                res.write(`event: done\ndata: ${JSON.stringify({
+                    status: "ok",
+                    answer: meta.answer,
+                    citations: [],
+                    confidence: "high",
+                    missingData: [],
+                    error: null,
+                    followUps: meta.followUps,
+                    evidence: [],
+                    usedContext: false
+                })}\n\n`);
+                res.end();
+                return;
+            }
+            return res.status(200).json({
+                status: "ok",
+                answer: meta.answer,
+                citations: [],
+                confidence: "high",
+                missingData: [],
+                error: null,
+                followUps: meta.followUps,
+                evidence: [],
+                usedContext: false
             });
         }
 

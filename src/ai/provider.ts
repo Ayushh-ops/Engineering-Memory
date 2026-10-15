@@ -52,7 +52,7 @@ export interface LlmResponse {
     error?: LlmProviderError;
     followUps?: string[];
     evidence?: LlmEvidence[];
-    usedContext?: LlmUsedContext;
+    usedContext?: any;
     retryAfterSeconds?: number;
     truncated?: boolean;
 }

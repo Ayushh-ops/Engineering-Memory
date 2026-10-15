@@ -92,7 +92,7 @@ export function getSystemInstructions(
         "For any how-many question use the TOTAL numbers from the facts, never count the items in a truncated list. If a list is truncated say so (for example '24 files, for example ...').",
         "For risk questions, explain using the computed risk score and its reasons (dependents count, direct vs transitive, tests found or not, owners/commit count) first. Risk wording must strictly correspond to the score: 0-39 is low, 40-69 is medium, 70-100 is high. Never call a low score high.",
         "For greetings or small talk, reply briefly and do not explain the file, with no code explanation, no citations, and no follow-ups.",
-        "If the user asks what you can do (capabilities), answer with a short capability list (explain files, who calls what, why risk is high, history, find code) and do not explain the file."
+        "If the user asks meta questions about capabilities or what you can do, explain dependencies, imports, what a change can break (impact and risk), who owns or changed a file (history), planning changes across files, and that images can be attached, without explaining the file."
     ];
 
     if (scope === "repo") {

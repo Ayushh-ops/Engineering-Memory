@@ -6,8 +6,8 @@ import { assembleRepositoryContext } from "../graph/repository-context";
 import { buildAiContext, MAX_AI_CONTEXT_BYTES } from "./context";
 import type { AiImpactContext } from "./impact-context";
 import { buildPrompt, detectLang, getLanguageDirective, getModeInstruction, getSystemInstructions } from "./prompt-builder";
-import { AiAnswerService, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison, extractBackendChosenEvidence, extractRepoScopeEvidence } from "./answer-service";
-import { classifyQuestion, classifyScope } from "./question-class";
+import { AiAnswerService, getMetaResponse, isGroundedQuestion, parseAndValidateEvidenceAndFollowUps, generateFallbackFollowUps, normalizeQuestionForComparison, extractBackendChosenEvidence, extractRepoScopeEvidence } from "./answer-service";
+import { classifyQuestion, classifyScope, isMetaQuestion } from "./question-class";
 import type { LlmProvider, LlmRequest, LlmResponse } from "./provider";
 import {
     validateOpenAIConfig,
@@ -1426,6 +1426,43 @@ async function main(): Promise<void> {
     const cOverrideDetailed = classifyQuestion("who calls this?", "detailed");
     assert.equal(cOverrideDetailed.length, "deep");
 
+    // Meta Question Classification Table (positives and negatives, Hinglish and English)
+    const metaPositives = [
+        "kya kr skte ho tum?",
+        "what can you do",
+        "who are you",
+        "help",
+        "how do you work",
+        "tum kaun ho",
+        "what do you do",
+        "help me",
+        "how to use",
+        "kya kaam kar sakte ho",
+        "tum kya kar sakte ho",
+        "kon ho"
+    ];
+    for (const q of metaPositives) {
+        assert.equal(isMetaQuestion(q), true, `Expected "${q}" to be recognized as meta by isMetaQuestion`);
+        const c = classifyQuestion(q, "auto");
+        assert.equal(c.isMeta, true, `Expected "${q}" to have isMeta: true`);
+        assert.equal(c.questionClass, "meta", `Expected "${q}" to have questionClass: "meta"`);
+    }
+
+    const metaNegatives = [
+        "what can this function do",
+        "explain this file",
+        "who calls this method",
+        "how does this code work",
+        "help me fix auth.ts",
+        "what does this class do"
+    ];
+    for (const q of metaNegatives) {
+        assert.equal(isMetaQuestion(q), false, `Expected "${q}" NOT to be recognized as meta by isMetaQuestion`);
+        const c = classifyQuestion(q, "auto");
+        assert.equal(c.isMeta, false, `Expected "${q}" to have isMeta: false`);
+        assert.notEqual(c.questionClass, "meta", `Expected "${q}" questionClass not to be "meta"`);
+    }
+
     // 9. Prompt Builder Instruction Tests
     const instructionsBrief = getSystemInstructions("auto", [], false, cBrief, "file");
     assert.ok(instructionsBrief.some((i) => i.includes("Answer in 1 to 3 sentences")));
@@ -1528,6 +1565,38 @@ async function main(): Promise<void> {
     assert.equal(greetingRes.usedContext?.length, "brief");
     assert.equal(greetingRes.usedContext?.format, "prose");
     assert.equal(greetingRes.evidence?.length, 0);
+
+    // Meta questions early return
+    const metaEnRes = await autoService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "what can you do",
+        graph
+    });
+    assert.equal(metaEnRes.status, "ok");
+    assert.deepEqual(metaEnRes.evidence, []);
+    assert.equal(metaEnRes.usedContext, false);
+    assert.ok(Array.isArray(metaEnRes.followUps));
+    assert.equal(metaEnRes.followUps.length, 3);
+    assert.equal(metaEnRes.followUps[0], "Explain this file");
+    assert.ok(metaEnRes.answer.includes("dependencies"));
+    assert.ok(metaEnRes.answer.includes("impact and risk"));
+    assert.ok(metaEnRes.answer.includes("screenshots"));
+
+    const metaHinglishRes = await autoService.answer({
+        repository: "example/repository",
+        target: { type: "file", path: "src/auth.ts" },
+        question: "kya kr skte ho tum?",
+        graph
+    });
+    assert.equal(metaHinglishRes.status, "ok");
+    assert.deepEqual(metaHinglishRes.evidence, []);
+    assert.equal(metaHinglishRes.usedContext, false);
+    assert.ok(Array.isArray(metaHinglishRes.followUps));
+    assert.equal(metaHinglishRes.followUps.length, 3);
+    assert.equal(metaHinglishRes.followUps[0], "Ye file explain karo");
+    assert.ok(metaHinglishRes.answer.includes("dependencies aur imports"));
+    assert.ok(metaHinglishRes.answer.includes("impact aur risk"));
 
     // (b) Repo-level question auto promotion & repo scope evidence
     const repoQuestionRes = await autoService.answer({

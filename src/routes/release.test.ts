@@ -146,6 +146,43 @@ async function main(): Promise<void> {
         assert.ok((greetingRes.body.answer as string).toLowerCase().includes("hello"));
 
         // --------------------------------------------------------------------
+        // Test 3b: Meta questions answered with the fetcher mocked to throw
+        // --------------------------------------------------------------------
+        const metaHinglishFetchRes = await postJson(port, "/api/ai/ask-repository", {
+            url: "https://github.com/facebook/react",
+            sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            paths: ["src/index.ts"],
+            target: { type: "file", path: "src/index.ts" },
+            question: "kya kr skte ho tum?"
+        });
+
+        assert.equal(metaHinglishFetchRes.status, 200);
+        assert.equal(metaHinglishFetchRes.body.status, "ok");
+        assert.deepEqual(metaHinglishFetchRes.body.evidence, []);
+        assert.equal(metaHinglishFetchRes.body.usedContext, false);
+        assert.ok(Array.isArray(metaHinglishFetchRes.body.followUps));
+        assert.equal((metaHinglishFetchRes.body.followUps as string[]).length, 3);
+        assert.equal((metaHinglishFetchRes.body.followUps as string[])[0], "Ye file explain karo");
+        assert.ok((metaHinglishFetchRes.body.answer as string).toLowerCase().includes("dependencies"));
+
+        const metaEnglishFetchRes = await postJson(port, "/api/ai/ask-repository", {
+            url: "https://github.com/facebook/react",
+            sha: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+            paths: ["src/index.ts"],
+            target: { type: "file", path: "src/index.ts" },
+            question: "what can you do"
+        });
+
+        assert.equal(metaEnglishFetchRes.status, 200);
+        assert.equal(metaEnglishFetchRes.body.status, "ok");
+        assert.deepEqual(metaEnglishFetchRes.body.evidence, []);
+        assert.equal(metaEnglishFetchRes.body.usedContext, false);
+        assert.ok(Array.isArray(metaEnglishFetchRes.body.followUps));
+        assert.equal((metaEnglishFetchRes.body.followUps as string[]).length, 3);
+        assert.equal((metaEnglishFetchRes.body.followUps as string[])[0], "Explain this file");
+        assert.ok((metaEnglishFetchRes.body.answer as string).toLowerCase().includes("dependencies"));
+
+        // --------------------------------------------------------------------
         // Test 4: Analyze error path returns JSON quickly
         // --------------------------------------------------------------------
         globalThis.fetch = async () => {
