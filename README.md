@@ -1,142 +1,52 @@
 # Engineering Memory
 
-See what breaks before you change it. Analyze any public GitHub repository.
-
-Live demo: <ADD LIVE URL HERE>
-
-The free server sleeps after 15 minutes of inactivity. The first request may take about a minute to wake up.
+See what breaks before you change it. Paste a public GitHub repository and Engineering Memory shows how its files connect, which files are risky to touch, and what a change could affect.
 
 ## What it does
 
-- Maps dependencies, symbols, imports, and callers across repository files.
-- Calculates change impact, downstream blast radius, risk scores, and affected tests.
-- Provides a context-aware AI assistant grounded in repository structure, commit history, and code evidence.
+Before editing code, developers ask the same questions: who depends on this file, what could break, which tests cover it, and who knows this code. Engineering Memory answers them in seconds, with the files and lines as evidence.
 
 ## Features
 
-- Overview: repository health summary, high-risk hotspot files, and complexity signals.
-- Plan a change: select multiple target files to review combined risk scores and recommended tests to run.
-- Health: circular dependency detection, unused and orphaned files, and high-complexity god files.
-- Graph: interactive 2D node-link graph and 3D force-directed dependency visualization.
-- Impact: inspect blast radius, direct callers, indirect downstream consumers, and related tests.
-- Connections: dependency tree showing direct imports, imported by, and call-site evidence.
-- Code viewer: syntax-highlighted source browser with line jumping from evidence chips.
-- History and owners: author commit breakdown, ownership shares, and recent file changes.
-- Ask AI: grounded answers with line evidence chips, automatic response length and language detection (English, Hinglish, Hindi), image attachments, streaming replies, and follow-up prompts.
+- **Overview:** the riskiest files ranked by score, with a repository map.
+- **Plan a change:** add the files you plan to edit and get one combined risk, every file that could break, and the tests to run.
+- **Health:** circular imports, unused files and files that do too much.
+- **Graph:** a 2D and a 3D dependency graph showing what each file imports and what imports it.
+- **Impact:** the blast radius of a change, direct and indirect, with the tests that cover it.
+- **Connections:** the imports and dependents of a file in one list.
+- **Code:** a code viewer that opens at the exact line an answer refers to.
+- **History:** commits and owners for a file.
+- **Ask AI:** ask questions about a file or the repository. Answers come with evidence, follow-up suggestions and saved chats. You can attach a screenshot, and it replies in the language you write in.
+
+## How it works
+
+1. The backend fetches the repository from the GitHub API and reads its source files.
+2. It parses imports, functions and classes, and builds a dependency graph.
+3. From the graph it computes, for every file, who depends on it directly and indirectly, which tests reach it, how often it changed and who changed it.
+4. A risk score from 0 to 100 combines those signals. It is a guide for where to look first, not proof.
+5. Ask AI sends the question together with the relevant facts and code lines to an AI model, then checks that the cited lines really exist before showing them as evidence.
 
 ## How to use
 
-1. Paste a public GitHub repository URL (or `owner/repo`) into the search bar.
-2. Wait for the initial repository analysis and dependency graph build.
-3. Open the command palette with Ctrl K (or click the search button) to select a file.
-4. Explore tabs (Overview, Plan, Health, Graph, Impact, Connections, History) or ask questions in Ask AI.
+1. Paste a public repository URL, for example `https://github.com/owner/repo`, and press Analyze.
+2. When the analysis finishes, start from the Overview to see the riskiest files.
+3. Pick a file from the sidebar, or press `Ctrl K` to search for one.
+4. Open Impact to see what depends on it, Graph to see the connections, Code to read it, or History to see who changed it.
+5. Planning to edit several files? Add them with Add to plan and open Plan a change.
+6. Have a question? Open Ask AI and ask in plain language.
 
 ## Tech stack
 
-- Frontend: React 19, Vite, Tailwind CSS, three.js, react-force-graph-3d, @xyflow/react, Zustand.
-- Backend: Node.js, Express 5, TypeScript.
-- AI: Groq (OpenAI-compatible API) with Google Gemini fallback.
-- Analyzers: tree parsing and symbol extraction for TypeScript, JavaScript, Python, Java, Go, and C++.
+React, Vite, Tailwind CSS and three.js on the frontend. Node.js, Express and TypeScript on the backend. Groq with a Gemini fallback for AI answers.
 
 ## Run locally
 
-Requirements: Node.js 20+ and npm.
-
-1. Install backend and frontend dependencies:
-   ```bash
-   npm install
-   npm --prefix frontend install
-   ```
-2. Copy environment configuration:
-   ```bash
-   cp .env.example .env
-   ```
-3. Start development servers:
-   - Backend (port 3000): `npm run dev`
-   - Frontend (port 5173): `npm --prefix frontend run dev`
-4. Build and run production bundle locally:
-   ```bash
-   npm run build:all
-   npm start
-   ```
-
-## Environment variables
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `GITHUB_TOKEN` | Optional | GitHub personal access token to raise rate limit from 60 to 5,000 req/hr. |
-| `LLM_API_KEY` | Optional | Primary LLM API key (e.g. Groq). |
-| `LLM_BASE_URL` | Optional | Base URL for primary LLM endpoint (default: `https://api.groq.com/openai/v1`). |
-| `LLM_MODEL` | Optional | Primary model name (default: `openai/gpt-oss-120b`). |
-| `LLM_FALLBACK_API_KEY` | Optional | Fallback LLM API key (e.g. Gemini via OpenAI-compatible endpoint). |
-| `LLM_FALLBACK_MODEL` | Optional | Fallback model name (default: auto-discovered from Gemini). |
-| `LLM_TIMEOUT_MS` | Optional | Request timeout in milliseconds (default: 20000). |
-| `LLM_MAX_TOKENS` | Optional | Max completion token budget (default: 1500). |
-| `NODE_ENV` | Optional | Environment mode (`production` serves frontend static files). |
-| `PORT` | Optional | Server port (default: 3000). |
-
-Models and URLs have built-in defaults. The server starts without keys; if an AI key is missing, Ask AI returns a friendly notification. Never commit real keys or secrets to the repository.
-
-## Deploy on Render (free)
-
-1. Create a new Web Service and link your GitHub repository.
-2. Set configuration:
-   - Build command: `npm install && npm run build:all`
-   - Start command: `npm start`
-3. Add environment variables in the Render dashboard:
-   - `NODE_ENV=production`
-   - `NPM_CONFIG_INCLUDE=dev`
-   - Add optional API keys (`GITHUB_TOKEN`, `LLM_API_KEY`, `LLM_FALLBACK_API_KEY`).
-4. Verify deployment by visiting `https://<your-app>.onrender.com/healthz`.
-
-Tip: Ping `/healthz` every 5 minutes using a free uptime monitor (e.g. UptimeRobot) to prevent the free instance from sleeping.
-
-## Limits and known issues
-
-- Public repositories only: private repositories are not supported yet.
-- Repository cap: analysis processes up to the first 500 supported source files (configurable via `ANALYSIS_MAX_FILES`).
-- Memory limits: very large repositories can cause high latency or exceed the 512 MB memory limit on free hosting tiers.
-- AI rate limits: free-tier keys on Groq and Gemini enforce strict TPM/RPM quotas; when reached, Ask AI shows a countdown and retry period.
-- GitHub API rate limits: anonymous GitHub requests are capped at 60 requests/hr per IP; set `GITHUB_TOKEN` to increase the ceiling to 5,000 requests/hr.
-
-## Troubleshooting
-
-| Problem | Cause | Solution |
-| --- | --- | --- |
-| Repository not found | Repository is private or URL is misspelled | Ensure the repository is public and the owner/name format is correct. |
-| GitHub rate limit reached | Exceeded 60 anonymous requests per hour | Add a `GITHUB_TOKEN` in `.env` or in host environment variables. |
-| AI service unreachable or rate limited | Missing API key, exhausted quota, or provider outage | Verify `LLM_API_KEY` and quota; configure `LLM_FALLBACK_API_KEY` for automatic fallback. |
-| 413 payload too large | Repository payload exceeds body parser limit | Update to latest build; select a specific target file rather than full repository scope. |
-| Analysis stuck or fails mid-run | Repository exceeds memory or contains very deep trees | Reduce analyzed scope or restart instance if memory is exhausted. |
-| Blank page after deploy | Frontend build missing or start command misconfigured | Ensure build command runs `build:all` and start command runs `node dist/index.js`. |
-
-## Security
-
-Never commit `.env` or share API tokens. Store credentials in `.env` locally or in the hosting dashboard. Rotate any API key that was ever committed or shared publicly.
-
-## Project structure
-
-```text
-EngineeringMemory/
-├── src/
-│   ├── ai/            # Ask AI routing, prompt builder, providers, and response services
-│   ├── analyzers/     # AST analyzers for TypeScript, Python, Java, Go, and C++
-│   ├── github/        # GitHub API client and file cache
-│   ├── graph/         # Repository dependency graph, context assembler, and query engine
-│   ├── middleware/    # Express rate limiting and security headers
-│   ├── resolvers/     # Import path resolution across languages
-│   ├── routes/        # API endpoints (repositories, impact, ai, health)
-│   └── services/      # Change impact, orchestration, and expansion services
-├── frontend/
-│   ├── public/        # Static assets (favicon, manifest)
-│   └── src/
-│       ├── components/# UI views (MainPanel, Sidebar, TopBar, Graph3D, CodeViewer)
-│       ├── api.ts     # Frontend HTTP client and SSE stream reader
-│       └── store.ts   # Zustand app state and snapshot storage
+```bash
+npm install
+npm --prefix frontend install
+cp .env.example .env     # add your keys inside .env
+npm run dev              # backend on http://localhost:3000
+npm --prefix frontend run dev   # frontend on http://localhost:5173
 ```
 
-## Roadmap
-
-- Private repository login via GitHub OAuth.
-- Saved analyzed repositories page for persistent project history.
-- GitHub Action that comments risk scores and blast radius directly on pull requests.
+Public repositories only. Very large repositories are analysed partially.
